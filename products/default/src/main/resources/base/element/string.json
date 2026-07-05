@@ -1,0 +1,144 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "Weaver"
+    },
+    {
+      "name": "welcome_title",
+      "value": "欢迎使用 Weaver"
+    },
+    {
+      "name": "welcome_subtitle",
+      "value": "为长篇小说创作者而生"
+    },
+    {
+      "name": "welcome_tagline",
+      "value": "人物 · 世界观 · 关系图，一站管理"
+    },
+    {
+      "name": "guide_skip",
+      "value": "跳过引导"
+    },
+    {
+      "name": "guide_preview_title",
+      "value": "你的创作工具箱"
+    },
+    {
+      "name": "guide_preview_hint",
+      "value": "所见即所得 — 这就是你的写作界面"
+    },
+    {
+      "name": "guide_mode_title",
+      "value": "选择你的写作方式"
+    },
+    {
+      "name": "guide_mode_switch_hint",
+      "value": "可在设置中随时切换"
+    },
+    {
+      "name": "mode_normal_title",
+      "value": "日常写作"
+    },
+    {
+      "name": "mode_normal_desc",
+      "value": "简洁编辑器，随时记录"
+    },
+    {
+      "name": "mode_professional_title",
+      "value": "小说创作"
+    },
+    {
+      "name": "mode_professional_desc",
+      "value": "人物、世界观、关系图"
+    },
+    {
+      "name": "tab_editor",
+      "value": "编辑"
+    },
+    {
+      "name": "tab_material",
+      "value": "素材"
+    },
+    {
+      "name": "tab_relationship",
+      "value": "关系"
+    },
+    {
+      "name": "tab_my",
+      "value": "我的"
+    },
+    {
+      "name": "editor_new_chapter",
+      "value": "新建章节"
+    },
+    {
+      "name": "editor_switch_book",
+      "value": "切换书籍"
+    },
+    {
+      "name": "editor_new_book",
+      "value": "新建书籍"
+    },
+    {
+      "name": "toolbar_bold",
+      "value": "加粗"
+    },
+    {
+      "name": "toolbar_italic",
+      "value": "斜体"
+    },
+    {
+      "name": "toolbar_image",
+      "value": "图片"
+    },
+    {
+      "name": "toolbar_link",
+      "value": "链接"
+    },
+    {
+      "name": "setting_mode_switch",
+      "value": "模式切换"
+    },
+    {
+      "name": "setting_paper_theme",
+      "value": "稿纸/背景主题"
+    },
+    {
+      "name": "setting_privacy_shield",
+      "value": "隐私防窥"
+    },
+    {
+      "name": "setting_about",
+      "value": "关于"
+    },
+    {
+      "name": "material_character_section",
+      "value": "人物"
+    },
+    {
+      "name": "material_world_section",
+      "value": "世界观"
+    },
+    {
+      "name": "material_add_character",
+      "value": "添加人物"
+    },
+    {
+      "name": "material_add_world",
+      "value": "添加世界设定"
+    },
+    {
+      "name": "inspiration_this_book",
+      "value": "本书灵感"
+    },
+    {
+      "name": "inspiration_all",
+      "value": "全部灵感"
+    },
+    {
+      "name": "inspiration_new",
+      "value": "新建灵感"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "module": {
+    "name": "agent",
+    "type": "har",
+    "description": "Weaver Agent Feature",
+    "deviceTypes": ["phone", "tablet", "2in1"]
+  }
+}

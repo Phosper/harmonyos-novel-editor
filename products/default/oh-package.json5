@@ -1,0 +1,16 @@
+{
+  "name": "weaver",
+  "version": "1.0.0",
+  "description": "Weaver - 鸿蒙全场景小说创作平台",
+  "main": "",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ohos/common": "file:../../common",
+    "@ohos/editor": "file:../../features/editor",
+    "@ohos/material": "file:../../features/material",
+    "@ohos/relationship": "file:../../features/relationship",
+    "@ohos/agent": "file:../../features/agent",
+    "@ohos/settings": "file:../../features/settings"
+  }
+}

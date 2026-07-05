@@ -1,0 +1,11 @@
+{
+  "name": "@ohos/editor",
+  "version": "1.0.0",
+  "description": "Weaver Editor Feature Module",
+  "main": "Index.ets",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ohos/common": "file:../../common"
+  }
+}

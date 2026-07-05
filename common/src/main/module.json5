@@ -1,0 +1,8 @@
+{
+  "module": {
+    "name": "common",
+    "type": "har",
+    "description": "Weaver Common Layer",
+    "deviceTypes": ["phone", "tablet", "2in1"]
+  }
+}

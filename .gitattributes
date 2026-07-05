@@ -1,0 +1,9 @@
+* text=auto
+*.ets text eol=crlf
+*.json5 text eol=crlf
+*.json text eol=crlf
+*.md text eol=crlf
+*.ts text eol=crlf
+*.svg text eol=crlf
+*.txt text eol=crlf
+*.png binary

@@ -1,0 +1,8 @@
+{
+  "module": {
+    "name": "relationship",
+    "type": "har",
+    "description": "Weaver Relationship Feature",
+    "deviceTypes": ["phone", "tablet", "2in1"]
+  }
+}

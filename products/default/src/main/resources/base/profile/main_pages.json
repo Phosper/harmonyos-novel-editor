@@ -1,0 +1,11 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/GuideSwiperPage",
+    "pages/ThemePage",
+    "pages/CharacterDetailPage",
+    "pages/WorldSettingDetailPage",
+    "pages/InspirationCreatePage",
+    "pages/InspirationListPage"
+  ]
+}

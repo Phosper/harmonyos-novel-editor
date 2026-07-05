@@ -14,7 +14,7 @@ build/
 
 # Dependencies
 oh_modules/
-*.lock.json5
+*lock*.json5
 
 # OS
 Thumbs.db
@@ -24,3 +24,6 @@ Thumbs.db
 *.log
 *.msgpack
 *.cache
+
+# Codegen
+.codegenie/

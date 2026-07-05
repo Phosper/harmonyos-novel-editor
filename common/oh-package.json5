@@ -1,0 +1,9 @@
+{
+  "name": "@ohos/common",
+  "version": "1.0.0",
+  "description": "Weaver Common Layer - shared utilities, constants, database, models",
+  "main": "Index.ets",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {}
+}

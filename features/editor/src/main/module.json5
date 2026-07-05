@@ -1,0 +1,8 @@
+{
+  "module": {
+    "name": "editor",
+    "type": "har",
+    "description": "Weaver Editor Feature",
+    "deviceTypes": ["phone", "tablet", "2in1"]
+  }
+}
