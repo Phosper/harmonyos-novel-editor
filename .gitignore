@@ -1,0 +1,26 @@
+# Build artifacts
+products/*/build/
+build/
+*.hap
+*.app
+
+# Hvigor
+.hvigor/
+.hvigor/config/
+
+# IDE
+.idea/
+!.idea/.gitignore
+
+# Dependencies
+oh_modules/
+*.lock.json5
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Misc
+*.log
+*.msgpack
+*.cache
