@@ -1,6 +1,7 @@
 ﻿// PcSidebar.ets V2 — with press/hover/focus feedback + dual-mode colors
 import { PcRadii, PcInteraction, pcColors, type LibItem, type ProjectItem, type PcColorSet } from './PcDesignTokens'
 import { ConfigurationConstant } from '@kit.AbilityKit'
+import { router } from '@kit.ArkUI'
 
 @Component
 export struct PcSidebar {
@@ -199,6 +200,13 @@ export struct PcSidebar {
       }
 
       Blank()
+
+      Button() { Text('⚙').fontSize(18).fontColor(this.getColors().TEXT_TERTIARY) }
+      .width('100%').height(40).backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
+      .onHover((isHover: boolean) => { this.pressedItemId = isHover ? 'settings' : '' })
+      .backgroundColor(this.pressedItemId === 'settings' ? this.getColors().HOVER_BG : Color.Transparent)
+      .animation({ duration: PcInteraction.HOVER_DURATION })
+      .onClick(() => { router.pushUrl({ url: 'pages/ThemePage' }) })
 
       Row() {
         if (!this.userFolded) {

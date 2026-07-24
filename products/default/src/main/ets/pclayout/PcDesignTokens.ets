@@ -230,7 +230,8 @@ export enum EditorViewMode {
   EDITOR = 1,
   MATERIAL = 2,
   MATERIAL_DETAIL = 3,
-  GRAPH = 4
+  GRAPH = 4,
+  PROJECT_DETAIL = 5
 }
 
 export enum MidTabMode {

@@ -92,15 +92,16 @@ export struct PcShell {
   async newDoc(): Promise<void> {
     const num: number = this.chapters.length + 1
     await this.vm.createChapter('无标题 ' + num)
+    this.editorViewMode = EditorViewMode.EDITOR
     this.syncFromVm()
   }
   selectDoc(docId: string): void {
     const ch = this.vm.chapters.find((c) => c.id === docId)
-    if (ch !== undefined) { this.vm.openChapter(ch); this.syncFromVm() }
+    if (ch !== undefined) { this.vm.openChapter(ch); this.editorViewMode = EditorViewMode.EDITOR; this.syncFromVm() }
   }
   closeTab(tabId: string): void { this.vm.closeTab(tabId); this.syncFromVm() }
   selectTab(tabId: string): void { this.vm.selectTab(tabId); this.syncFromVm() }
-  async createProject(name: string): Promise<void> { await this.vm.createBook(name); this.syncFromVm() }
+  async createProject(name: string): Promise<void> { await this.vm.createBook(name); this.editorViewMode = EditorViewMode.PROJECT_DETAIL; this.syncFromVm() }
   async selectProject(bookId: string): Promise<void> { await this.vm.selectBook(bookId); this.syncFromVm() }
   async deleteDoc(docId: string): Promise<void> { await this.vm.trashChapter(docId); this.syncFromVm() }
   async hardDeleteDoc(docId: string): Promise<void> { await this.vm.deleteChapter(docId); this.syncFromVm() }
