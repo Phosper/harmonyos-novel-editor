@@ -224,7 +224,7 @@ export struct PcShell {
 
   build() {
     Column() {
-      SideBarContainer() {
+      SideBarContainer(this.sideBarType) {
         Column() {
           PcSidebar({
             projects: this.projItems,
@@ -239,58 +239,59 @@ export struct PcShell {
           })
         }
 
-        Row() {
-          PcDocList({
-            listTitle: this.docListTitle, docItems: this.docItems,
-            showMidSeg: this.showMidSeg, statusBarPad: 0,
-            isTrashView: this.activeLibId === 'trash',
-            onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
-            onSearch: (text: string): void => {
-              this.docItems = this.vm.searchDocs(text)
-            },
-            onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
-            onNewDoc: (): void => { this.newDoc() },
-            onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
-            onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
-            onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) },
-            onToggleFold: (): void => { this.toggleDocListPanel() }
-          })
-
+        Column() {
           Navigation(this.navPathStack) {
-            Column() {
-              NavDestination() {
-                PcEditorZone({
-                  viewMode: this.editorViewMode, showFindBar: this.showFindBar,
-                  editorContent: this.editorContent, wordCount: this.wordCount,
-                  saveStatus: this.saveStatus, saveState: this.saveState,
-                  sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
-                  characters: this.charactersList,
-                  worldSettings: this.worldSettings, inspirations: this.inspirations,
-                  relationships: this.relationships, editorTabs: this.editorTabs,
-                  graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
-                  onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
-                  onToggleFind: (): void => { this.toggleFind() },
-                  onToggleAgent: (): void => { this.toggleAgent() },
-                  onNewDoc: (): void => { this.newDoc() },
-                  onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
-                  onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
-                  onToggleFullscreen: (): void => { this.toggleFullscreen() },
-                  onRetrySave: (): void => { this.retrySave() },
-                  onUndo: (): void => { this.undo() },
-                  onRedo: (): void => { this.redo() },
-                  onPushUndo: (): void => { this.pushUndo() },
-                  onToggleSprint: (): void => { this.toggleSprint() },
-                  onExportTxt: (): void => { this.exportTxt() },
-                  onExportMd: (): void => { this.exportMd() },
-                  onExportJson: (): void => { this.exportJson() },
-                  onAddCharacter: (): void => { this.addCharacter() },
-                  onAddWorldSetting: (): void => { this.addWorldSetting() },
-                  onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
-                })
-              }.title('').backgroundColor(this.getColors().EDITOR_BG)
-            }.width('100%').height('100%')
+            PcDocList({
+              listTitle: this.docListTitle, docItems: this.docItems,
+              showMidSeg: this.showMidSeg, statusBarPad: 0,
+              isTrashView: this.activeLibId === 'trash',
+              onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
+              onSearch: (text: string): void => {
+                this.docItems = this.vm.searchDocs(text)
+              },
+              onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
+              onNewDoc: (): void => { this.newDoc() },
+              onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
+              onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
+              onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) },
+              onToggleFold: (): void => { this.toggleDocListPanel() }
+            })
+
+            NavDestination() {
+              PcEditorZone({
+                viewMode: this.editorViewMode, showFindBar: this.showFindBar,
+                editorContent: this.editorContent, wordCount: this.wordCount,
+                saveStatus: this.saveStatus, saveState: this.saveState,
+                sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
+                characters: this.charactersList,
+                worldSettings: this.worldSettings, inspirations: this.inspirations,
+                relationships: this.relationships, editorTabs: this.editorTabs,
+                graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
+                onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
+                onToggleFind: (): void => { this.toggleFind() },
+                onToggleAgent: (): void => { this.toggleAgent() },
+                onNewDoc: (): void => { this.newDoc() },
+                onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
+                onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
+                onToggleFullscreen: (): void => { this.toggleFullscreen() },
+                onRetrySave: (): void => { this.retrySave() },
+                onUndo: (): void => { this.undo() },
+                onRedo: (): void => { this.redo() },
+                onPushUndo: (): void => { this.pushUndo() },
+                onToggleSprint: (): void => { this.toggleSprint() },
+                onExportTxt: (): void => { this.exportTxt() },
+                onExportMd: (): void => { this.exportMd() },
+                onExportJson: (): void => { this.exportJson() },
+                onAddCharacter: (): void => { this.addCharacter() },
+                onAddWorldSetting: (): void => { this.addWorldSetting() },
+                onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
+              })
+            }
+            .title('')
+            .backgroundColor(this.getColors().EDITOR_BG)
           }
           .mode(this.navMode)
+          .navBarWidth(300)
           .hideTitleBar(true)
           .layoutWeight(1).height('100%')
 
