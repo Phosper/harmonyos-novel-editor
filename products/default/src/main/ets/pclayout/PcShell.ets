@@ -47,9 +47,6 @@ export struct PcShell {
   @State libCounts: Record<string, number> = {}
   @State pcGraphNodes: GraphNode[] = []
   @State pcGraphEdges: GraphEdge[] = []
-  @State navMode: NavigationMode = NavigationMode.Split
-  @State navPathStack: NavPathStack = new NavPathStack()
-  @State sideBarType: SideBarContainerType = SideBarContainerType.Embed
 
   // Hover tracking for Rail
   @State hoveredRailId: string = ''
@@ -162,18 +159,16 @@ export struct PcShell {
   }
   toggleFind(): void { this.vm.showFindBar = !this.vm.showFindBar; this.syncFromVm() }
   toggleSidebar(): void { this.vm.showSidebar = !this.vm.showSidebar; this.syncFromVm() }
-  toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.showDocList = this.vm.showDocList }
-  toggleDocListPanel(): void {
-    if (this.navMode === NavigationMode.Split) {
-      this.navMode = NavigationMode.Stack
-    } else {
-      this.navMode = NavigationMode.Split
-    }
-  }
+  toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.syncFromVm() }
   toggleFullscreen(): void {
-    const panelsVisible: boolean = this.vm.showSidebar || this.vm.showDocList
-    if (panelsVisible) { this.vm.showSidebar = false; this.vm.showDocList = false }
-    else { this.vm.showSidebar = true; this.vm.showDocList = true }
+    const isFullscreen: boolean = !this.vm.showSidebar || !this.vm.showDocList
+    if (isFullscreen) {
+      this.vm.showSidebar = true
+      this.vm.showDocList = true
+    } else {
+      this.vm.showSidebar = false
+      this.vm.showDocList = false
+    }
     this.syncFromVm()
   }
 
@@ -224,7 +219,8 @@ export struct PcShell {
 
   build() {
     Column() {
-      SideBarContainer(this.sideBarType) {
+      PcTitleBar()
+      SideBarContainer(SideBarContainerType.Embed) {
         Column() {
           PcSidebar({
             projects: this.projItems,
@@ -239,8 +235,8 @@ export struct PcShell {
           })
         }
 
-        Column() {
-          Navigation(this.navPathStack) {
+        Row() {
+          if (this.showDocList) {
             PcDocList({
               listTitle: this.docListTitle, docItems: this.docItems,
               showMidSeg: this.showMidSeg, statusBarPad: 0,
@@ -253,55 +249,46 @@ export struct PcShell {
               onNewDoc: (): void => { this.newDoc() },
               onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
               onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
-              onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) },
-              onToggleFold: (): void => { this.toggleDocListPanel() }
-            })
-
-            NavDestination() {
-              PcEditorZone({
-                viewMode: this.editorViewMode, showFindBar: this.showFindBar,
-                editorContent: this.editorContent, wordCount: this.wordCount,
-                saveStatus: this.saveStatus, saveState: this.saveState,
-                sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
-                characters: this.charactersList,
-                worldSettings: this.worldSettings, inspirations: this.inspirations,
-                relationships: this.relationships, editorTabs: this.editorTabs,
-                graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
-                onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
-                onToggleFind: (): void => { this.toggleFind() },
-                onToggleAgent: (): void => { this.toggleAgent() },
-                onNewDoc: (): void => { this.newDoc() },
-                onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
-                onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
-                onToggleFullscreen: (): void => { this.toggleFullscreen() },
-                onRetrySave: (): void => { this.retrySave() },
-                onUndo: (): void => { this.undo() },
-                onRedo: (): void => { this.redo() },
-                onPushUndo: (): void => { this.pushUndo() },
-                onToggleSprint: (): void => { this.toggleSprint() },
-                onExportTxt: (): void => { this.exportTxt() },
-                onExportMd: (): void => { this.exportMd() },
-                onExportJson: (): void => { this.exportJson() },
-                onAddCharacter: (): void => { this.addCharacter() },
-                onAddWorldSetting: (): void => { this.addWorldSetting() },
-                onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
-              })
-            }
-            .title('')
-            .backgroundColor(this.getColors().EDITOR_BG)
+              onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) }
+            }).width(300).height('100%')
           }
-          .mode(this.navMode)
-          .navBarWidth(300)
-          .hideTitleBar(true)
-          .layoutWeight(1).height('100%')
+
+          PcEditorZone({
+            viewMode: this.editorViewMode, showFindBar: this.showFindBar,
+            editorContent: this.editorContent, wordCount: this.wordCount,
+            saveStatus: this.saveStatus, saveState: this.saveState,
+            sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
+            characters: this.charactersList,
+            worldSettings: this.worldSettings, inspirations: this.inspirations,
+            relationships: this.relationships, editorTabs: this.editorTabs,
+            graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
+            onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
+            onToggleFind: (): void => { this.toggleFind() },
+            onToggleAgent: (): void => { this.toggleAgent() },
+            onNewDoc: (): void => { this.newDoc() },
+            onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
+            onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
+            onToggleFullscreen: (): void => { this.toggleFullscreen() },
+            onRetrySave: (): void => { this.retrySave() },
+            onUndo: (): void => { this.undo() },
+            onRedo: (): void => { this.redo() },
+            onPushUndo: (): void => { this.pushUndo() },
+            onToggleSprint: (): void => { this.toggleSprint() },
+            onExportTxt: (): void => { this.exportTxt() },
+            onExportMd: (): void => { this.exportMd() },
+            onExportJson: (): void => { this.exportJson() },
+            onAddCharacter: (): void => { this.addCharacter() },
+            onAddWorldSetting: (): void => { this.addWorldSetting() },
+            onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
+          }).layoutWeight(1).height('100%')
 
           if (this.showAgentPanel) {
             PcAgentPanel({ show: this.showAgentPanel,
               onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
               onSend: (text: string): void => { text }
-            })
+            }).width(320).height('100%')
           }
-        }.height('100%')
+        }.width('100%').height('100%')
       }
       .sideBarWidth(240)
       .minSideBarWidth(200)
@@ -309,6 +296,6 @@ export struct PcShell {
       .showSideBar(this.showSidebar)
       .onChange((isShow: boolean) => { this.showSidebar = isShow })
       .layoutWeight(1).width('100%')
-    }.padding({ top: this.statusBarPad() }).width('100%').height('100%')
+    }.width('100%').height('100%')
   }
 }

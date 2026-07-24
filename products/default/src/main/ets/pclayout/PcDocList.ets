@@ -26,7 +26,6 @@ export struct PcDocList {
   onDeleteDoc: (docId: string) => void = (docId: string): void => { docId }
   onHardDelete: (docId: string) => void = (docId: string): void => { docId }
   onRestoreDoc: (docId: string) => void = (docId: string): void => { docId }
-  onToggleFold: () => void = (): void => { }
 
   getColors(): PcColorSet {
     return pcColors(this.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
@@ -39,18 +38,6 @@ export struct PcDocList {
       Row() {
         Text(this.listTitle).fontSize(14).fontWeight(FontWeight.Bold)
           .fontColor(this.getColors().TEXT_PRIMARY).layoutWeight(1)
-        Button() { Text('▷').fontSize(14).fontColor(this.getColors().TEXT_SECONDARY).accessibilityText('收起文稿列表') }
-        .width(28).height(28).backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
-        .stateStyles({
-          pressed: { .backgroundColor(this.getColors().CLICK_EFFECT) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onHover((isHover: boolean) => { this.hoveredBtnId = isHover ? 'fold' : '' })
-        .backgroundColor(this.hoveredBtnId === 'fold' ? this.getColors().HOVER_BG : Color.Transparent)
-        .animation({ duration: PcInteraction.HOVER_DURATION })
-        .focusable(true)
-        
-        .onClick(() => { this.onToggleFold() })
       }.width('100%').padding({ left: 16, right: 8, top: 10, bottom: 8 })
 
       Row({ space: 6 }) {
