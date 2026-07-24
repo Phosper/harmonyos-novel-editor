@@ -47,6 +47,9 @@ export struct PcShell {
   @State libCounts: Record<string, number> = {}
   @State pcGraphNodes: GraphNode[] = []
   @State pcGraphEdges: GraphEdge[] = []
+  @State navMode: NavigationMode = NavigationMode.Split
+  @State navPathStack: NavPathStack = new NavPathStack()
+  @State sideBarType: SideBarContainerType = SideBarContainerType.Embed
 
   // Hover tracking for Rail
   @State hoveredRailId: string = ''
@@ -159,7 +162,14 @@ export struct PcShell {
   }
   toggleFind(): void { this.vm.showFindBar = !this.vm.showFindBar; this.syncFromVm() }
   toggleSidebar(): void { this.vm.showSidebar = !this.vm.showSidebar; this.syncFromVm() }
-  toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.syncFromVm() }
+  toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.showDocList = this.vm.showDocList }
+  toggleDocListPanel(): void {
+    if (this.navMode === NavigationMode.Split) {
+      this.navMode = NavigationMode.Stack
+    } else {
+      this.navMode = NavigationMode.Split
+    }
+  }
   toggleFullscreen(): void {
     const panelsVisible: boolean = this.vm.showSidebar || this.vm.showDocList
     if (panelsVisible) { this.vm.showSidebar = false; this.vm.showDocList = false }
@@ -230,54 +240,59 @@ export struct PcShell {
         }
 
         Row() {
-          if (this.showDocList) {
-            PcDocList({
-              listTitle: this.docListTitle, docItems: this.docItems,
-              showMidSeg: this.showMidSeg, statusBarPad: 0,
-              isTrashView: this.activeLibId === 'trash',
-              onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
-              onSearch: (text: string): void => {
-                this.docItems = this.vm.searchDocs(text)
-              },
-              onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
-              onNewDoc: (): void => { this.newDoc() },
-              onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
-              onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
-              onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) },
-              onToggleFold: (): void => { this.toggleDocList() }
-            })
-          }
+          PcDocList({
+            listTitle: this.docListTitle, docItems: this.docItems,
+            showMidSeg: this.showMidSeg, statusBarPad: 0,
+            isTrashView: this.activeLibId === 'trash',
+            onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
+            onSearch: (text: string): void => {
+              this.docItems = this.vm.searchDocs(text)
+            },
+            onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
+            onNewDoc: (): void => { this.newDoc() },
+            onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
+            onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
+            onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) },
+            onToggleFold: (): void => { this.toggleDocListPanel() }
+          })
 
-          Column() {
-            PcEditorZone({
-              viewMode: this.editorViewMode, showFindBar: this.showFindBar,
-              editorContent: this.editorContent, wordCount: this.wordCount,
-              saveStatus: this.saveStatus, saveState: this.saveState,
-              sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
-              characters: this.charactersList,
-              worldSettings: this.worldSettings, inspirations: this.inspirations,
-              relationships: this.relationships, editorTabs: this.editorTabs,
-              graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
-              onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
-              onToggleFind: (): void => { this.toggleFind() },
-              onToggleAgent: (): void => { this.toggleAgent() },
-              onNewDoc: (): void => { this.newDoc() },
-              onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
-              onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
-              onToggleFullscreen: (): void => { this.toggleFullscreen() },
-              onRetrySave: (): void => { this.retrySave() },
-              onUndo: (): void => { this.undo() },
-              onRedo: (): void => { this.redo() },
-              onPushUndo: (): void => { this.pushUndo() },
-              onToggleSprint: (): void => { this.toggleSprint() },
-              onExportTxt: (): void => { this.exportTxt() },
-              onExportMd: (): void => { this.exportMd() },
-              onExportJson: (): void => { this.exportJson() },
-              onAddCharacter: (): void => { this.addCharacter() },
-              onAddWorldSetting: (): void => { this.addWorldSetting() },
-              onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
-            })
-          }.layoutWeight(1).height('100%')
+          Navigation(this.navPathStack) {
+            Column() {
+              NavDestination() {
+                PcEditorZone({
+                  viewMode: this.editorViewMode, showFindBar: this.showFindBar,
+                  editorContent: this.editorContent, wordCount: this.wordCount,
+                  saveStatus: this.saveStatus, saveState: this.saveState,
+                  sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
+                  characters: this.charactersList,
+                  worldSettings: this.worldSettings, inspirations: this.inspirations,
+                  relationships: this.relationships, editorTabs: this.editorTabs,
+                  graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
+                  onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
+                  onToggleFind: (): void => { this.toggleFind() },
+                  onToggleAgent: (): void => { this.toggleAgent() },
+                  onNewDoc: (): void => { this.newDoc() },
+                  onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
+                  onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
+                  onToggleFullscreen: (): void => { this.toggleFullscreen() },
+                  onRetrySave: (): void => { this.retrySave() },
+                  onUndo: (): void => { this.undo() },
+                  onRedo: (): void => { this.redo() },
+                  onPushUndo: (): void => { this.pushUndo() },
+                  onToggleSprint: (): void => { this.toggleSprint() },
+                  onExportTxt: (): void => { this.exportTxt() },
+                  onExportMd: (): void => { this.exportMd() },
+                  onExportJson: (): void => { this.exportJson() },
+                  onAddCharacter: (): void => { this.addCharacter() },
+                  onAddWorldSetting: (): void => { this.addWorldSetting() },
+                  onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
+                })
+              }.title('').backgroundColor(this.getColors().EDITOR_BG)
+            }.width('100%').height('100%')
+          }
+          .mode(this.navMode)
+          .hideTitleBar(true)
+          .layoutWeight(1).height('100%')
 
           if (this.showAgentPanel) {
             PcAgentPanel({ show: this.showAgentPanel,
