@@ -6,6 +6,8 @@ import type { CharacterModel, RelationshipModel } from '@ohos/common'
 export struct RelationLabelSheet {
   @Prop characters: CharacterModel[] = []
   @Prop bookId: string = ''
+  @Prop initialCharAId: string = ''
+  @Prop initialCharBId: string = ''
   @State selectedCharAIndex: number = -1
   @State selectedCharBIndex: number = -1
   @State selectedType: string = 'neutral'
@@ -14,6 +16,15 @@ export struct RelationLabelSheet {
   @State showCharAPicker: boolean = false
   @State showCharBPicker: boolean = false
   onChange?: () => void
+
+  aboutToAppear(): void {
+    if (this.initialCharAId !== '') {
+      this.selectedCharAIndex = this.characters.findIndex((c: CharacterModel) => c.id === this.initialCharAId)
+    }
+    if (this.initialCharBId !== '') {
+      this.selectedCharBIndex = this.characters.findIndex((c: CharacterModel) => c.id === this.initialCharBId)
+    }
+  }
 
   build() {
     Column() {

@@ -26,7 +26,7 @@ export class SemanticColors {
   static readonly FONT_PRIMARY: string   = GrayColors.G900
   static readonly FONT_SECONDARY: string = GrayColors.G700
   static readonly FONT_TERTIARY: string  = GrayColors.G300
-  static readonly INTERACTIVE_PRIMARY: string   = GreenColors.G500
+  static readonly INTERACTIVE_PRIMARY: string   = '#007DFF'
   static readonly INTERACTIVE_HOVER: string     = GreenColors.G700
   static readonly INTERACTIVE_SECONDARY: string = GreenColors.G300
   static readonly BORDER_DEFAULT: string = GrayColors.G100

@@ -146,14 +146,31 @@ export struct MaterialTabPage {
 
       if (this.books.length === 0) {
         Column() {
-          Text('📚').fontSize(48).margin({ bottom: 16 })
-          Text('还没有书籍').fontSize(18).fontColor(GrayColors.G700)
-          Text('先创建一本书，再添加人物与设定')
-            .fontSize(13).fontColor(GrayColors.G300).margin({ top: 8 })
-          Button('创建书籍')
-            .fontSize(14).fontColor('#FFFFFF').margin({ top: 20 })
-            .backgroundColor(GreenColors.G500).borderRadius(8)
-            .padding({ left: 24, right: 24, top: 10, bottom: 10 })
+          Column() {
+            Text('📚').fontSize(40)
+          }
+          .width(80).height(80)
+          .borderRadius(40)
+          .backgroundColor(GreenColors.G50)
+          .justifyContent(FlexAlign.Center)
+          .margin({ bottom: 20 })
+
+          Text('还没有书籍').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(GrayColors.G900)
+            .margin({ bottom: 8 })
+
+          Text('创建一本书，开始构建你的角色、世界与故事')
+            .fontSize(14).fontColor(GrayColors.G500)
+            .textAlign(TextAlign.Center)
+            .width('80%')
+            .margin({ bottom: 24 })
+
+          Button('创建第一本书')
+            .fontSize(15).fontColor('#FFFFFF')
+            .backgroundColor(GreenColors.G500)
+            .borderRadius(24)
+            .padding({ left: 32, right: 32, top: 12, bottom: 12 })
+            .shadow({ radius: 8, color: '#20000000', offsetY: 4 })
             .onClick(() => { this.createBookAndSelect() })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)

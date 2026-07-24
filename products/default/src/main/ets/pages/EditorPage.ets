@@ -2,6 +2,7 @@
 import { router } from '@kit.ArkUI'
 import { PreferenceHelper, SemanticColors, GrayColors, GreenColors, DEFAULT_THEME, IdGenerator } from '@ohos/common'
 import { BookDao, ChapterDao, SideDrawer } from '@ohos/editor'
+import { AgentSheet } from '@ohos/agent'
 import type { PaperTheme, BookModel, ChapterModel } from '@ohos/common'
 
 @Component
@@ -120,10 +121,11 @@ export struct EditorPage {
       clearTimeout(this.saveTimer)
     }
     const chapterId: string = this.currentChapterId
+    const content: string = value
     this.saveTimer = setTimeout(() => {
       if (chapterId !== '') {
         const dao: ChapterDao = new ChapterDao()
-        dao.updateContent(chapterId, this.chapterContent)
+        dao.updateContent(chapterId, content)
       }
     }, 800)
   }
@@ -131,20 +133,12 @@ export struct EditorPage {
   // ===== Agent Sheet content =====
   @Builder
   buildAgentContent() {
-    Column() {
-      Text('AI 写作伴侣').fontSize(18).fontWeight(FontWeight.Bold).padding(16)
-      Text('你好！我是 Weaver 写作伴侣。')
-        .fontSize(14).fontColor(GrayColors.G700).padding(16)
-      Text('此功能正在开发中，敬请期待。')
-        .fontSize(14).fontColor(GrayColors.G300).padding(16)
-      Blank()
-      Button('关闭').width('80%')
-        .onClick(() => { this.showAgentSheet = false })
-        .margin({ bottom: 24 })
-    }
-    .width('100%').height('100%')
-    .backgroundColor(SemanticColors.BG_CARD)
-    .borderRadius({ topLeft: 16, topRight: 16 })
+    AgentSheet({
+      currentBookId: this.currentBookId,
+      currentChapterId: this.currentChapterId,
+      chapterTitle: this.chapterTitle,
+      chapterContent: this.chapterContent
+    })
   }
 
   build() {
@@ -176,6 +170,41 @@ export struct EditorPage {
 
         // Writing Area
         Stack() {
+          if (this.currentBookId === '' && this.currentChapterId === '') {
+            Column() {
+              Column() {
+                Text('✏️').fontSize(40)
+              }
+              .width(80).height(80)
+              .borderRadius(40)
+              .backgroundColor(GreenColors.G50)
+              .justifyContent(FlexAlign.Center)
+              .margin({ bottom: 20 })
+
+              Text('开始你的创作').fontSize(20).fontWeight(FontWeight.Bold)
+                .fontColor(GrayColors.G900)
+                .margin({ bottom: 8 })
+
+              Text('点击左上角菜单创建书籍与章节')
+                .fontSize(14).fontColor(GrayColors.G500)
+                .textAlign(TextAlign.Center)
+                .width('80%')
+                .margin({ bottom: 24 })
+
+              Button('打开菜单')
+                .fontSize(15).fontColor('#FFFFFF')
+                .backgroundColor(GreenColors.G500)
+                .borderRadius(24)
+                .padding({ left: 32, right: 32, top: 12, bottom: 12 })
+                .shadow({ radius: 8, color: '#20000000', offsetY: 4 })
+                .onClick(() => { this.showDrawer = true })
+            }
+            .width('100%').height('100%').justifyContent(FlexAlign.Center)
+            .backgroundColor(this.paperTheme.backgroundColor)
+          }
+
+          if (!(this.currentBookId === '' && this.currentChapterId === '')) {
+
           if (this.paperTheme.type === 'custom_image' && this.paperTheme.customImagePath !== '') {
             Image(this.paperTheme.customImagePath)
               .width('100%').height('100%').objectFit(ImageFit.Cover)
@@ -196,6 +225,8 @@ export struct EditorPage {
             .backgroundColor(Color.Transparent)
             .padding(16).layoutWeight(1)
             .onChange((value: string) => { this.onContentChange(value) })
+
+          }
         }
         .layoutWeight(1)
 

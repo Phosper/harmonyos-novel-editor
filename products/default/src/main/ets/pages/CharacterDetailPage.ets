@@ -1,8 +1,22 @@
 // CharacterDetailPage.ets
 import { router } from '@kit.ArkUI'
-import { SemanticColors, GrayColors, GreenColors, IdGenerator } from '@ohos/common'
+import { SemanticColors, GrayColors, GreenColors, IdGenerator, GraphColors } from '@ohos/common'
 import { CharacterDao } from '@ohos/material'
 import type { CharacterModel } from '@ohos/common'
+
+interface CharTypeItem {
+  value: string
+  label: string
+  color: string
+}
+
+const CHAR_TYPES: CharTypeItem[] = [
+  { value: 'protagonist', label: '主角', color: GraphColors.NODE_MAIN },
+  { value: 'support', label: '配角', color: GraphColors.NODE_SUPPORT },
+  { value: 'villain', label: '反派', color: GraphColors.NODE_VILLAIN },
+  { value: 'org', label: '组织', color: GraphColors.NODE_ORG },
+  { value: 'place', label: '地点', color: GraphColors.NODE_PLACE }
+]
 
 @Entry
 @Component
@@ -16,6 +30,7 @@ struct CharacterDetailPage {
   @State personality: string = ''
   @State backgroundText: string = ''
   @State notes: string = ''
+  @State characterType: string = 'support'
   @State isNew: boolean = false
 
   aboutToAppear(): void {
@@ -60,6 +75,7 @@ struct CharacterDetailPage {
       this.personality = model.personality
       this.backgroundText = model.background
       this.notes = model.notes
+      this.characterType = model.characterType
       this.bookId = model.bookId
     }
   }
@@ -82,7 +98,8 @@ struct CharacterDetailPage {
         appearance: this.appearance,
         personality: this.personality,
         background: this.backgroundText,
-        notes: this.notes
+        notes: this.notes,
+        characterType: this.characterType
       }
       await dao.insert(model)
     } else {
@@ -95,7 +112,8 @@ struct CharacterDetailPage {
         appearance: this.appearance,
         personality: this.personality,
         background: this.backgroundText,
-        notes: this.notes
+        notes: this.notes,
+        characterType: this.characterType
       }
       await dao.update(this.characterId, model)
     }
@@ -152,6 +170,28 @@ struct CharacterDetailPage {
           }
           .width('100%').height(48).padding({ left: 16, right: 16 })
           .backgroundColor(SemanticColors.BG_CARD)
+
+          Divider().width('100%').height(1).color(SemanticColors.BORDER_DEFAULT)
+
+          // 角色类型
+          Column() {
+            Text('角色类型').fontSize(14).fontColor(GrayColors.G500)
+              .width('100%').padding({ left: 16, top: 12, bottom: 8 })
+            Row({ space: 8 }) {
+              ForEach(CHAR_TYPES, (item: CharTypeItem) => {
+                Button(item.label)
+                  .fontSize(12)
+                  .height(32)
+                  .padding({ left: 12, right: 12 })
+                  .fontColor(this.characterType === item.value ? '#FFFFFF' : GrayColors.G700)
+                  .backgroundColor(this.characterType === item.value ? item.color : GrayColors.G50)
+                  .borderRadius(16)
+                  .onClick(() => { this.characterType = item.value })
+              }, (item: CharTypeItem) => item.value)
+            }
+            .width('100%').padding({ left: 16, right: 16, bottom: 12 })
+          }
+          .width('100%').backgroundColor(SemanticColors.BG_CARD)
 
           Divider().width('100%').height(1).color(SemanticColors.BORDER_DEFAULT)
 

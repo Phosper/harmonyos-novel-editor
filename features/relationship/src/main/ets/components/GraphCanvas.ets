@@ -32,6 +32,8 @@ export struct GraphCanvas {
   @Link selectedRelId: string
   onNodeTap?: (characterId: string) => void
   onNodeLongPress?: (characterId: string) => void
+  onSwipeConnect?: (fromId: string, toId: string) => void
+  onDoubleTapCanvas?: () => void
 
   @State canvasW: number = 300
   @State canvasH: number = 300
@@ -39,6 +41,8 @@ export struct GraphCanvas {
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings)
   private lastPanX: number = 0
   private lastPanY: number = 0
+  private swipeFromNodeId: string = ''
+  private isSwipeConnect: boolean = false
 
   onGraphChanged(): void {
     this.performLayout()
@@ -213,6 +217,14 @@ export struct GraphCanvas {
                     this.onNodeLongPress(node.characterId)
                   }
                 }),
+              TapGesture({ count: 2 })
+                .onAction((event: GestureEvent) => {
+                  const node: GraphNode | null = this.canvasToNodeCoord(event.fingerList[0].localX,
+                    event.fingerList[0].localY)
+                  if (node === null && this.onDoubleTapCanvas) {
+                    this.onDoubleTapCanvas()
+                  }
+                }),
               TapGesture({ count: 1 })
                 .onAction((event: GestureEvent) => {
                   const node: GraphNode | null = this.canvasToNodeCoord(event.fingerList[0].localX,
@@ -222,14 +234,38 @@ export struct GraphCanvas {
                   }
                 }),
               PanGesture({ fingers: 1, direction: PanDirection.All })
-                .onActionStart(() => {
+                .onActionStart((event: GestureEvent) => {
+                  const node: GraphNode | null = this.canvasToNodeCoord(event.fingerList[0].localX,
+                    event.fingerList[0].localY)
+                  if (node !== null && this.onSwipeConnect) {
+                    this.swipeFromNodeId = node.characterId
+                    this.isSwipeConnect = true
+                  } else {
+                    this.swipeFromNodeId = ''
+                    this.isSwipeConnect = false
+                  }
                   this.lastPanX = this.panOffsetX
                   this.lastPanY = this.panOffsetY
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  this.panOffsetX = this.lastPanX + event.offsetX
-                  this.panOffsetY = this.lastPanY + event.offsetY
-                  this.draw()
+                  if (this.isSwipeConnect) {
+                    this.draw()
+                  } else {
+                    this.panOffsetX = this.lastPanX + event.offsetX
+                    this.panOffsetY = this.lastPanY + event.offsetY
+                    this.draw()
+                  }
+                })
+                .onActionEnd((event: GestureEvent) => {
+                  if (this.isSwipeConnect && this.swipeFromNodeId !== '' && this.onSwipeConnect) {
+                    const toNode: GraphNode | null = this.canvasToNodeCoord(event.fingerList[0].localX,
+                      event.fingerList[0].localY)
+                    if (toNode !== null && toNode.characterId !== this.swipeFromNodeId) {
+                      this.onSwipeConnect(this.swipeFromNodeId, toNode.characterId)
+                    }
+                  }
+                  this.swipeFromNodeId = ''
+                  this.isSwipeConnect = false
                 })
             )
           )

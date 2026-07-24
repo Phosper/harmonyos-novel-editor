@@ -2,7 +2,7 @@
 import { relationalStore } from '@kit.ArkData'
 
 const DB_NAME: string = 'Weaver.db'
-const DB_VERSION: number = 1
+const DB_VERSION: number = 2
 
 export class DatabaseHelper {
   private store: relationalStore.RdbStore | null = null
@@ -26,6 +26,7 @@ export class DatabaseHelper {
     }
 
     this.store = await relationalStore.getRdbStore(context, config)
+    await this.store.executeSql('PRAGMA foreign_keys = ON')
     await this.createTables()
     return this.store
   }
@@ -46,6 +47,9 @@ export class DatabaseHelper {
         content TEXT NOT NULL DEFAULT '',
         sort_order INTEGER NOT NULL DEFAULT 0,
         word_count INTEGER NOT NULL DEFAULT 0,
+        is_fav INTEGER NOT NULL DEFAULT 0,
+        is_trash INTEGER NOT NULL DEFAULT 0,
+        is_private INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
@@ -60,6 +64,7 @@ export class DatabaseHelper {
         personality TEXT NOT NULL DEFAULT '',
         background TEXT NOT NULL DEFAULT '',
         notes TEXT NOT NULL DEFAULT '',
+        character_type TEXT NOT NULL DEFAULT 'support',
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
       )`,
       `CREATE TABLE IF NOT EXISTS world_settings (
@@ -96,6 +101,18 @@ export class DatabaseHelper {
     for (const sql of sqls) {
       await this.store!.executeSql(sql)
     }
+    try {
+      await this.store!.executeSql('ALTER TABLE characters ADD COLUMN character_type TEXT NOT NULL DEFAULT \'support\'')
+    } catch (e) { }
+    try {
+      await this.store!.executeSql('ALTER TABLE chapters ADD COLUMN is_fav INTEGER NOT NULL DEFAULT 0')
+    } catch (e) { }
+    try {
+      await this.store!.executeSql('ALTER TABLE chapters ADD COLUMN is_trash INTEGER NOT NULL DEFAULT 0')
+    } catch (e) { }
+    try {
+      await this.store!.executeSql('ALTER TABLE chapters ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0')
+    } catch (e) { }
   }
 
   getStore(): relationalStore.RdbStore {

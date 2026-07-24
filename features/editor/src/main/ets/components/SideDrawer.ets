@@ -92,7 +92,10 @@ export struct SideDrawer {
       order: order,
       wordCount: 0,
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      isFav: false,
+      isTrash: false,
+      isPrivate: false
     }
     await dao.insert(chapter)
     this.newChapterTitle = ''

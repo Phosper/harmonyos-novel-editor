@@ -18,7 +18,8 @@ export class CharacterDao {
       appearance: model.appearance,
       personality: model.personality,
       background: model.background,
-      notes: model.notes
+      notes: model.notes,
+      character_type: model.characterType
     }
     await this.getStore().insert('characters', valueBucket)
   }
@@ -31,7 +32,8 @@ export class CharacterDao {
       appearance: model.appearance,
       personality: model.personality,
       background: model.background,
-      notes: model.notes
+      notes: model.notes,
+      character_type: model.characterType
     }
     const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates('characters')
     predicates.equalTo('id', id)
@@ -58,7 +60,8 @@ export class CharacterDao {
         appearance: resultSet.getString(resultSet.getColumnIndex('appearance')),
         personality: resultSet.getString(resultSet.getColumnIndex('personality')),
         background: resultSet.getString(resultSet.getColumnIndex('background')),
-        notes: resultSet.getString(resultSet.getColumnIndex('notes'))
+        notes: resultSet.getString(resultSet.getColumnIndex('notes')),
+        characterType: this.getColumnString(resultSet, 'character_type', 'support')
       }
       resultSet.close()
       return model
@@ -82,7 +85,8 @@ export class CharacterDao {
         appearance: resultSet.getString(resultSet.getColumnIndex('appearance')),
         personality: resultSet.getString(resultSet.getColumnIndex('personality')),
         background: resultSet.getString(resultSet.getColumnIndex('background')),
-        notes: resultSet.getString(resultSet.getColumnIndex('notes'))
+        notes: resultSet.getString(resultSet.getColumnIndex('notes')),
+        characterType: this.getColumnString(resultSet, 'character_type', 'support')
       })
     }
     resultSet.close()
@@ -103,10 +107,20 @@ export class CharacterDao {
         appearance: resultSet.getString(resultSet.getColumnIndex('appearance')),
         personality: resultSet.getString(resultSet.getColumnIndex('personality')),
         background: resultSet.getString(resultSet.getColumnIndex('background')),
-        notes: resultSet.getString(resultSet.getColumnIndex('notes'))
+        notes: resultSet.getString(resultSet.getColumnIndex('notes')),
+        characterType: this.getColumnString(resultSet, 'character_type', 'support')
       })
     }
     resultSet.close()
     return models
+  }
+
+  private getColumnString(rs: relationalStore.ResultSet, column: string, defaultValue: string): string {
+    const idx: number = rs.getColumnIndex(column)
+    if (idx < 0) {
+      return defaultValue
+    }
+    const val: string = rs.getString(idx)
+    return val !== '' ? val : defaultValue
   }
 }

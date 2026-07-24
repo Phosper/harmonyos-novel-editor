@@ -11,6 +11,9 @@ export class PrefKeys {
   static readonly PAPER_THEME: string       = 'paper_theme'
   static readonly PRIVACY_SHIELD: string    = 'privacy_shield'
   static readonly FONT_SIZE: string         = 'font_size'
+  static readonly PAPER_BG: string          = 'paper_background'
+  static readonly PAPER_TEXT: string        = 'paper_text_color'
+  static readonly PANEL_STATE: string       = 'panel_fold_state'
 }
 
 export class PreferenceHelper {

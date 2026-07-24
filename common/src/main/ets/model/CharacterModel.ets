@@ -10,4 +10,5 @@ export interface CharacterModel {
   personality: string
   background: string
   notes: string
+  characterType: string
 }

@@ -4,8 +4,8 @@ import { PreferenceHelper, SemanticColors, GrayColors, GreenColors, IdGenerator 
 import { CharacterDao } from '@ohos/material'
 import { RelationshipDao, GraphCanvas, RelationLabelSheet } from '@ohos/relationship'
 import type { GraphNode, GraphEdge } from '@ohos/relationship'
-import { BookDao } from '@ohos/editor'
-import type { CharacterModel, RelationshipModel, BookModel } from '@ohos/common'
+import { BookDao, ChapterDao } from '@ohos/editor'
+import type { CharacterModel, RelationshipModel, BookModel, ChapterModel } from '@ohos/common'
 
 @Component
 export struct RelationshipTabPage {
@@ -24,6 +24,13 @@ export struct RelationshipTabPage {
   @StorageLink('active_tab_index') @Watch('onTabVisited') activeTabIndex: number = 0
   @State contextMenuX: number = 0
   @State contextMenuY: number = 0
+  @State chapters: ChapterModel[] = []
+  @State selectedChapterId: string = ''
+  @State showChapterPicker: boolean = false
+  @State showNewCharDialog: boolean = false
+  @State newCharName: string = ''
+  private swipeConnectFromId: string = ''
+  private swipeConnectToId: string = ''
 
   onTabVisited(): void {
     // Relationship tab is index 2 in professional mode
@@ -46,6 +53,7 @@ export struct RelationshipTabPage {
     if (bookId !== '') {
       this.currentBookId = bookId
       await this.loadData()
+      await this.loadChapters()
     }
   }
 
@@ -65,10 +73,12 @@ export struct RelationshipTabPage {
   }
 
   buildGraphData(): void {
+    const chapterContent: string = this.getSelectedChapterContent()
     const nodes: GraphNode[] = []
     for (let i: number = 0; i < this.characters.length; i++) {
       const ch: CharacterModel = this.characters[i]
-      const nodeType: string = i === 0 ? 'protagonist' : 'support'
+      const nodeType: string = ch.characterType !== '' ? ch.characterType : 'support'
+      const isInChapter: boolean = chapterContent !== '' && chapterContent.indexOf(ch.name) >= 0
       nodes.push({
         characterId: ch.id,
         name: ch.name,
@@ -76,8 +86,8 @@ export struct RelationshipTabPage {
         x: 0,
         y: 0,
         radius: 30,
-        isHighlighted: false,
-        isDimmed: false
+        isHighlighted: chapterContent !== '' && isInChapter,
+        isDimmed: chapterContent !== '' && !isInChapter
       })
     }
     this.graphNodes = nodes
@@ -94,6 +104,69 @@ export struct RelationshipTabPage {
       })
     }
     this.graphEdges = edges
+  }
+
+  getSelectedChapterContent(): string {
+    if (this.selectedChapterId === '') {
+      return ''
+    }
+    const chapter: ChapterModel | undefined = this.chapters.find(
+      (c: ChapterModel) => c.id === this.selectedChapterId
+    )
+    return chapter !== undefined ? chapter.content : ''
+  }
+
+  async loadChapters(): Promise<void> {
+    if (this.currentBookId === '') {
+      return
+    }
+    const dao: ChapterDao = new ChapterDao()
+    this.chapters = await dao.queryByBook(this.currentBookId)
+  }
+
+  onChapterFilterChange(chapterId: string): void {
+    this.selectedChapterId = chapterId
+    this.showChapterPicker = false
+    this.buildGraphData()
+  }
+
+  clearChapterFilter(): void {
+    this.selectedChapterId = ''
+    this.buildGraphData()
+  }
+
+  handleSwipeConnect(fromId: string, toId: string): void {
+    this.swipeConnectFromId = fromId
+    this.swipeConnectToId = toId
+    this.showAddSheet = true
+  }
+
+  handleDoubleTapCanvas(): void {
+    this.showNewCharDialog = true
+    this.newCharName = ''
+  }
+
+  async createCharacterFromCanvas(): Promise<void> {
+    if (this.newCharName.trim() === '' || this.currentBookId === '') {
+      return
+    }
+    const dao: CharacterDao = new CharacterDao()
+    const model: CharacterModel = {
+      id: IdGenerator.generate(),
+      bookId: this.currentBookId,
+      name: this.newCharName.trim(),
+      alias: '',
+      age: '',
+      appearance: '',
+      personality: '',
+      background: '',
+      notes: '',
+      characterType: 'support'
+    }
+    await dao.insert(model)
+    this.showNewCharDialog = false
+    this.newCharName = ''
+    await this.loadData()
   }
 
   async deleteRelationship(relId: string): Promise<void> {
@@ -128,8 +201,12 @@ export struct RelationshipTabPage {
     RelationLabelSheet({
       characters: this.characters,
       bookId: this.currentBookId,
+      initialCharAId: this.swipeConnectFromId,
+      initialCharBId: this.swipeConnectToId,
       onChange: () => {
         this.showAddSheet = false
+        this.swipeConnectFromId = ''
+        this.swipeConnectToId = ''
         this.loadData()
       }
     })
@@ -161,17 +238,98 @@ export struct RelationshipTabPage {
             .backgroundColor(GreenColors.G500)
             .borderRadius(8)
             .padding({ left: 12, right: 12 })
-            .onClick(() => { this.showAddSheet = true })
+            .onClick(() => {
+              this.swipeConnectFromId = ''
+              this.swipeConnectToId = ''
+              this.showAddSheet = true
+            })
         }
         .width('100%').height(48).padding({ left: 16, right: 16 })
         .backgroundColor(SemanticColors.BG_CARD)
 
+        // Chapter filter bar (only visible when chapters exist)
+        if (this.chapters.length > 0 && this.currentBookId !== '') {
+          Row() {
+            Column() {
+              Row() {
+                Text(this.selectedChapterId === '' ? '全部章节' : '筛选：' +
+                  (this.chapters.find((c: ChapterModel) => c.id === this.selectedChapterId)?.title ?? ''))
+                  .fontSize(12).fontColor(GrayColors.G500).layoutWeight(1)
+                Text(this.showChapterPicker ? '▲' : '▼').fontSize(10).fontColor(GrayColors.G300)
+              }
+              .width('100%').height(32).padding({ left: 12, right: 12 })
+              .borderRadius(8)
+              .border({ width: 1, color: SemanticColors.BORDER_DEFAULT })
+              .backgroundColor(SemanticColors.BG_CARD)
+              .onClick(() => { this.showChapterPicker = !this.showChapterPicker })
+
+              if (this.showChapterPicker) {
+                Column() {
+                  Row() {
+                    Text('全部章节').fontSize(13)
+                      .fontColor(this.selectedChapterId === '' ? GreenColors.G500 : GrayColors.G700)
+                      .layoutWeight(1)
+                    if (this.selectedChapterId === '') {
+                      Text('✓').fontSize(13).fontColor(GreenColors.G500)
+                    }
+                  }
+                  .width('100%').height(36).padding({ left: 12, right: 12 })
+                  .onClick(() => { this.clearChapterFilter() })
+
+                  ForEach(this.chapters, (ch: ChapterModel) => {
+                    Row() {
+                      Text(ch.title).fontSize(13)
+                        .fontColor(ch.id === this.selectedChapterId ? GreenColors.G500 : GrayColors.G700)
+                        .layoutWeight(1)
+                      if (ch.id === this.selectedChapterId) {
+                        Text('✓').fontSize(13).fontColor(GreenColors.G500)
+                      }
+                    }
+                    .width('100%').height(36).padding({ left: 12, right: 12 })
+                    .onClick(() => { this.onChapterFilterChange(ch.id) })
+                  }, (ch: ChapterModel) => ch.id)
+                }
+                .width('100%')
+                .constraintSize({ maxHeight: 200 })
+                .borderRadius(8)
+                .border({ width: 1, color: SemanticColors.BORDER_DEFAULT })
+                .backgroundColor(SemanticColors.BG_CARD)
+                .position({ x: 0, y: 33 })
+              }
+            }
+            .width(180)
+            .zIndex(10)
+
+            if (this.selectedChapterId !== '') {
+              Button('清除筛选')
+                .fontSize(11).height(26)
+                .fontColor(GrayColors.G300).backgroundColor(Color.Transparent)
+                .onClick(() => { this.clearChapterFilter() })
+            }
+          }
+          .width('100%').padding({ left: 16, right: 16, top: 6, bottom: 6 })
+          .justifyContent(FlexAlign.Start)
+        }
+
         if (this.characters.length === 0) {
           Column() {
-            Text('🕸').fontSize(48).margin({ bottom: 16 })
-            Text('暂无人物').fontSize(18).fontColor(GrayColors.G700)
-            Text('先在「素材」中添加人物')
-              .fontSize(13).fontColor(GrayColors.G300).margin({ top: 8 })
+            Column() {
+              Text('🕸').fontSize(40)
+            }
+            .width(80).height(80)
+            .borderRadius(40)
+            .backgroundColor(GreenColors.G50)
+            .justifyContent(FlexAlign.Center)
+            .margin({ bottom: 20 })
+
+            Text('暂无人物').fontSize(20).fontWeight(FontWeight.Bold)
+              .fontColor(GrayColors.G900)
+              .margin({ bottom: 8 })
+
+            Text('先在「素材」页中为当前书籍添加人物，或双击画布创建')
+              .fontSize(14).fontColor(GrayColors.G500)
+              .textAlign(TextAlign.Center)
+              .width('80%')
           }
           .width('100%').layoutWeight(1)
           .justifyContent(FlexAlign.Center)
@@ -187,7 +345,9 @@ export struct RelationshipTabPage {
                 canvasScale: $canvasScale,
                 selectedRelId: $selectedRelId,
                 onNodeTap: (characterId: string) => { this.handleNodeTap(characterId) },
-                onNodeLongPress: (characterId: string) => { this.handleNodeLongPress(characterId) }
+                onNodeLongPress: (characterId: string) => { this.handleNodeLongPress(characterId) },
+                onSwipeConnect: (fromId: string, toId: string) => { this.handleSwipeConnect(fromId, toId) },
+                onDoubleTapCanvas: () => { this.handleDoubleTapCanvas() }
               })
             }
             .width('100%').height(0).layoutWeight(1)
@@ -286,6 +446,52 @@ export struct RelationshipTabPage {
         .shadow({ radius: 16, color: '#10000000', offsetY: 4 })
         .position({ x: '50%', y: '40%' })
         .translate({ x: -90, y: 0 })
+      }
+
+      // New character dialog from canvas double-tap
+      if (this.showNewCharDialog) {
+        Column() {
+          Column() {
+            Text('新建人物').fontSize(16).fontWeight(FontWeight.Bold)
+              .fontColor(GrayColors.G900)
+              .width('100%').textAlign(TextAlign.Center)
+              .padding({ top: 20, bottom: 16 })
+
+            TextInput({ text: $$this.newCharName, placeholder: '输入人物姓名' })
+              .fontSize(14)
+              .height(44)
+              .borderRadius(8)
+              .backgroundColor(SemanticColors.BG_SURFACE)
+              .padding({ left: 12, right: 12 })
+              .margin({ left: 16, right: 16, bottom: 16 })
+
+            Row({ space: 12 }) {
+              Button('取消')
+                .fontSize(14).height(40).layoutWeight(1)
+                .fontColor(GrayColors.G700).backgroundColor(GrayColors.G50).borderRadius(8)
+                .onClick(() => {
+                  this.showNewCharDialog = false
+                  this.newCharName = ''
+                })
+              Button('创建')
+                .fontSize(14).height(40).layoutWeight(1)
+                .fontColor('#FFFFFF').backgroundColor(GreenColors.G500).borderRadius(8)
+                .onClick(() => { this.createCharacterFromCanvas() })
+            }
+            .width('100%').padding({ left: 16, right: 16, bottom: 20 })
+          }
+          .width('80%')
+          .borderRadius(16)
+          .backgroundColor(SemanticColors.BG_CARD)
+          .shadow({ radius: 20, color: '#20000000', offsetY: 8 })
+        }
+        .width('100%').height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor('#40000000')
+        .onClick(() => {
+          this.showNewCharDialog = false
+          this.newCharName = ''
+        })
       }
     }
     .width('100%').height('100%')

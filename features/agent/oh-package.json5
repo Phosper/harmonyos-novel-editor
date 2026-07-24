@@ -6,6 +6,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@ohos/common": "file:../../common"
+    "@ohos/common": "file:../../common",
+    "@ohos/editor": "file:../editor",
+    "@ohos/material": "file:../material"
   }
 }

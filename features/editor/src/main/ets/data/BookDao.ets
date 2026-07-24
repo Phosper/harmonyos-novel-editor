@@ -31,9 +31,32 @@ export class BookDao {
   }
 
   async delete(id: string): Promise<void> {
-    const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates('books')
+    const store: relationalStore.RdbStore = this.getStore()
+    let predicates: relationalStore.RdbPredicates
+
+    predicates = new relationalStore.RdbPredicates('relationships')
+    predicates.equalTo('book_id', id)
+    await store.delete(predicates)
+
+    predicates = new relationalStore.RdbPredicates('chapters')
+    predicates.equalTo('book_id', id)
+    await store.delete(predicates)
+
+    predicates = new relationalStore.RdbPredicates('characters')
+    predicates.equalTo('book_id', id)
+    await store.delete(predicates)
+
+    predicates = new relationalStore.RdbPredicates('world_settings')
+    predicates.equalTo('book_id', id)
+    await store.delete(predicates)
+
+    predicates = new relationalStore.RdbPredicates('inspirations')
+    predicates.equalTo('book_id', id)
+    await store.delete(predicates)
+
+    predicates = new relationalStore.RdbPredicates('books')
     predicates.equalTo('id', id)
-    await this.getStore().delete(predicates)
+    await store.delete(predicates)
   }
 
   async queryById(id: string): Promise<BookModel | null> {

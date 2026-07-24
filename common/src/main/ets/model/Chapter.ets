@@ -9,4 +9,7 @@ export interface ChapterModel {
   wordCount: number
   createdAt: number
   updatedAt: number
+  isFav: boolean
+  isTrash: boolean
+  isPrivate: boolean
 }
