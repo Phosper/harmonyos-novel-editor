@@ -162,14 +162,16 @@ export struct PcShell {
   toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.syncFromVm() }
   toggleFullscreen(): void {
     const isFullscreen: boolean = !this.vm.showSidebar || !this.vm.showDocList
-    if (isFullscreen) {
-      this.vm.showSidebar = true
-      this.vm.showDocList = true
-    } else {
-      this.vm.showSidebar = false
-      this.vm.showDocList = false
-    }
-    this.syncFromVm()
+    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
+      if (isFullscreen) {
+        this.vm.showSidebar = true
+        this.vm.showDocList = true
+      } else {
+        this.vm.showSidebar = false
+        this.vm.showDocList = false
+      }
+      this.syncFromVm()
+    })
   }
 
   retrySave(): void { this.vm.retrySave(); this.syncFromVm() }
@@ -251,6 +253,8 @@ export struct PcShell {
               onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
               onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) }
             }).width(300).height('100%')
+            .transition(TransitionEffect.translate({ x: -300 }).combine(TransitionEffect.OPACITY)
+              .animation({ duration: 250, curve: Curve.FastOutSlowIn }))
           }
 
           PcEditorZone({

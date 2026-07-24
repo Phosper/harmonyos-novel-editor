@@ -308,6 +308,19 @@ export struct PcEditorZone {
 
   @Builder buildTabBar() {
     Row() {
+      Button() { Text('⛶').fontSize(14).fontColor(this.getColors().TEXT_SECONDARY).accessibilityText('全屏模式') }
+      .width(28).height(28).backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
+      .stateStyles({
+        pressed: { .backgroundColor(this.getColors().CLICK_EFFECT) },
+        normal: { .backgroundColor(Color.Transparent) }
+      })
+      .onHover((isHover: boolean) => { this.hoveredToolId = isHover ? 'fullscreen' : '' })
+      .backgroundColor(this.hoveredToolId === 'fullscreen' ? this.getColors().HOVER_BG : Color.Transparent)
+      .animation({ duration: PcInteraction.HOVER_DURATION })
+      .focusable(true)
+      
+      .margin({ left: 4, right: 4 }).onClick(() => { this.onToggleFullscreen() })
+
       Scroll() {
         Row({ space: 2 }) {
           ForEach(this.editorTabs, (tab: TabItem) => {
@@ -358,22 +371,7 @@ export struct PcEditorZone {
           }, (tab: TabItem): string => tab.id)
         }.padding({ left: 4, right: 8 }).alignItems(VerticalAlign.Center)
       }
-      .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-
-      Blank()
-
-      Button() { Text('⛶').fontSize(14).fontColor(this.getColors().TEXT_SECONDARY).accessibilityText('全屏模式') }
-      .width(28).height(28).backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
-      .stateStyles({
-        pressed: { .backgroundColor(this.getColors().CLICK_EFFECT) },
-        normal: { .backgroundColor(Color.Transparent) }
-      })
-      .onHover((isHover: boolean) => { this.hoveredToolId = isHover ? 'fullscreen' : '' })
-      .backgroundColor(this.hoveredToolId === 'fullscreen' ? this.getColors().HOVER_BG : Color.Transparent)
-      .animation({ duration: PcInteraction.HOVER_DURATION })
-      .focusable(true)
-      
-      .margin({ right: 8 }).onClick(() => { this.onToggleFullscreen() })
+      .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
     }
     .width('100%').height(36).backgroundColor(this.getColors().TOOLBAR_BG)
     .hitTestBehavior(HitTestMode.Default)

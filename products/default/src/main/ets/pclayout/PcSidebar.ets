@@ -47,6 +47,13 @@ export struct PcSidebar {
 
   build() {
     Column() {
+      Row() {
+        Blank()
+        Button() { Text('◁').fontSize(16).fontColor(this.getColors().TEXT_SECONDARY).accessibilityText('收起侧边栏') }
+        .width(32).height(32).backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
+        .onClick(() => { this.onToggleFold() })
+      }.width('100%').height(36).padding({ left: 8, right: 8 })
+
       Button('+ 新建文稿')
         .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.getColors().EMPHASIZE)
         .backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
