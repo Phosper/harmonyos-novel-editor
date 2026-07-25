@@ -163,14 +163,11 @@ export struct PcShell {
   toggleSidebar(): void { this.vm.showSidebar = !this.vm.showSidebar; this.syncFromVm() }
   toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.syncFromVm() }
   toggleFullscreen(): void {
-    this.showFullscreen = !this.showFullscreen
-    if (this.showFullscreen) {
-      this.vm.showSidebar = false
-      this.vm.showDocList = false
-    } else {
-      this.vm.showSidebar = true
-      this.vm.showDocList = true
-    }
+    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
+      this.showFullscreen = !this.showFullscreen
+      this.vm.showSidebar = !this.showFullscreen
+      this.vm.showDocList = !this.showFullscreen
+    })
     this.syncFromVm()
   }
 
@@ -255,79 +252,62 @@ export struct PcShell {
     Column() {
       PcTitleBar()
 
-      if (this.showFullscreen) {
+      SideBarContainer(SideBarContainerType.Embed) {
         Column() {
-          this.buildEditorColumn()
+          PcSidebar({
+            projects: this.projItems,
+            activeLibId: this.activeLibId,
+            libCounts: this.libCounts,
+            statusBarPad: 0,
+            onChangeLib: (libId: string): void => { this.changeSidebarLib(libId) },
+            onNewDoc: (): void => { this.newDoc() },
+            onCreateProject: (name: string): void => { this.createProject(name) },
+            onSelectProject: (bookId: string): void => { this.selectProject(bookId) },
+            onToggleFold: (): void => { this.toggleSidebar() }
+          })
         }
-        .layoutWeight(1).height('100%')
 
-        if (this.showAgentPanel) {
-          PcAgentPanel({ show: this.showAgentPanel,
-            onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
-            onSend: (text: string): void => { text }
-          }).width(320).height('100%')
-        }
-      } else {
-        SideBarContainer(SideBarContainerType.Embed) {
+        Row() {
+          PcDocList({
+            listTitle: this.docListTitle, docItems: this.docItems,
+            showMidSeg: this.showMidSeg, statusBarPad: 0,
+            isTrashView: this.activeLibId === 'trash',
+            onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
+            onSearch: (text: string): void => {
+              this.docItems = this.vm.searchDocs(text)
+            },
+            onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
+            onNewDoc: (): void => { this.newDoc() },
+            onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
+            onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
+            onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) }
+          }).width(this.showDocList ? 300 : 0).height('100%')
+          .clip(true)
+
           Column() {
-            PcSidebar({
-              projects: this.projItems,
-              activeLibId: this.activeLibId,
-              libCounts: this.libCounts,
-              statusBarPad: 0,
-              onChangeLib: (libId: string): void => { this.changeSidebarLib(libId) },
-              onNewDoc: (): void => { this.newDoc() },
-              onCreateProject: (name: string): void => { this.createProject(name) },
-              onSelectProject: (bookId: string): void => { this.selectProject(bookId) },
-              onToggleFold: (): void => { this.toggleSidebar() }
-            })
+            this.buildEditorColumn()
+          }.layoutWeight(1).height('100%')
+
+          if (this.showAgentPanel) {
+            PcAgentPanel({ show: this.showAgentPanel,
+              onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
+              onSend: (text: string): void => { text }
+            }).width(320).height('100%')
           }
-
-          Row() {
-            if (this.showDocList) {
-              PcDocList({
-                listTitle: this.docListTitle, docItems: this.docItems,
-                showMidSeg: this.showMidSeg, statusBarPad: 0,
-                isTrashView: this.activeLibId === 'trash',
-                onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
-                onSearch: (text: string): void => {
-                  this.docItems = this.vm.searchDocs(text)
-                },
-                onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
-                onNewDoc: (): void => { this.newDoc() },
-                onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
-                onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
-                onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) }
-              }).width(300).height('100%')
-              .transition(TransitionEffect.translate({ x: -300 }).combine(TransitionEffect.OPACITY)
-                .animation({ duration: 250, curve: Curve.FastOutSlowIn }))
-            }
-
-            Column() {
-              this.buildEditorColumn()
-            }.layoutWeight(1).height('100%')
-
-            if (this.showAgentPanel) {
-              PcAgentPanel({ show: this.showAgentPanel,
-                onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
-                onSend: (text: string): void => { text }
-              }).width(320).height('100%')
-            }
-          }.width('100%').height('100%')
-        }
-        .sideBarWidth(240)
-        .minSideBarWidth(200)
-        .maxSideBarWidth(320)
-        .showSideBar(this.showSidebar)
-        .onChange((isShow: boolean) => { this.showSidebar = isShow })
-        .controlButton({
-          left: 4,
-          top: 4,
-          width: 28,
-          height: 28
-        })
-        .layoutWeight(1).width('100%')
+        }.width('100%').height('100%')
       }
+      .sideBarWidth(240)
+      .minSideBarWidth(200)
+      .maxSideBarWidth(320)
+      .showSideBar(this.showSidebar)
+      .onChange((isShow: boolean) => { this.showSidebar = isShow })
+      .controlButton({
+        left: this.showFullscreen ? -100 : 4,
+        top: 4,
+        width: 28,
+        height: 28
+      })
+      .layoutWeight(1).width('100%')
     }.width('100%').height('100%')
   }
 }
