@@ -84,10 +84,6 @@ export default class MainAbility extends UIAbility {
       const currentColorMode: number = this.context.config.colorMode ?? ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET
       AppStorage.setOrCreate('colorMode', currentColorMode)
 
-      // Hide native title bar and set custom decor height
-      await mainWin.setWindowDecorVisible(false)
-      await mainWin.setWindowDecorHeight(40)
-
       // Cache window for PcTitleBar interactions
       AppStorage.setOrCreate('mainWindow', mainWin)
 
@@ -102,6 +98,13 @@ export default class MainAbility extends UIAbility {
       windowStage.loadContent('pages/Index', (err) => {
         if (err.code) {
           hilog.error(DOMAIN, TAG, 'Index load failed: code=%{public}d', err.code)
+          return
+        }
+        try {
+          mainWin.setWindowDecorVisible(false)
+          mainWin.setWindowDecorHeight(40)
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, 'Window decor config failed')
         }
       })
     } catch (err) {
