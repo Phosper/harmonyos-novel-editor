@@ -369,11 +369,11 @@ export struct PcEditorZone {
             })
             .onClick(() => { this.onSelectTab(tab.id) }).margin({ top: 2, bottom: 2 })
           }, (tab: TabItem): string => tab.id)
-        }.padding({ left: 4, right: 8 }).alignItems(VerticalAlign.Center)
+        }.padding({ left: 4, right: 8 }).alignItems(VerticalAlign.Center).justifyContent(FlexAlign.Start)
       }
       .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
     }
-    .width('100%').height(36).backgroundColor(this.getColors().TOOLBAR_BG)
+    .width('100%').height(36).justifyContent(FlexAlign.Start).backgroundColor(this.getColors().TOOLBAR_BG)
     .hitTestBehavior(HitTestMode.Default)
     .border({ width: { bottom: 1 }, color: this.getColors().DIVIDER })
   }
