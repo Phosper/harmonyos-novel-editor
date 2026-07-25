@@ -301,8 +301,8 @@ export struct PcShell {
       .showSideBar(this.showSidebar)
       .onChange((isShow: boolean) => { this.showSidebar = isShow })
       .controlButton({
-        left: 8,
-        top: 8,
+        left: 4,
+        top: 4,
         width: 28,
         height: 28
       })

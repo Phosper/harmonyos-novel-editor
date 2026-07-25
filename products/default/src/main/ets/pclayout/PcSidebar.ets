@@ -48,6 +48,8 @@ export struct PcSidebar {
 
   build() {
     Column() {
+      Row() { Blank() }.width('100%').height(36)
+
       Button('+ 新建文稿')
         .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.getColors().EMPHASIZE)
         .backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
