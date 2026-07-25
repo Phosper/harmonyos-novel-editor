@@ -34,6 +34,7 @@ export struct PcShell {
   @State showAgentPanel: boolean = false
   @State showFindBar: boolean = false
   @State showSidebar: boolean = true
+  @State showFullscreen: boolean = false
   @State showDocList: boolean = true
   @State showMidSeg: boolean = false
   @State docListTitle: string = '📄 全部文稿'
@@ -162,17 +163,15 @@ export struct PcShell {
   toggleSidebar(): void { this.vm.showSidebar = !this.vm.showSidebar; this.syncFromVm() }
   toggleDocList(): void { this.vm.showDocList = !this.vm.showDocList; this.syncFromVm() }
   toggleFullscreen(): void {
-    const isFullscreen: boolean = !this.vm.showSidebar || !this.vm.showDocList
-    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-      if (isFullscreen) {
-        this.vm.showSidebar = true
-        this.vm.showDocList = true
-      } else {
-        this.vm.showSidebar = false
-        this.vm.showDocList = false
-      }
-      this.syncFromVm()
-    })
+    this.showFullscreen = !this.showFullscreen
+    if (this.showFullscreen) {
+      this.vm.showSidebar = false
+      this.vm.showDocList = false
+    } else {
+      this.vm.showSidebar = true
+      this.vm.showDocList = true
+    }
+    this.syncFromVm()
   }
 
   retrySave(): void { this.vm.retrySave(); this.syncFromVm() }
@@ -220,93 +219,115 @@ export struct PcShell {
     this.vm.destroy()
   }
 
+  @Builder
+  buildEditorColumn() {
+    PcEditorZone({
+      viewMode: this.editorViewMode, showFindBar: this.showFindBar,
+      editorContent: this.editorContent, wordCount: this.wordCount,
+      saveStatus: this.saveStatus, saveState: this.saveState,
+      sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
+      characters: this.charactersList,
+      worldSettings: this.worldSettings, inspirations: this.inspirations,
+      relationships: this.relationships, editorTabs: this.editorTabs,
+      graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
+      onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
+      onToggleFind: (): void => { this.toggleFind() },
+      onToggleAgent: (): void => { this.toggleAgent() },
+      onNewDoc: (): void => { this.newDoc() },
+      onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
+      onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
+      onToggleFullscreen: (): void => { this.toggleFullscreen() },
+      onRetrySave: (): void => { this.retrySave() },
+      onUndo: (): void => { this.undo() },
+      onRedo: (): void => { this.redo() },
+      onPushUndo: (): void => { this.pushUndo() },
+      onToggleSprint: (): void => { this.toggleSprint() },
+      onExportTxt: (): void => { this.exportTxt() },
+      onExportMd: (): void => { this.exportMd() },
+      onExportJson: (): void => { this.exportJson() },
+      onAddCharacter: (): void => { this.addCharacter() },
+      onAddWorldSetting: (): void => { this.addWorldSetting() },
+      onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
+    })
+  }
+
   build() {
     Column() {
       PcTitleBar()
-      SideBarContainer(SideBarContainerType.Embed) {
+
+      if (this.showFullscreen) {
         Column() {
-          PcSidebar({
-            projects: this.projItems,
-            activeLibId: this.activeLibId,
-            libCounts: this.libCounts,
-            statusBarPad: 0,
-            onChangeLib: (libId: string): void => { this.changeSidebarLib(libId) },
-            onNewDoc: (): void => { this.newDoc() },
-            onCreateProject: (name: string): void => { this.createProject(name) },
-            onSelectProject: (bookId: string): void => { this.selectProject(bookId) },
-            onToggleFold: (): void => { this.toggleSidebar() }
-          })
+          this.buildEditorColumn()
         }
+        .layoutWeight(1).height('100%')
 
-        Row() {
-          if (this.showDocList) {
-            PcDocList({
-              listTitle: this.docListTitle, docItems: this.docItems,
-              showMidSeg: this.showMidSeg, statusBarPad: 0,
-              isTrashView: this.activeLibId === 'trash',
-              onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
-              onSearch: (text: string): void => {
-                this.docItems = this.vm.searchDocs(text)
-              },
-              onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
+        if (this.showAgentPanel) {
+          PcAgentPanel({ show: this.showAgentPanel,
+            onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
+            onSend: (text: string): void => { text }
+          }).width(320).height('100%')
+        }
+      } else {
+        SideBarContainer(SideBarContainerType.Embed) {
+          Column() {
+            PcSidebar({
+              projects: this.projItems,
+              activeLibId: this.activeLibId,
+              libCounts: this.libCounts,
+              statusBarPad: 0,
+              onChangeLib: (libId: string): void => { this.changeSidebarLib(libId) },
               onNewDoc: (): void => { this.newDoc() },
-              onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
-              onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
-              onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) }
-            }).width(300).height('100%')
-            .transition(TransitionEffect.translate({ x: -300 }).combine(TransitionEffect.OPACITY)
-              .animation({ duration: 250, curve: Curve.FastOutSlowIn }))
+              onCreateProject: (name: string): void => { this.createProject(name) },
+              onSelectProject: (bookId: string): void => { this.selectProject(bookId) },
+              onToggleFold: (): void => { this.toggleSidebar() }
+            })
           }
 
-          PcEditorZone({
-            viewMode: this.editorViewMode, showFindBar: this.showFindBar,
-            editorContent: this.editorContent, wordCount: this.wordCount,
-            saveStatus: this.saveStatus, saveState: this.saveState,
-            sprintRemaining: this.sprintRemaining, sprintRunning: this.sprintRunning,
-            characters: this.charactersList,
-            worldSettings: this.worldSettings, inspirations: this.inspirations,
-            relationships: this.relationships, editorTabs: this.editorTabs,
-            graphNodes: $pcGraphNodes, graphEdges: $pcGraphEdges,
-            onContentChange: (value: string): void => { this.vm.onContentChange(value); this.syncFromVm() },
-            onToggleFind: (): void => { this.toggleFind() },
-            onToggleAgent: (): void => { this.toggleAgent() },
-            onNewDoc: (): void => { this.newDoc() },
-            onCloseTab: (tabId: string): void => { this.closeTab(tabId) },
-            onSelectTab: (tabId: string): void => { this.selectTab(tabId) },
-            onToggleFullscreen: (): void => { this.toggleFullscreen() },
-            onRetrySave: (): void => { this.retrySave() },
-            onUndo: (): void => { this.undo() },
-            onRedo: (): void => { this.redo() },
-            onPushUndo: (): void => { this.pushUndo() },
-            onToggleSprint: (): void => { this.toggleSprint() },
-            onExportTxt: (): void => { this.exportTxt() },
-            onExportMd: (): void => { this.exportMd() },
-            onExportJson: (): void => { this.exportJson() },
-            onAddCharacter: (): void => { this.addCharacter() },
-            onAddWorldSetting: (): void => { this.addWorldSetting() },
-            onReorderTab: (fromId: string, toId: string): void => { this.reorderTab(fromId, toId) }
-          }).layoutWeight(1).height('100%')
+          Row() {
+            if (this.showDocList) {
+              PcDocList({
+                listTitle: this.docListTitle, docItems: this.docItems,
+                showMidSeg: this.showMidSeg, statusBarPad: 0,
+                isTrashView: this.activeLibId === 'trash',
+                onChangeMidTab: (mode: MidTabMode): void => { this.onChangeMidTab(mode) },
+                onSearch: (text: string): void => {
+                  this.docItems = this.vm.searchDocs(text)
+                },
+                onSelectDoc: (docId: string): void => { this.selectDoc(docId) },
+                onNewDoc: (): void => { this.newDoc() },
+                onDeleteDoc: (docId: string): void => { this.deleteDoc(docId) },
+                onHardDelete: (docId: string): void => { this.confirmHardDelete(docId) },
+                onRestoreDoc: (docId: string): void => { this.restoreDoc(docId) }
+              }).width(300).height('100%')
+              .transition(TransitionEffect.translate({ x: -300 }).combine(TransitionEffect.OPACITY)
+                .animation({ duration: 250, curve: Curve.FastOutSlowIn }))
+            }
 
-          if (this.showAgentPanel) {
-            PcAgentPanel({ show: this.showAgentPanel,
-              onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
-              onSend: (text: string): void => { text }
-            }).width(320).height('100%')
-          }
-        }.width('100%').height('100%')
+            Column() {
+              this.buildEditorColumn()
+            }.layoutWeight(1).height('100%')
+
+            if (this.showAgentPanel) {
+              PcAgentPanel({ show: this.showAgentPanel,
+                onClose: (): void => { this.vm.showAgentPanel = false; this.syncFromVm() },
+                onSend: (text: string): void => { text }
+              }).width(320).height('100%')
+            }
+          }.width('100%').height('100%')
+        }
+        .sideBarWidth(240)
+        .minSideBarWidth(200)
+        .maxSideBarWidth(320)
+        .showSideBar(this.showSidebar)
+        .onChange((isShow: boolean) => { this.showSidebar = isShow })
+        .controlButton({
+          left: 4,
+          top: 4,
+          width: 28,
+          height: 28
+        })
+        .layoutWeight(1).width('100%')
       }
-      .sideBarWidth(240)
-      .minSideBarWidth(200)
-      .maxSideBarWidth(320)
-      .showSideBar(this.showSidebar)
-      .onChange((isShow: boolean) => { this.showSidebar = isShow })
-      .controlButton({
-        left: 4,
-        top: 4,
-        width: 28,
-        height: 28
-      })
-      .layoutWeight(1).width('100%')
     }.width('100%').height('100%')
   }
 }
