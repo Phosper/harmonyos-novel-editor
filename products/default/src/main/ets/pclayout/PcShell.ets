@@ -300,6 +300,12 @@ export struct PcShell {
       .maxSideBarWidth(320)
       .showSideBar(this.showSidebar)
       .onChange((isShow: boolean) => { this.showSidebar = isShow })
+      .controlButton({
+        left: 8,
+        top: 8,
+        width: 28,
+        height: 28
+      })
       .layoutWeight(1).width('100%')
     }.width('100%').height('100%')
   }

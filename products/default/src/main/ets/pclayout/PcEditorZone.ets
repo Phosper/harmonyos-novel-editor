@@ -372,6 +372,7 @@ export struct PcEditorZone {
         }.padding({ left: 4, right: 8 }).alignItems(VerticalAlign.Center).justifyContent(FlexAlign.Start)
       }
       .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+      .align(Alignment.TopStart)
     }
     .width('100%').height(36).justifyContent(FlexAlign.Start).backgroundColor(this.getColors().TOOLBAR_BG)
     .hitTestBehavior(HitTestMode.Default)

@@ -48,22 +48,6 @@ export struct PcSidebar {
 
   build() {
     Column() {
-      Row() {
-        Blank()
-        Button() { Text('◁').fontSize(14).fontColor(this.getColors().TEXT_SECONDARY).accessibilityText('收起侧边栏') }
-        .width(28).height(28).backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
-        .stateStyles({
-          pressed: { .backgroundColor(this.getColors().CLICK_EFFECT) },
-          normal: { .backgroundColor(Color.Transparent) }
-        })
-        .onHover((isHover: boolean) => { this.hoveredLibId = isHover ? 'fold' : '' })
-        .backgroundColor(this.hoveredLibId === 'fold' ? this.getColors().HOVER_BG : Color.Transparent)
-        .animation({ duration: PcInteraction.HOVER_DURATION })
-        .focusable(true)
-        
-        .onClick(() => { this.onToggleFold() })
-      }.width('100%').padding({ left: 8, right: 8 }).margin({ bottom: 8 })
-
       Button('+ 新建文稿')
         .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.getColors().EMPHASIZE)
         .backgroundColor(Color.Transparent).borderRadius(PcRadii.SM)
