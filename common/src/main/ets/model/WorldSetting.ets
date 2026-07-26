@@ -8,4 +8,5 @@ export interface WorldSettingModel {
   region: string
   description: string
   notes: string
+  content: string
 }

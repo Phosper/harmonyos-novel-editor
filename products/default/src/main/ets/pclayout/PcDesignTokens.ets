@@ -202,6 +202,7 @@ export interface DocListItem {
   coverColor: string
   emoji: string
   badge: string
+  projectName: string
   pinned: boolean
   modified: string
   wordCount: number

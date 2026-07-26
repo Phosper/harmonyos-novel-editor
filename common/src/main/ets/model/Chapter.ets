@@ -10,6 +10,7 @@ export interface ChapterModel {
   createdAt: number
   updatedAt: number
   isFav: boolean
+  isInspiration: boolean
   isTrash: boolean
   isPrivate: boolean
 }

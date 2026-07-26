@@ -94,6 +94,7 @@ export struct SideDrawer {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       isFav: false,
+      isInspiration: false,
       isTrash: false,
       isPrivate: false
     }

@@ -16,7 +16,8 @@ export class WorldSettingDao {
       category: model.category,
       region: model.region,
       description: model.description,
-      notes: model.notes
+      notes: model.notes,
+      content: model.content
     }
     await this.getStore().insert('world_settings', valueBucket)
   }
@@ -27,7 +28,8 @@ export class WorldSettingDao {
       category: model.category,
       region: model.region,
       description: model.description,
-      notes: model.notes
+      notes: model.notes,
+      content: model.content
     }
     const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates('world_settings')
     predicates.equalTo('id', id)
@@ -38,6 +40,13 @@ export class WorldSettingDao {
     const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates('world_settings')
     predicates.equalTo('id', id)
     await this.getStore().delete(predicates)
+  }
+
+  async updateContent(id: string, content: string): Promise<void> {
+    const valueBucket: relationalStore.ValuesBucket = { content: content }
+    const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates('world_settings')
+    predicates.equalTo('id', id)
+    await this.getStore().update(valueBucket, predicates)
   }
 
   async queryById(id: string): Promise<WorldSettingModel | null> {
@@ -52,7 +61,8 @@ export class WorldSettingDao {
         category: resultSet.getString(resultSet.getColumnIndex('category')),
         region: resultSet.getString(resultSet.getColumnIndex('region')),
         description: resultSet.getString(resultSet.getColumnIndex('description')),
-        notes: resultSet.getString(resultSet.getColumnIndex('notes'))
+        notes: resultSet.getString(resultSet.getColumnIndex('notes')),
+        content: resultSet.getString(resultSet.getColumnIndex('content'))
       }
       resultSet.close()
       return model
@@ -74,7 +84,8 @@ export class WorldSettingDao {
         category: resultSet.getString(resultSet.getColumnIndex('category')),
         region: resultSet.getString(resultSet.getColumnIndex('region')),
         description: resultSet.getString(resultSet.getColumnIndex('description')),
-        notes: resultSet.getString(resultSet.getColumnIndex('notes'))
+        notes: resultSet.getString(resultSet.getColumnIndex('notes')),
+        content: resultSet.getString(resultSet.getColumnIndex('content'))
       })
     }
     resultSet.close()
@@ -93,7 +104,8 @@ export class WorldSettingDao {
         category: resultSet.getString(resultSet.getColumnIndex('category')),
         region: resultSet.getString(resultSet.getColumnIndex('region')),
         description: resultSet.getString(resultSet.getColumnIndex('description')),
-        notes: resultSet.getString(resultSet.getColumnIndex('notes'))
+        notes: resultSet.getString(resultSet.getColumnIndex('notes')),
+        content: resultSet.getString(resultSet.getColumnIndex('content'))
       })
     }
     resultSet.close()

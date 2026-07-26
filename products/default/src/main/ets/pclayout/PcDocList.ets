@@ -1,5 +1,5 @@
 ﻿// PcDocList.ets V2 — with press/hover/focus feedback + dual-mode colors
-import { PcRadii, PcInteraction, pcColors, type DocListItem, type PcColorSet, MidTabMode } from './PcDesignTokens'
+import { PcRadii, PcInteraction, pcColors, type DocListItem, type ProjectItem, type PcColorSet, MidTabMode } from './PcDesignTokens'
 import { ConfigurationConstant } from '@kit.AbilityKit'
 
 @Component
@@ -8,8 +8,8 @@ export struct PcDocList {
 
   @Prop listTitle: string = '全部文稿'
   @State searchText: string = ''
-  @State midTab: MidTabMode = MidTabMode.CHAPTERS
-  @Prop showMidSeg: boolean = false
+  @State midTab: MidTabMode | null = null
+  @Prop @Watch('onShowMidSegChanged') showMidSeg: boolean = false
   @Prop docItems: DocListItem[] = []
   @Prop isTrashView: boolean = false
 
@@ -17,12 +17,20 @@ export struct PcDocList {
   @State hoveredDocId: string = ''
   @State pressedDocId: string = ''
   @State hoveredBtnId: string = ''
+  @State contextDocId: string = ''
+  @State contextDocTitle: string = ''
+  @State showRenameDlg: boolean = false
+  @State renameInputText: string = ''
 
   statusBarPad: number = 0
   onChangeMidTab: (mode: MidTabMode) => void = (mode: MidTabMode): void => { mode }
   onSearch: (text: string) => void = (text: string): void => { text }
   onSelectDoc: (docId: string) => void = (docId: string): void => { docId }
+  onRenameDoc: (docId: string, title: string) => void = (docId: string, title: string): void => { docId; title }
+  onMoveToBook: (docId: string, bookId: string) => void = (docId: string, bookId: string): void => { docId; bookId }
   onNewDoc: () => void = (): void => { }
+  @Prop projectNames: ProjectItem[] = []
+  @Prop @Watch('onBookChanged') currentBookId: string = ''
   onDeleteDoc: (docId: string) => void = (docId: string): void => { docId }
   onHardDelete: (docId: string) => void = (docId: string): void => { docId }
   onRestoreDoc: (docId: string) => void = (docId: string): void => { docId }
@@ -33,8 +41,54 @@ export struct PcDocList {
 
   switchMidTab(mode: MidTabMode): void { this.midTab = mode; this.onChangeMidTab(mode) }
 
+  onShowMidSegChanged(): void {
+    if (this.showMidSeg) {
+      this.midTab = null
+    }
+  }
+
+  onBookChanged(): void {
+    this.midTab = null
+  }
+
+  showRenameDialog(): void {
+    this.renameInputText = this.contextDocTitle
+    this.showRenameDlg = true
+  }
+
+  confirmRename(): void {
+    if (this.renameInputText.trim() !== '') {
+      this.onRenameDoc(this.contextDocId, this.renameInputText)
+    }
+    this.showRenameDlg = false
+  }
+
+  @Builder buildCardMenu() {
+    Menu() {
+      if (this.isTrashView) {
+        MenuItem({ content: '恢复' })
+          .onClick((): void => { this.onRestoreDoc(this.contextDocId) })
+        MenuItem({ content: '永久删除' })
+          .onClick((): void => { this.onHardDelete(this.contextDocId) })
+      } else {
+        MenuItem({ content: '重命名' })
+          .onClick((): void => { this.showRenameDialog() })
+        ForEach(this.projectNames, (proj: ProjectItem) => {
+          if (proj.id !== this.currentBookId) {
+            MenuItem({ content: proj.name })
+              .onClick((): void => { this.onMoveToBook(this.contextDocId, proj.id) })
+          }
+        }, (proj: ProjectItem): string => proj.id)
+        MenuItem({ content: '删除' })
+          .onClick((): void => { this.onDeleteDoc(this.contextDocId) })
+      }
+    }
+  }
+
   build() {
     Column() {
+      Row() { Blank() }.width('100%').height(36)
+
       Row() {
         Text(this.listTitle).fontSize(14).fontWeight(FontWeight.Bold)
           .fontColor(this.getColors().TEXT_PRIMARY).layoutWeight(1)
@@ -117,44 +171,29 @@ export struct PcDocList {
                 Text(doc.title).fontSize(16).fontWeight(FontWeight.Medium)
                   .fontColor('#1D1D1D').maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-
-                Button() { Text('×').fontSize(14).fontColor('#999999') }
-                .width(28).height(28).backgroundColor(Color.Transparent).borderRadius(6)
-                .stateStyles({
-                  pressed: { .backgroundColor('#19000000') },
-                  normal: { .backgroundColor(Color.Transparent) }
-                })
-                .onHover((isHover: boolean) => { this.hoveredDocId = isHover ? 'del_' + doc.id : '' })
-                .onClick(() => { this.onDeleteDoc(doc.id) })
-              }.width('100%').alignItems(VerticalAlign.Center)
+              }
+              .width('100%').alignItems(VerticalAlign.Center)
+              .gesture(
+                TapGesture({ count: 2 })
+                  .onAction(() => {
+                    this.onSelectDoc(doc.id)
+                  })
+              )
 
               Text(doc.subTitle).fontSize(13).fontColor('#757575')
                 .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                .lineHeight(18).width('100%').margin({ top: 8, bottom: 12 })
+                .lineHeight(18).width('100%').height(36).margin({ top: 8, bottom: 12 })
 
               Row() {
                 Text('🕐').fontSize(10).fontColor('#9E9E9E').margin({ right: 4 })
                 Text(doc.modified).fontSize(12).fontColor('#9E9E9E')
-              }.width('100%')
-
-              if (this.isTrashView) {
-                if (doc.expireDays > 0) {
-                  Text('还剩 ' + doc.expireDays.toString() + ' 天自动删除')
-                    .fontSize(11).fontColor('#757575').margin({ top: 12 })
+                if (doc.projectName !== '') {
+                  Text('  📁 ' + doc.projectName).fontSize(10).fontColor(this.getColors().EMPHASIZE)
+                    .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+                    .border({ width: 1, color: this.getColors().EMPHASIZE, radius: 4 })
+                    .margin({ left: 8 })
                 }
-                Row({ space: 12 }) {
-                  Button('还原').fontSize(12).fontColor(this.getColors().EMPHASIZE)
-                    .backgroundColor(Color.Transparent)
-                    .border({ width: 1, color: this.getColors().DIVIDER })
-                    .borderRadius(8).height(28).layoutWeight(1)
-                    .onClick(() => { this.onRestoreDoc(doc.id) })
-                  Button('永久删除').fontSize(12).fontColor('#999999')
-                    .backgroundColor(Color.Transparent)
-                    .border({ width: 1, color: this.getColors().DIVIDER })
-                    .borderRadius(8).height(28).layoutWeight(1)
-                    .onClick(() => { this.onHardDelete(doc.id) })
-                }.width('100%').margin({ top: 12 })
-              }
+              }.width('100%')
             }
             .width('100%').padding(16)
             .backgroundColor(
@@ -177,13 +216,20 @@ export struct PcDocList {
             .onHover((isHover: boolean) => { this.hoveredDocId = isHover ? doc.id : '' })
             .animation({ duration: 100 })
             .onClick(() => { this.onSelectDoc(doc.id) })
-          }, (doc: DocListItem): string => doc.id)
+            .onMouse((event: MouseEvent) => {
+              if (event.button === MouseButton.Right) {
+                this.contextDocId = doc.id
+                this.contextDocTitle = doc.title
+              }
+            })
+            .bindContextMenu(this.buildCardMenu, ResponseType.RightClick)
+          }, (doc: DocListItem): string => doc.id + '_' + (doc.selected ? '1' : '0'))
         }
         .width('100%')
-        .height('100%')
+        .constraintSize({ minHeight: '100%' })
         .justifyContent(FlexAlign.Start)
         .padding({ left: 10, right: 10, top: 4, bottom: 10 })
-      }.layoutWeight(1).scrollBar(BarState.Auto)
+      }.layoutWeight(1).scrollBar(BarState.On)
     }
     .width('100%').height('100%').backgroundColor(this.getColors().LIST_BG)
   }

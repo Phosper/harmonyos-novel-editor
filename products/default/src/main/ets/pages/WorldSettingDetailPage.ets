@@ -82,7 +82,8 @@ struct WorldSettingDetailPage {
         category: this.category,
         region: this.region,
         description: this.description.trim(),
-        notes: this.notes
+        notes: this.notes,
+        content: ''
       }
       await dao.insert(model)
     } else {
@@ -93,7 +94,8 @@ struct WorldSettingDetailPage {
         category: this.category,
         region: this.region,
         description: this.description.trim(),
-        notes: this.notes
+        notes: this.notes,
+        content: ''
       }
       await dao.update(this.settingId, model)
     }

@@ -19,6 +19,8 @@ export struct RelationshipTabPage {
   @State panOffsetY: number = 0
   @State canvasScale: number = 1.0
   @State selectedRelId: string = ''
+  @State isConnecting: boolean = false
+  @State connectFromId: string = ''
   @State contextNodeId: string = ''
   @State showContextMenu: boolean = false
   @StorageLink('active_tab_index') @Watch('onTabVisited') activeTabIndex: number = 0
@@ -344,10 +346,14 @@ export struct RelationshipTabPage {
                 panOffsetY: $panOffsetY,
                 canvasScale: $canvasScale,
                 selectedRelId: $selectedRelId,
+                isConnecting: $isConnecting,
+                connectFromId: $connectFromId,
                 onNodeTap: (characterId: string) => { this.handleNodeTap(characterId) },
                 onNodeLongPress: (characterId: string) => { this.handleNodeLongPress(characterId) },
+                onNodeRightClick: (charId: string, x: number, y: number) => { this.handleNodeLongPress(charId) },
                 onSwipeConnect: (fromId: string, toId: string) => { this.handleSwipeConnect(fromId, toId) },
-                onDoubleTapCanvas: () => { this.handleDoubleTapCanvas() }
+                onDoubleTapCanvas: () => { this.handleDoubleTapCanvas() },
+                onBlankTap: () => { this.isConnecting = false; this.connectFromId = '' }
               })
             }
             .width('100%').height(0).layoutWeight(1)

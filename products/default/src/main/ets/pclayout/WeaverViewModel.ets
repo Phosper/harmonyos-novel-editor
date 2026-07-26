@@ -1,7 +1,7 @@
 // WeaverViewModel.ets — Shared data + CRUD service for Weaver PC layout
 import type { BookModel, ChapterModel, CharacterModel, WorldSettingModel,
   InspirationModel, RelationshipModel } from '@ohos/common'
-import { IdGenerator } from '@ohos/common'
+import { IdGenerator, dbHelper } from '@ohos/common'
 import { BookDao } from '@ohos/editor'
 import { ChapterDao } from '@ohos/editor'
 import { CharacterDao } from '@ohos/material'
@@ -53,7 +53,7 @@ export class WeaverViewModel {
   showSidebar: boolean = true
   showDocList: boolean = true
   showMidSeg: boolean = false
-  docListTitle: string = '📄 全部文稿'
+  docListTitle: string = '全部文稿'
   currentLibFilter: string = 'all'
   libCounts: Record<string, number> = {}
   paperTheme: PaperThemeConfig = {
@@ -84,6 +84,7 @@ export class WeaverViewModel {
   private autoSaveTimer: number = -1
   private saveRetryCount: number = 0
   private saveRetryTimer: number = -1
+  private loadingChapter: boolean = false
 
   // Sprint timer
   sprintRemaining: number = 1500
@@ -91,11 +92,16 @@ export class WeaverViewModel {
   private sprintTimerId: number = -1
   private static readonly TRASH_DAYS: number = 7
 
+  async clearAllData(): Promise<void> {
+    try {
+      const store = dbHelper.getStore()
+      await store.executeSql('DELETE FROM chapters')
+      await store.executeSql('DELETE FROM books')
+    } catch (e) { }
+  }
+
   async init(): Promise<void> {
     await this.loadBooks()
-    if (this.books.length === 0) {
-      await this.ensureDefaultBook()
-    }
     if (this.currentBookId !== '' && this.chapters.length === 0) {
       await this.loadChapters()
     }
@@ -105,8 +111,7 @@ export class WeaverViewModel {
 
   async loadBooks(): Promise<void> {
     this.books = await this.bookDao.queryAll()
-    if (this.books.length > 0 && this.currentBookId === '') {
-      this.currentBookId = this.books[0].id
+    if (this.currentBookId !== '' && this.chapters.length === 0) {
       await this.loadChapters()
     }
   }
@@ -149,8 +154,9 @@ export class WeaverViewModel {
     this.currentBookId = bookId
     this.showMidSeg = true
     this.currentLibFilter = 'all'
-    this.docListTitle = '📄 全部文稿'
+    this.docListTitle = '全部文稿'
     await this.loadChapters()
+    await this.loadAllMaterialData()
     await this.updateLibCounts()
     const book: BookModel | undefined = this.books.find((b: BookModel) => b.id === bookId)
     if (book !== undefined) {
@@ -159,36 +165,49 @@ export class WeaverViewModel {
   }
 
   async loadChapters(): Promise<void> {
-    if (this.currentBookId === '') return
-    if (this.currentLibFilter === 'fav') {
-      this.chapters = await this.chapterDao.queryFavByBook(this.currentBookId)
-    } else if (this.currentLibFilter === 'trash') {
-      this.chapters = await this.chapterDao.queryTrashByBook(this.currentBookId)
-    } else if (this.currentLibFilter === 'priv') {
-      this.chapters = await this.chapterDao.queryPrivateByBook(this.currentBookId)
-    } else if (this.currentLibFilter === 'insp') {
-      this.chapters = []
+    if (this.currentBookId === '') {
+      if (this.currentLibFilter === 'fav') {
+        this.chapters = await this.chapterDao.queryGlobalFav()
+      } else if (this.currentLibFilter === 'insp') {
+        this.chapters = await this.chapterDao.queryGlobalInsp()
+      } else if (this.currentLibFilter === 'priv') {
+        this.chapters = await this.chapterDao.queryGlobalPrivate()
+      } else if (this.currentLibFilter === 'trash') {
+        this.chapters = await this.chapterDao.queryAllTrash()
+      } else {
+        this.chapters = await this.chapterDao.queryGlobal()
+      }
     } else {
-      this.chapters = await this.chapterDao.queryByBook(this.currentBookId)
+      if (this.currentLibFilter === 'fav') {
+        this.chapters = await this.chapterDao.queryFavByBook(this.currentBookId)
+      } else if (this.currentLibFilter === 'trash') {
+        this.chapters = await this.chapterDao.queryTrashByBook(this.currentBookId)
+      } else if (this.currentLibFilter === 'priv') {
+        this.chapters = await this.chapterDao.queryPrivateByBook(this.currentBookId)
+      } else if (this.currentLibFilter === 'insp') {
+        this.chapters = await this.chapterDao.queryInspByBook(this.currentBookId)
+      } else {
+        this.chapters = await this.chapterDao.queryByBook(this.currentBookId)
+      }
     }
   }
 
   async createChapter(title: string): Promise<void> {
     if (title.trim() === '') return
-    if (this.currentBookId === '') {
-      await this.ensureDefaultBook()
-    }
-    if (this.currentBookId === '') return
+    const allChapters: ChapterModel[] = await this.chapterDao.queryAll()
+    const totalNum: number = allChapters.length + 1
+    const displayTitle: string = title.trim() === '无标题' ? '无标题 ' + totalNum : title.trim()
     const ch: ChapterModel = {
       id: IdGenerator.generate(),
       bookId: this.currentBookId,
-      title: title.trim(),
-      content: '',
-      order: this.chapters.length,
+      title: displayTitle,
+      content: '开始你的创作之旅...',
+      order: totalNum - 1,
       wordCount: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       isFav: false,
+      isInspiration: false,
       isTrash: false,
       isPrivate: false
     }
@@ -200,6 +219,18 @@ export class WeaverViewModel {
 
   async deleteChapter(chapterId: string): Promise<void> {
     await this.chapterDao.delete(chapterId)
+    this.closeTab(chapterId)
+    await this.loadChapters()
+    await this.updateLibCounts()
+  }
+
+  async moveChapterToBook(chapterId: string, bookId: string): Promise<void> {
+    if (bookId !== '') {
+      await this.chapterDao.setFav(chapterId, false)
+      await this.chapterDao.setInspiration(chapterId, false)
+      await this.chapterDao.setPrivate(chapterId, false)
+    }
+    await this.chapterDao.moveToBook(chapterId, bookId)
     this.closeTab(chapterId)
     await this.loadChapters()
     await this.updateLibCounts()
@@ -217,6 +248,7 @@ export class WeaverViewModel {
   }
 
   openChapter(ch: ChapterModel): void {
+    this.loadingChapter = true
     this.currentChapterId = ch.id
     this.editorContent = ch.content
     this.wordCount = ch.content.length
@@ -312,6 +344,7 @@ export class WeaverViewModel {
   }
 
   loadTabContent(chapterId: string): void {
+    this.loadingChapter = true
     const ch: ChapterModel | undefined = this.chapters.find((c: ChapterModel) => c.id === chapterId)
     if (ch !== undefined) {
       this.currentChapterId = ch.id
@@ -321,10 +354,41 @@ export class WeaverViewModel {
     }
   }
 
+  async renameChapter(chapterId: string, newTitle: string): Promise<void> {
+    if (newTitle.trim() === '') return
+    const ch: ChapterModel | undefined = this.chapters.find((c: ChapterModel) => c.id === chapterId)
+    if (ch !== undefined) {
+      ch.title = newTitle.trim()
+      await this.chapterDao.update(chapterId, newTitle.trim(), ch.content)
+    }
+    const updated: TabItem[] = []
+    for (let i: number = 0; i < this.editorTabs.length; i++) {
+      const t: TabItem = this.editorTabs[i]
+      if (t.id === chapterId) {
+        updated.push({
+          id: t.id, title: newTitle.trim(), color: t.color,
+          active: t.active, pinned: t.pinned, dirty: t.dirty
+        })
+      } else {
+        updated.push(t)
+      }
+    }
+    this.editorTabs = updated
+  }
+
   onContentChange(value: string): void {
     this.editorContent = value
     this.wordCount = value.length
     const chapterId: string = this.currentChapterId
+    const ch: ChapterModel | undefined = this.chapters.find((c: ChapterModel) => c.id === chapterId)
+    if (ch !== undefined) {
+      ch.content = value
+      ch.wordCount = value.length
+    }
+    if (this.loadingChapter) {
+      this.loadingChapter = false
+      return
+    }
     const updated: TabItem[] = []
     for (let i: number = 0; i < this.editorTabs.length; i++) {
       const t: TabItem = this.editorTabs[i]
@@ -484,39 +548,124 @@ export class WeaverViewModel {
     this.sprintRemaining = 1500
   }
 
+  async insertChar(data: CharacterModel): Promise<void> {
+    await this.charDao.insert(data)
+    await this.loadAllMaterialData()
+  }
+
+  async updateChar(data: CharacterModel): Promise<void> {
+    await this.charDao.update(data.id, data)
+    await this.loadAllMaterialData()
+  }
+
+  async deleteChar(id: string): Promise<void> {
+    await this.charDao.delete(id)
+    await this.loadAllMaterialData()
+  }
+
+  async insertCharOnly(data: CharacterModel): Promise<void> {
+    await this.charDao.insert(data)
+  }
+
+  async updateCharOnly(data: CharacterModel): Promise<void> {
+    await this.charDao.update(data.id, data)
+  }
+
+  async deleteCharOnly(id: string): Promise<void> {
+    await this.charDao.delete(id)
+  }
+
+  async insertRelOnly(data: RelationshipModel): Promise<void> {
+    await this.relDao.insert(data)
+  }
+
+  async deleteRelOnly(id: string): Promise<void> {
+    await this.relDao.delete(id)
+  }
+
+  async updateWorldContent(id: string, content: string): Promise<void> {
+    await this.wsDao.updateContent(id, content)
+  }
+
+  async deleteWorldOnly(id: string): Promise<void> {
+    await this.wsDao.delete(id)
+  }
+
   async loadAllMaterialData(): Promise<void> {
-    if (this.currentBookId === '') return
+    if (this.currentBookId === '') {
+      this.charactersList = await this.charDao.queryAll()
+      if (this.charactersList.length === 0) {
+        await this.seedDefaultChar()
+        this.charactersList = await this.charDao.queryAll()
+      }
+      this.worldSettings = await this.wsDao.queryAll()
+      if (this.worldSettings.length === 0) {
+        await this.seedDefaultWorld()
+        this.worldSettings = await this.wsDao.queryAll()
+      } else {
+        await this.cleanWorldDescriptions()
+        this.worldSettings = await this.wsDao.queryAll()
+      }
+      this.inspirations = await this.inspDao.queryAll()
+      return
+    }
     this.charactersList = await this.charDao.queryByBook(this.currentBookId)
+    if (this.charactersList.length === 0) {
+      await this.seedDefaultChar()
+      this.charactersList = await this.charDao.queryByBook(this.currentBookId)
+    }
     this.worldSettings = await this.wsDao.queryByBook(this.currentBookId)
+    if (this.worldSettings.length === 0) {
+      await this.seedDefaultWorld()
+      this.worldSettings = await this.wsDao.queryByBook(this.currentBookId)
+    } else {
+      await this.cleanWorldDescriptions()
+      this.worldSettings = await this.wsDao.queryByBook(this.currentBookId)
+    }
     this.inspirations = await this.inspDao.queryByBook(this.currentBookId)
-    this.relationships = await this.relDao.queryByBook(this.currentBookId)
+  }
+
+  async seedDefaultChar(): Promise<void> {
+    const model: CharacterModel = {
+      id: IdGenerator.generate(),
+      bookId: this.currentBookId,
+      name: '主角',
+      alias: '',
+      age: '',
+      appearance: '',
+      personality: '',
+      background: '',
+      notes: '',
+      characterType: 'protagonist'
+    }
+    await this.charDao.insert(model)
+  }
+
+  async cleanWorldDescriptions(): Promise<void> {
+    for (let i: number = 0; i < this.worldSettings.length; i++) {
+      if (this.worldSettings[i].description === '点击编辑你的世界观...') {
+        this.worldSettings[i].description = ''
+        await this.wsDao.update(this.worldSettings[i].id, this.worldSettings[i])
+      }
+    }
+  }
+
+  async seedDefaultWorld(): Promise<void> {
+    const model: WorldSettingModel = {
+      id: IdGenerator.generate(),
+      bookId: this.currentBookId,
+      name: '世界设定',
+      category: '',
+      region: '',
+      description: '',
+      notes: '',
+      content: ''
+    }
+    await this.wsDao.insert(model)
   }
 
   getDocListItems(): DocListItem[] {
     const items: DocListItem[] = []
-    if (this.currentLibFilter === 'insp') {
-      const colors: string[] = [PcColors.EMPHASIZE, PcColors.EMPHASIZE_DIMMED, PcColors.ACCENT_ORANGE, PcColors.ACCENT_BROWN]
-      for (let i: number = 0; i < this.inspirations.length; i++) {
-        const insp: InspirationModel = this.inspirations[i]
-        const summary: string = insp.content.length > 72 ? insp.content.substring(0, 72) + '...' : insp.content
-        items.push({
-          id: insp.id,
-          title: insp.content.length > 20 ? insp.content.substring(0, 20) + '...' : insp.content,
-          subTitle: summary === '' ? '空白灵感...' : summary,
-          coverColor: colors[i % colors.length],
-          emoji: '💡',
-          badge: '',
-          pinned: false,
-          modified: formatRelativeTime(insp.createdAt),
-          wordCount: insp.content.length,
-          selected: false,
-          progress: 0,
-          isTrash: false,
-          expireDays: 0
-        })
-      }
-      return items
-    }
     const colors: string[] = [PcColors.EMPHASIZE, PcColors.EMPHASIZE_DIMMED, PcColors.ACCENT_ORANGE, PcColors.ACCENT_BROWN]
     for (let i: number = 0; i < this.chapters.length; i++) {
       const ch: ChapterModel = this.chapters[i]
@@ -533,6 +682,7 @@ export class WeaverViewModel {
         coverColor: coverColor,
         emoji: '📝',
         badge: wc > 0 ? wc.toString() + '字' : '',
+        projectName: this.getBookName(ch.bookId),
         pinned: false,
         modified: formatRelativeTime(ch.updatedAt),
         wordCount: wc,
@@ -543,6 +693,12 @@ export class WeaverViewModel {
       })
     }
     return items
+  }
+
+  getBookName(bookId: string): string {
+    if (bookId === '') return ''
+    const book: BookModel | undefined = this.books.find((b: BookModel) => b.id === bookId)
+    return book !== undefined ? book.name : ''
   }
 
   getProjectItems(): ProjectItem[] {
@@ -563,8 +719,8 @@ export class WeaverViewModel {
 
   async onSidebarLibChange(libId: string): Promise<void> {
     const libMap: Record<string, string> = {
-      'all': '📄 全部文稿', 'fav': '⭐ 收藏', 'insp': '💡 灵感池',
-      'priv': '🔒 私密', 'trash': '🗑 废纸篓'
+      'all': '全部文稿', 'fav': '收藏', 'insp': '灵感池',
+      'priv': '私密', 'trash': '废纸篓'
     }
     const label: string | undefined = libMap[libId]
     if (label !== undefined) {
@@ -572,8 +728,7 @@ export class WeaverViewModel {
       this.currentLibFilter = libId
       this.showMidSeg = false
       if (libId === 'insp') {
-        this.inspirations = await this.inspDao.queryByBook(this.currentBookId)
-        this.chapters = []
+        await this.loadChapters()
       } else {
         await this.loadChapters()
       }
@@ -584,9 +739,56 @@ export class WeaverViewModel {
   async toggleFav(chapterId: string): Promise<void> {
     const ch: ChapterModel | undefined = this.chapters.find((c: ChapterModel) => c.id === chapterId)
     if (ch !== undefined) {
-      ch.isFav = !ch.isFav
-      await this.chapterDao.setFav(chapterId, ch.isFav)
+      const newVal: boolean = !ch.isFav
+      if (newVal) {
+        await this.chapterDao.setInspiration(chapterId, false)
+        await this.chapterDao.setFav(chapterId, true)
+        ch.isInspiration = false
+        ch.isFav = true
+      } else {
+        await this.chapterDao.setFav(chapterId, false)
+        ch.isFav = false
+      }
       await this.updateLibCounts()
+      await this.loadChapters()
+    }
+  }
+
+  async toggleInspiration(chapterId: string): Promise<void> {
+    const ch: ChapterModel | undefined = this.chapters.find((c: ChapterModel) => c.id === chapterId)
+    if (ch !== undefined) {
+      const newVal: boolean = !ch.isInspiration
+      if (newVal) {
+        await this.chapterDao.setFav(chapterId, false)
+        await this.chapterDao.setInspiration(chapterId, true)
+        ch.isFav = false
+        ch.isInspiration = true
+      } else {
+        await this.chapterDao.setInspiration(chapterId, false)
+        ch.isInspiration = false
+      }
+      await this.updateLibCounts()
+      await this.loadChapters()
+    }
+  }
+
+  async togglePrivate(chapterId: string): Promise<void> {
+    const ch: ChapterModel | undefined = this.chapters.find((c: ChapterModel) => c.id === chapterId)
+    if (ch !== undefined) {
+      const newVal: boolean = !ch.isPrivate
+      if (newVal) {
+        await this.chapterDao.setFav(chapterId, false)
+        await this.chapterDao.setInspiration(chapterId, false)
+        await this.chapterDao.setPrivate(chapterId, true)
+        ch.isFav = false
+        ch.isInspiration = false
+        ch.isPrivate = true
+      } else {
+        await this.chapterDao.setPrivate(chapterId, false)
+        ch.isPrivate = false
+      }
+      await this.updateLibCounts()
+      await this.loadChapters()
     }
   }
 
@@ -599,6 +801,27 @@ export class WeaverViewModel {
   }
 
   async restoreChapter(chapterId: string): Promise<void> {
+    const target: ChapterModel | null = await this.chapterDao.queryById(chapterId)
+    if (target !== null) {
+      const activeChapters: ChapterModel[] = await this.chapterDao.queryByBook(target.bookId)
+      let newTitle: string = target.title
+      let suffix: number = 2
+      let isConflict: boolean = true
+      while (isConflict) {
+        isConflict = false
+        for (let i: number = 0; i < activeChapters.length; i++) {
+          if (activeChapters[i].title === newTitle) {
+            newTitle = target.title + '(' + suffix + ')'
+            suffix = suffix + 1
+            isConflict = true
+            break
+          }
+        }
+      }
+      if (newTitle !== target.title) {
+        await this.chapterDao.update(chapterId, newTitle, target.content)
+      }
+    }
     await this.chapterDao.setTrash(chapterId, false)
     await this.loadChapters()
     await this.updateLibCounts()
@@ -616,19 +839,21 @@ export class WeaverViewModel {
   }
 
   async updateLibCounts(): Promise<void> {
-    if (this.currentBookId === '') return
+    if (this.currentBookId === '') {
+      this.libCounts = await this.chapterDao.countGlobalByCategory()
+      return
+    }
     this.libCounts = await this.chapterDao.countByCategory(this.currentBookId)
   }
 
-  onChangeMidTab(mode: MidTabMode): void {
+  async onChangeMidTab(mode: MidTabMode): Promise<void> {
     if (mode === MidTabMode.CHAPTERS) {
       this.editorViewMode = EditorViewMode.EDITOR
     } else if (mode === MidTabMode.MATERIALS) {
       this.editorViewMode = EditorViewMode.MATERIAL
-      this.loadAllMaterialData()
+      await this.loadAllMaterialData()
     } else {
       this.editorViewMode = EditorViewMode.GRAPH
-      this.loadAllMaterialData()
     }
   }
 }

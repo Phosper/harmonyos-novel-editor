@@ -9,18 +9,21 @@ export struct PcSidebar {
 
   readonly libDefs: LibItem[] = [
     { id: 'all', label: '全部文稿', icon: '≡', count: 0, active: false },
-    { id: 'fav', label: '收藏', icon: '★', count: 0, active: false },
-    { id: 'insp', label: '灵感池', icon: '✦', count: 0, active: false },
-    { id: 'priv', label: '私密', icon: '◈', count: 0, active: false },
-    { id: 'trash', label: '废纸篓', icon: '◻', count: 0, active: false }
+    { id: 'fav', label: '收藏', icon: 'star_fill', count: 0, active: false },
+    { id: 'insp', label: '灵感池', icon: 'lightbulb', count: 0, active: false },
+    { id: 'priv', label: '私密', icon: 'lock_fill', count: 0, active: false },
+    { id: 'trash', label: '废纸篓', icon: 'trash_fill', count: 0, active: false }
   ]
   @Prop activeLibId: string = 'all'
   @Prop libCounts: Record<string, number> = {}
+  @Prop isProjectMode: boolean = false
+  @Prop currentProjectName: string = ''
   @State projectsFolded: boolean = false
   @State userFolded: boolean = false
   @State showNewProjectInput: boolean = false
   @State newProjectName: string = ''
   @State userName: string = '创作者'
+  @State contextProjId: string = ''
   @Prop projects: ProjectItem[] = []
 
   // Hover & press tracking
@@ -33,6 +36,7 @@ export struct PcSidebar {
   onNewDoc: () => void = (): void => { }
   onCreateProject: (name: string) => void = (name: string): void => { name }
   onSelectProject: (bookId: string) => void = (bookId: string): void => { bookId }
+  onDeleteProject: (bookId: string) => void = (bookId: string): void => { bookId }
   onToggleFold: () => void = (): void => { }
 
   getColors(): PcColorSet {
@@ -44,6 +48,13 @@ export struct PcSidebar {
     this.onCreateProject(this.newProjectName.trim())
     this.showNewProjectInput = false
     this.newProjectName = ''
+  }
+
+  @Builder buildProjectMenu() {
+    Menu() {
+      MenuItem({ content: '删除项目' })
+        .onClick((): void => { this.onDeleteProject(this.contextProjId) })
+    }
   }
 
   build() {
@@ -68,9 +79,16 @@ export struct PcSidebar {
       Column({ space: 2 }) {
         ForEach(this.libDefs, (item: LibItem) => {
           Row() {
-            Text(item.icon).fontSize(15)
-              .fontColor(item.id === this.activeLibId ? this.getColors().EMPHASIZE : this.getColors().TEXT_SECONDARY)
-              .width(20).textAlign(TextAlign.Center)
+            if (item.id === 'all') {
+              Text('≡').fontSize(15)
+                .fontColor(item.id === this.activeLibId ? this.getColors().EMPHASIZE : this.getColors().TEXT_SECONDARY)
+                .margin({ right: 6 })
+            } else {
+              Image($rawfile(item.icon + '.svg'))
+                .width(16).height(16)
+                .fillColor(item.id === this.activeLibId ? this.getColors().EMPHASIZE : this.getColors().TEXT_SECONDARY)
+                .margin({ left: 2, right: 6 })
+            }
             Text(item.label).fontSize(14)
               .fontColor(item.id === this.activeLibId ? this.getColors().EMPHASIZE : this.getColors().TEXT_SECONDARY)
               .fontWeight(item.id === this.activeLibId ? FontWeight.Medium : FontWeight.Regular)
@@ -180,7 +198,19 @@ export struct PcSidebar {
             .animation({ duration: PcInteraction.HOVER_DURATION })
             .focusable(true)
             
-            .onClick(() => { this.onSelectProject(proj.id) })
+            .onClick(() => {
+              if (proj.active) {
+                this.onChangeLib('all')
+              } else {
+                this.onSelectProject(proj.id)
+              }
+            })
+            .onMouse((event: MouseEvent) => {
+              if (event.button === MouseButton.Right) {
+                this.contextProjId = proj.id
+              }
+            })
+            .bindContextMenu(this.buildProjectMenu, ResponseType.RightClick)
           }, (proj: ProjectItem): string => proj.id)
         }.width('100%').transition(TransitionEffect.OPACITY.animation({ duration: 150 }))
       }

@@ -42,17 +42,17 @@ export class DatabaseHelper {
       )`,
       `CREATE TABLE IF NOT EXISTS chapters (
         id TEXT PRIMARY KEY,
-        book_id TEXT NOT NULL,
+        book_id TEXT,
         title TEXT NOT NULL,
         content TEXT NOT NULL DEFAULT '',
         sort_order INTEGER NOT NULL DEFAULT 0,
         word_count INTEGER NOT NULL DEFAULT 0,
         is_fav INTEGER NOT NULL DEFAULT 0,
+        is_inspiration INTEGER NOT NULL DEFAULT 0,
         is_trash INTEGER NOT NULL DEFAULT 0,
         is_private INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        updated_at INTEGER NOT NULL
       )`,
       `CREATE TABLE IF NOT EXISTS characters (
         id TEXT PRIMARY KEY,
@@ -75,6 +75,7 @@ export class DatabaseHelper {
         region TEXT NOT NULL DEFAULT '',
         description TEXT NOT NULL DEFAULT '',
         notes TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
         FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
       )`,
       `CREATE TABLE IF NOT EXISTS inspirations (
@@ -112,6 +113,69 @@ export class DatabaseHelper {
     } catch (e) { }
     try {
       await this.store!.executeSql('ALTER TABLE chapters ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0')
+    } catch (e) { }
+    try {
+      await this.store!.executeSql('ALTER TABLE chapters ADD COLUMN is_inspiration INTEGER NOT NULL DEFAULT 0')
+    } catch (e) { }
+    try {
+      await this.store!.executeSql('ALTER TABLE world_settings ADD COLUMN content TEXT NOT NULL DEFAULT \'\'')
+    } catch (e) { }
+    // Migration: drop old table to remove NOT NULL + foreign key on book_id
+    try {
+      await this.store!.executeSql('DROP TABLE IF EXISTS chapters_old')
+      await this.store!.executeSql('ALTER TABLE chapters RENAME TO chapters_old')
+      await this.store!.executeSql(`CREATE TABLE chapters (
+        id TEXT PRIMARY KEY,
+        book_id TEXT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        word_count INTEGER NOT NULL DEFAULT 0,
+        is_fav INTEGER NOT NULL DEFAULT 0,
+        is_inspiration INTEGER NOT NULL DEFAULT 0,
+        is_trash INTEGER NOT NULL DEFAULT 0,
+        is_private INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`)
+      await this.store!.executeSql('INSERT INTO chapters SELECT * FROM chapters_old')
+      await this.store!.executeSql('DROP TABLE IF EXISTS chapters_old')
+    } catch (e) { }
+    // Migration: make book_id nullable for characters
+    try {
+      await this.store!.executeSql('DROP TABLE IF EXISTS characters_old')
+      await this.store!.executeSql('ALTER TABLE characters RENAME TO characters_old')
+      await this.store!.executeSql(`CREATE TABLE characters (
+        id TEXT PRIMARY KEY,
+        book_id TEXT,
+        name TEXT NOT NULL,
+        alias TEXT NOT NULL DEFAULT '',
+        age TEXT NOT NULL DEFAULT '',
+        appearance TEXT NOT NULL DEFAULT '',
+        personality TEXT NOT NULL DEFAULT '',
+        background TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        character_type TEXT NOT NULL DEFAULT 'support'
+      )`)
+      await this.store!.executeSql('INSERT INTO characters SELECT * FROM characters_old')
+      await this.store!.executeSql('DROP TABLE IF EXISTS characters_old')
+    } catch (e) { }
+    // Migration: make book_id nullable for world_settings
+    try {
+      await this.store!.executeSql('DROP TABLE IF EXISTS world_settings_old')
+      await this.store!.executeSql('ALTER TABLE world_settings RENAME TO world_settings_old')
+      await this.store!.executeSql(`CREATE TABLE world_settings (
+        id TEXT PRIMARY KEY,
+        book_id TEXT,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'other',
+        region TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT ''
+      )`)
+      await this.store!.executeSql('INSERT INTO world_settings SELECT * FROM world_settings_old')
+      await this.store!.executeSql('DROP TABLE IF EXISTS world_settings_old')
     } catch (e) { }
   }
 

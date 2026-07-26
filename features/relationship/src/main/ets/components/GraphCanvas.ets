@@ -30,19 +30,30 @@ export struct GraphCanvas {
   @Link panOffsetY: number
   @Link canvasScale: number
   @Link selectedRelId: string
+  @Link @Watch('onConnectingChanged') isConnecting: boolean
+  @Link connectFromId: string
   onNodeTap?: (characterId: string) => void
   onNodeLongPress?: (characterId: string) => void
   onSwipeConnect?: (fromId: string, toId: string) => void
   onDoubleTapCanvas?: () => void
+  onNodeRightClick?: (characterId: string, x: number, y: number) => void
+  onBlankTap?: () => void
 
   @State canvasW: number = 300
   @State canvasH: number = 300
+  @State hoveredNodeId: string = ''
   private settings: RenderingContextSettings = new RenderingContextSettings(true)
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings)
   private lastPanX: number = 0
   private lastPanY: number = 0
   private swipeFromNodeId: string = ''
   private isSwipeConnect: boolean = false
+
+  onConnectingChanged(): void {
+    if (!this.isConnecting) {
+      this.draw()
+    }
+  }
 
   onGraphChanged(): void {
     this.performLayout()
@@ -86,32 +97,39 @@ export struct GraphCanvas {
       this.ctx.beginPath()
       this.ctx.moveTo(fromNode.x, fromNode.y)
       this.ctx.lineTo(toNode.x, toNode.y)
-
-      if (e.type === 'positive') {
-        this.ctx.strokeStyle = isSelected ? GraphColors.HIGHLIGHT_RING : GraphColors.LINE_POSITIVE
-        this.ctx.lineWidth = isSelected ? 4 : 2.5
-        this.ctx.setLineDash([])
-      } else if (e.type === 'negative') {
-        this.ctx.strokeStyle = isSelected ? GraphColors.HIGHLIGHT_RING : GraphColors.LINE_NEGATIVE
-        this.ctx.lineWidth = isSelected ? 3 : 2
-        this.ctx.setLineDash([6, 4])
-      } else {
-        this.ctx.strokeStyle = isSelected ? GraphColors.HIGHLIGHT_RING : GraphColors.LINE_NEUTRAL
-        this.ctx.lineWidth = isSelected ? 2.5 : 1.5
-        this.ctx.setLineDash(e.type === 'indirect' ? [3, 5] : [])
-      }
+      this.ctx.strokeStyle = isSelected ? GraphColors.HIGHLIGHT_RING : '#757575'
+      this.ctx.lineWidth = isSelected ? 3 : 2
       this.ctx.stroke()
 
-      if (e.label !== '') {
+      const dx: number = toNode.x - fromNode.x
+      const dy: number = toNode.y - fromNode.y
+      const angle: number = Math.atan2(dy, dx)
+      const arrowLen: number = 10
+      const arrowAngle: number = Math.PI / 6
+
+      const tipX: number = toNode.x - toNode.radius * Math.cos(angle)
+      const tipY: number = toNode.y - toNode.radius * Math.sin(angle)
+
+      this.ctx.beginPath()
+      this.ctx.moveTo(tipX, tipY)
+      this.ctx.lineTo(tipX - arrowLen * Math.cos(angle - arrowAngle),
+        tipY - arrowLen * Math.sin(angle - arrowAngle))
+      this.ctx.moveTo(tipX, tipY)
+      this.ctx.lineTo(tipX - arrowLen * Math.cos(angle + arrowAngle),
+        tipY - arrowLen * Math.sin(angle + arrowAngle))
+      this.ctx.strokeStyle = isSelected ? GraphColors.HIGHLIGHT_RING : '#757575'
+      this.ctx.lineWidth = 2
+      this.ctx.stroke()
+
+      if (e.type !== '') {
         const mx: number = (fromNode.x + toNode.x) / 2
         const my: number = (fromNode.y + toNode.y) / 2
-        this.ctx.font = '10px sans-serif'
+        this.ctx.font = '12px sans-serif'
         this.ctx.fillStyle = GrayColors.G500
         this.ctx.textAlign = 'center'
         this.ctx.textBaseline = 'middle'
-        this.ctx.fillText(e.label, mx, my - 10)
+        this.ctx.fillText(e.type, mx, my - 12)
       }
-      this.ctx.setLineDash([])
     }
   }
 
@@ -119,6 +137,27 @@ export struct GraphCanvas {
     if (this.nodes.length === 0) return
     for (let i: number = 0; i < this.nodes.length; i++) {
       const node: GraphNode = this.nodes[i]
+
+      // Connect-source highlight
+      if (this.isConnecting && node.characterId === this.connectFromId) {
+        this.ctx.beginPath()
+        this.ctx.arc(node.x, node.y, node.radius + 5, 0, Math.PI * 2)
+        this.ctx.strokeStyle = '#4CAF50'
+        this.ctx.lineWidth = 3
+        this.ctx.stroke()
+      }
+
+      // Hover highlight
+      if (this.isConnecting && node.characterId === this.hoveredNodeId &&
+          node.characterId !== this.connectFromId) {
+        this.ctx.beginPath()
+        this.ctx.setLineDash([4, 4])
+        this.ctx.arc(node.x, node.y, node.radius + 5, 0, Math.PI * 2)
+        this.ctx.strokeStyle = '#FFD700'
+        this.ctx.lineWidth = 2
+        this.ctx.stroke()
+        this.ctx.setLineDash([])
+      }
 
       // Fill
       this.ctx.beginPath()
@@ -200,6 +239,21 @@ export struct GraphCanvas {
           this.performLayout()
           this.draw()
         })
+        .onMouse((event: MouseEvent) => {
+          if (event.action === MouseAction.Press && event.button === MouseButton.Right) {
+            const node: GraphNode | null = this.canvasToNodeCoord(event.x, event.y)
+            if (node !== null && this.onNodeRightClick) {
+              this.onNodeRightClick(node.characterId, event.x, event.y)
+            }
+            event.stopPropagation()
+          } else if (event.action === MouseAction.Move) {
+            const node: GraphNode | null = this.canvasToNodeCoord(event.x, event.y)
+            this.hoveredNodeId = node !== null ? node.characterId : ''
+            if (this.isConnecting) {
+              this.draw()
+            }
+          }
+        })
         .gesture(
           GestureGroup(GestureMode.Parallel,
             PinchGesture({ fingers: 2 })
@@ -231,9 +285,11 @@ export struct GraphCanvas {
                     event.fingerList[0].localY)
                   if (node !== null && this.onNodeTap) {
                     this.onNodeTap(node.characterId)
+                  } else if (this.onBlankTap) {
+                    this.onBlankTap()
                   }
                 }),
-              PanGesture({ fingers: 1, direction: PanDirection.All })
+              PanGesture({ fingers: 1, direction: PanDirection.Horizontal | PanDirection.Vertical })
                 .onActionStart((event: GestureEvent) => {
                   const node: GraphNode | null = this.canvasToNodeCoord(event.fingerList[0].localX,
                     event.fingerList[0].localY)
