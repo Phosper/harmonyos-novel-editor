@@ -1,37 +1,19 @@
-# Weaver - 鸿蒙全场景小说创作平台
+# Weaver
 
-一款基于 HarmonyOS 的原生小说创作应用，提供从灵感收集、素材管理、人物关系图谱到 AI 辅助写作的全流程创作体验。
+HarmonyOS / ArkTS 小说写作应用。当前开发基线为 `Weaver.zip` 中的新版，旧版已归档，不再作为功能验收标准。
 
-## 功能模块
+## 工程结构
 
-| 模块 | 说明 |
-|---|---|
-| 📝 编辑器 | 富文本写作编辑 |
-| 🎨 素材管理 | 灵感卡片、人物卡片、世界观设定 |
-| 🔗 关系图谱 | 人物关系可视化与交互操作 |
-| 🤖 AI Agent | 智能辅助写作 |
-| ⚙️ 设置 | 主题、偏好设置 |
+- `entry/src/main/ets/editor/flowtext/`：FlowText 自绘正文编辑器
+- `entry/src/main/ets/shell/`：手机、平板及宽屏界面
+- `entry/src/main/ets/store/`：项目、编辑器、素材、关系和界面状态
+- `entry/src/main/ets/repository/`、`database/`：仓储和数据库访问
+- `docs/`、`spec/`：新版设计、研究和实现记录
 
-## 技术栈
+## 打开与构建
 
-- **语言**: ArkTS
-- **框架**: HarmonyOS 6.0.2+
-- **构建工具**: Hvigor
+使用支持 HarmonyOS SDK 6.1.0（API 23）的 DevEco Studio 打开本目录，重新同步项目依赖。工程仅包含一个 `entry` 模块。
 
-## 项目结构
+队友机器的构建缓存、已安装依赖、`local.properties` 和个人签名配置未迁入。安装到设备前，请在本机配置签名。
 
-```
-Weaver/
-├── common/              # 公共模块（工具类、组件）
-├── features/
-│   ├── agent/           # AI 模块
-│   ├── editor/          # 编辑器模块
-│   ├── material/        # 素材管理模块
-│   ├── relationship/    # 关系图谱模块
-│   └── settings/        # 设置模块
-└── products/default/    # 应用入口
-```
-
-## 构建
-
-使用 DevEco Studio 打开项目根目录，同步依赖后即可构建运行。
+本次切换保留了 Git 历史和原始压缩包。FlowText 已补充字素边界、选区、排版索引、输入法生命周期和格式事务等修复；回归测试与 DevEco 设备测试的运行方法见 [FlowText 测试说明](docs/flowtext-testing.md)。

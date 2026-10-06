@@ -1,8 +1,0 @@
-{
-  "module": {
-    "name": "settings",
-    "type": "har",
-    "description": "Weaver Settings Feature",
-    "deviceTypes": ["phone", "tablet", "2in1"]
-  }
-}

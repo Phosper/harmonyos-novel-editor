@@ -1,8 +1,0 @@
-{
-  "module": {
-    "name": "material",
-    "type": "har",
-    "description": "Weaver Material Feature",
-    "deviceTypes": ["phone", "tablet", "2in1"]
-  }
-}
