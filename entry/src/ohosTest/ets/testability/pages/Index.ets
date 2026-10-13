@@ -21,5 +21,9 @@ struct FlowTextTestPage {
         }
       }).layoutWeight(1).width('100%')
     }.width('100%').height('100%').onAppear(() => { FlowTextFixture.ready = true; })
+      .onKeyPreIme((event: KeyEvent): boolean => {
+        if (event.type === KeyType.Up) { FlowTextFixture.recordKeyRelease(event.keyCode); }
+        return false;
+      })
   }
 }

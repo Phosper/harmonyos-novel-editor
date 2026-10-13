@@ -18,6 +18,21 @@ function layout(value: string, width: number = 240, density: number = 1, runs: F
   return cache.ensureLayout(value, 1, 1, 1000000);
 }
 
+async function pressAndRelease(driver: Driver, first: KeyCode, second?: KeyCode): Promise<void> {
+  const firstBefore: number = FlowTextFixture.keyReleaseCount(first);
+  const secondBefore: number = second === undefined ? 0 : FlowTextFixture.keyReleaseCount(second);
+  if (second === undefined) { await driver.triggerKey(first); }
+  else { await driver.triggerCombineKeys(first, second); }
+  // UI 空闲不代表注入的按键序列已处理完；收到本轮 Up 后才开始下一组输入。
+  const deadline: number = Date.now() + 5000;
+  while (FlowTextFixture.keyReleaseCount(first) <= firstBefore ||
+    (second !== undefined && FlowTextFixture.keyReleaseCount(second) <= secondBefore)) {
+    if (Date.now() >= deadline) { throw new Error('Injected keys did not finish releasing'); }
+    await driver.delayMs(20);
+  }
+  expect(await driver.waitForIdle(200, 5000)).assertTrue();
+}
+
 export default function flowTextTest(): void {
   describe('FlowTextRegression', () => {
     it('nativeApiContract', 0, () => {
@@ -270,22 +285,22 @@ export default function flowTextTest(): void {
       // 焦点确认不等于异步 IME attach 和编辑器帧已落定；先等待输入准备结束。
       expect(await driver.waitForIdle(200, 5000)).assertTrue();
       expect(FlowTextFixture.savedCaret).assertEqual(4);
-      await driver.triggerCombineKeys(KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_DPAD_LEFT);
-      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      await pressAndRelease(driver, KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_DPAD_LEFT);
       expect(FlowTextFixture.selectionStart).assertEqual(3);
       expect(FlowTextFixture.selectionEnd).assertEqual(4);
-      await driver.triggerCombineKeys(KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_DPAD_LEFT);
-      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      controller.insertTextAtCaret('');
+      expect(controller.getText()).assertEqual('ABCDE');
+      expect(FlowTextFixture.selectionStart).assertEqual(3);
+      expect(FlowTextFixture.selectionEnd).assertEqual(4);
+      await pressAndRelease(driver, KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_DPAD_LEFT);
       expect(FlowTextFixture.selectionStart).assertEqual(2);
       expect(FlowTextFixture.selectionEnd).assertEqual(4);
-      await driver.triggerKey(KeyCode.KEYCODE_DPAD_LEFT);
-      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      await pressAndRelease(driver, KeyCode.KEYCODE_DPAD_LEFT);
       expect(FlowTextFixture.savedCaret).assertEqual(2);
       controller.setText('A😀'); controller.setCaretPosition(3);
       expect(await driver.waitForIdle(200, 5000)).assertTrue();
       expect(FlowTextFixture.savedCaret).assertEqual(3);
-      await driver.triggerKey(KeyCode.KEYCODE_DEL);
-      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      await pressAndRelease(driver, KeyCode.KEYCODE_DEL);
       expect(controller.getText()).assertEqual('A');
     });
   });

@@ -8,4 +8,11 @@ export class FlowTextFixture {
   static savedRuns: FormatRun[] = [];
   static selectionStart: number = 0;
   static selectionEnd: number = 0;
+  private static keyReleases: Map<number, number> = new Map();
+  static recordKeyRelease(code: number): void {
+    FlowTextFixture.keyReleases.set(code, FlowTextFixture.keyReleaseCount(code) + 1);
+  }
+  static keyReleaseCount(code: number): number {
+    return FlowTextFixture.keyReleases.get(code) ?? 0;
+  }
 }

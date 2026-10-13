@@ -124,6 +124,21 @@ function editor(value) {
 }
 check('switch document clears stale selection before inserting',()=>{const e=editor('ABCDE');e.selMgr.setSelection(1,3);e.loadText('uvwxyz');e.moveCaretAnimated(6);e.insertExternalText('!');assert.equal(e.doc.text,'uvwxyz!');});
 check('continuous Shift Left preserves anchor and direction',()=>{const e=editor('ABCDE');e.moveCaretAnimated(4);e.extendSelection(-1);e.extendSelection(-1);assert.deepEqual(json(e.selMgr.selection),{startOffset:2,endOffset:4});assert.equal(e.doc.caretOffset,2);assert.equal(e.doc.selectionEnd,4);e.extendSelection(1);assert.equal(e.doc.caretOffset,3);});
+check('empty IME commit preserves selected text, anchor, formats and history',()=>{
+  const e=editor('ABCDE');e.doc.setRuns([new api.FormatRun(0,5,true)]);e.moveCaretAnimated(4);e.extendSelection(-1);
+  e.ime=new api.ImeBridge();e.registerImeCallbacks();let edits=0;e.onEdit=()=>edits++;
+  const version=e.doc.version,formats=json(e.doc.runs);e.ime.onInsertText('');
+  assert.equal(e.doc.text,'ABCDE');assert.equal(e.doc.caretOffset,3);assert.equal(e.doc.version,version);
+  assert.deepEqual(json(e.doc.runs),formats);assert.deepEqual(json(e.selMgr.selection),{startOffset:3,endOffset:4});
+  assert.equal(e.selMgr.anchor,4);assert.equal(e.selMgr.head,3);assert.equal(edits,0);e.extendSelection(-1);
+  assert.deepEqual(json(e.selMgr.selection),{startOffset:2,endOffset:4});
+});
+check('finishing an empty composition still replaces its original range',()=>{
+  const e=editor('ABCDE');e.selMgr.setSelection(1,3);e.emitSelection();e.ime=new api.ImeBridge();e.engineRef=null;
+  e.registerImeCallbacks();let edits=0;e.onEdit=()=>edits++;e.ime.onPreviewText('',-1,-1);e.ime.onPreviewFinish();
+  assert.equal(e.doc.text,'ADE');assert.equal(e.doc.caretOffset,1);assert.equal(e.previewMgr.isComposing,false);
+  assert.equal(edits,1);
+});
 check('Left collapses selection at its start',()=>{const e=editor('ABCDE');e.selMgr.setSelection(1,3);e.emitSelection();const cmd=new api.KeyboardEvent();cmd.action=api.KeyAction.MOVE_LEFT;e.applyKeyCommand(cmd);assert.equal(e.doc.caretOffset,1);assert.ok(e.selMgr.selection.isEmpty());});
 check('composition does not intercept candidate navigation',()=>{const e=editor('abc');e.focused=true;e.previewMgr.update('ni',-1,-1,3,3);assert.equal(e.handleKeyPreIme({keyCode:2012,type:0,keyText:''}),false);});
 check('Ctrl Home and Shift Home have correct scope',()=>{assert.equal(api.KeyboardHandler.translate(2081,'',true,true,false,false).action,api.KeyAction.MOVE_DOC_START);assert.equal(api.KeyboardHandler.translate(2081,'',true,false,true,false).action,api.KeyAction.MOVE_LINE_START);});

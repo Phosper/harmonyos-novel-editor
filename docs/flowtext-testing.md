@@ -1,12 +1,18 @@
 # FlowText 与桌面窗口回归测试
 
-使用 DevEco Studio 6.1、HarmonyOS SDK 6.1.0 / API 23。编辑器用例使用 `ohosTest` 隔离画布；窗口用例启动真实应用、查看引导页，不输入或删除文稿。运行前先保存真实应用草稿，测试时保持模拟器解锁且不操作窗口。
+当前工程使用 HarmonyOS API 26，需 DevEco Studio 26.0.0 或配套 Command Line Tools。编辑器用例使用 `ohosTest` 隔离画布；窗口用例启动真实应用、查看引导页，不输入或删除文稿。运行前先保存真实应用草稿，测试时保持模拟器解锁且不操作窗口。下列 API 23 结果为升级前历史记录。
 
 2026-10-06 验证结果：主包、测试包均编译通过；MateBook Pro 2in1 模拟器（HarmonyOS 6.1 / API 23）18 项测试全部通过；本地 33 项回归检查及其中的 766 组 Unicode 官方样例通过。最终源码关闭了诊断日志。
 
 2026-10-13 修复版验证结果：主包与 `ohosTest` 测试包在 SDK 6.1.0 / API 23 编译通过；69 项本地回归检查（含 766 组 Unicode 官方样例）通过；MateBook Pro 2in1 / API 23 模拟器 22 项原生测试全部通过，Failure、Error、Ignore 均为 0。
 
 2026-10-13 桌面标题栏修复验证结果：主包与测试包编译通过；本地回归增至 86 项；MateBook Pro / API 23 分组运行编辑器 22 项、桌面窗口 3 项，全部通过，Failure、Error、Ignore 均为 0。原生键盘用例在聚焦、每次输入后等待 UI 空闲，并逐步检查选区，避免把异步输入尚未落定的状态当作结果。
+
+2026-10-13 API 26 构建验证：使用官方 Command Line Tools 26.0.0.851、SDK 26.0.0.105、Hvigor 6.26.8、Node.js 24.14.1、JDK 21，主包与测试包编译通过，86 项本地回归通过。两包的 `compileSdkVersion` 均为 `26.0.0.105`，打包后的最低/目标 API 值均为 `260000026`（API 26 编码）；当前 `compatibleSdkVersion` 为 `26.0.0`，旧 API 23 模拟器不能用于此轮安装测试。
+
+2026-10-14 API 26 最终验证：修复输入法空提交后重新构建主包与测试包，88 项本地检查通过。新建独立 `WeaverAPI26` / MateBook Pro 模拟器，镜像为 HarmonyOS 7.0.0.107；实际设备参数 `const.ohos.apiversion=26`、`const.product.devicetype=2in1`。在 `127.0.0.1:12326` 分组运行编辑器 22 项、桌面窗口 3 项，全部通过，Failure、Error、Ignore 均为 0。生产诊断日志已关闭。
+
+API 26 输入法切换语言时会发送空 `insertText`；无组字状态时空提交应为无操作，不能删除选中文字、清除选区方向、改变格式或写入历史。新增回归在修复前重现 `ABCDE → ABCE`，修复后保留正文及 `3..4` 选区，后续 Shift+Left 继续扩到 `2..4`；空预上屏完成仍能替换原范围。本地 FlowText 回归增至 39 项，总计 88 项。
 
 ## 本地逻辑测试
 
@@ -27,15 +33,17 @@ node tools/window-regression.cjs
 
 ## DevEco 编译和设备测试
 
-在 DevEco 完成依赖同步，启动已有模拟器或连接设备，查看 `hdc list targets`，然后执行：
+在配套工具中完成依赖同步，启动 API 26 或以上的模拟器或连接设备，查看 `hdc list targets`，然后执行：
 
 运行 UI 用例前先进入模拟器桌面，确保屏幕已解锁；锁屏会阻止测试画布显示与获得焦点。
 
+新建 API 26 电脑模拟器首次安装应用后，系统可能询问是否自动添加至桌面。先处理该系统提示再运行 UI 用例，否则它会遮挡测试画布。官方模拟器实例名只接受字母、数字、空格、下划线和加号；本次使用 `WeaverAPI26`。
+
 ```powershell
-./tools/Test-FlowText.ps1 -DevEcoRoot 'D:/software/DevEco Studio' -Device '127.0.0.1:5555'
+./tools/Test-FlowText.ps1 -DevEcoRoot 'D:/software/CommandLineTools-26.0.0.851' -JavaRoot 'D:/software/DevEco Studio/jbr' -Device '<hdc list targets 中的设备>'
 ```
 
-`DevEcoRoot` 和 `Device` 换成自己的路径和目标。仅编译可加 `-BuildOnly`。脚本分别构建主包和 `ohosTest`，安装后分组执行编辑器与窗口 Hypium 用例，每组从关闭应用的状态启动，单用例超时为 20 秒。根据完整汇总判断 Failure、Error、Ignore 均为 0 且 Pass 等于 Tests run，避免误把系统命令退出码 0 当成全部通过。两组日志分别保存到 `tools/.test-results/device-tests.log`、`window-tests.log`。
+`DevEcoRoot` 可为 DevEco Studio 或 Command Line Tools 根目录，`Device` 换成实际设备；CLI 未带 JDK 时用 `JavaRoot` 指定本机 JDK 21。仅编译可加 `-BuildOnly`。脚本检查实际 SDK 不低于目标 API、设备 API 不低于最低兼容版本，条件不符时拒绝构建或安装。脚本分别构建主包和 `ohosTest`，安装后分组执行编辑器与窗口 Hypium 用例，每组从关闭应用的状态启动，单用例超时为 20 秒。根据完整汇总判断 Failure、Error、Ignore 均为 0 且 Pass 等于 Tests run，避免误把系统命令退出码 0 当成全部通过。两组日志分别保存到 `tools/.test-results/device-tests.log`、`window-tests.log`。
 
 设备测试使用真实 ArkGraphics2D 排版、CanvasTextEditor 和系统键盘事件，覆盖混排索引、表情、复杂文字、标题度量、密度换算、空段落、换行、宽度变化、格式同步和键盘选择。实际手机需配置自己的调试签名。
 
@@ -46,6 +54,8 @@ node tools/window-regression.cjs
 系统常驻标题、右上角三键和全屏顶部热区需要分别配置，依据见[华为沉浸式窗口适配说明](https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-arkui-1089)。隐藏配置须在内容加载后调用，最大化与还原完成后重新应用；自绘 36vp 高度不传给原生装饰高度接口。
 
 键盘测试还验证框架焦点。Canvas 本身不能获焦，编辑器使用可获焦子节点和 `tabStop` 容器；依据见[华为焦点控制文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-references-V14/ts-universal-attributes-focus-V14)。
+
+连续按键测试在隔离页面观察每一组目标键和修饰键的实际 Up，最多等待 5 秒，然后等待 UI 空闲并检查原来的严格选区结果。每组只注入一次，未确认释放时不开始下一组；UI 空闲本身不能保证注入序列处理完。相关实现见 [UITest 组合键序列](https://github.com/openharmony/testfwk_arkxtest/blob/master/uitest/core/ui_action.h) 和 [系统事件注入](https://github.com/openharmony/testfwk_arkxtest/blob/master/uitest/server/system_ui_controller.cpp)。
 
 Unicode 数据可用 `python tools/generate-grapheme-data.py` 从已保存数据重新生成；只有更新数据时才需要 `--download`。数据版权与许可见 `tools/unicode/LICENSE.txt`。
 

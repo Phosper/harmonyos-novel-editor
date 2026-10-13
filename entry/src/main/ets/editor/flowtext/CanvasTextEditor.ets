@@ -796,6 +796,9 @@ export struct CanvasTextEditor {
   }
 
   insertExternalText(text: string): void {
+    // 输入法切换语言会提交空文本；无组字状态时不应删除选区或产生编辑事务。
+    // 空预上屏完成仍需替换原范围，保留组字流程的语义。
+    if (text.length === 0 && !this.previewMgr.isComposing) { return; }
     if (this.previewMgr.isComposing) {
       const range: PreviewInfo = this.previewMgr.previewInfo;
       this.selMgr.setSelection(range.startOffset, range.endOffset);

@@ -12,9 +12,19 @@ HarmonyOS / ArkTS 小说写作应用。当前源码基线为 2026-10-13 收到�
 
 ## 打开与构建
 
-使用支持 HarmonyOS SDK 6.1.0（API 23）的 DevEco Studio 打开本目录，重新同步项目依赖。工程仅包含一个 `entry` 模块。
+使用 DevEco Studio 26.0.0 或匹配的命令行工具链及 HarmonyOS SDK 26.0.0 打开本目录，重新同步项目依赖。工程仅包含一个 `entry` 模块。
 
-工程继续采用本机已验证的 SDK 6.1.0（API 23）与构建工具配置。来包中的 `26.0.0` 工具链配置、构建缓存、已安装依赖、`local.properties` 和个人签名配置未迁入。安装到设备前，请在本机配置签名。
+当前目标版本 `targetSdkVersion` 和最低兼容版本 `compatibleSdkVersion` 均为 `26.0.0`（API 26）。`oh-package.json5` 与 `hvigor/hvigor-config.json5` 的 `modelVersion` 均为 `26.0.0`。配套版本以 [DevEco Studio 26.0.0 官方发布说明](https://developer.huawei.com/consumer/en/doc/harmonyos-releases/deveco-studio-new-features-2600) 为准；本次实际使用官方 Command Line Tools 26.0.0.851、SDK 26.0.0.105、Hvigor 6.26.8、Node.js 24.14.1。
+
+2026-10-14 已使用上述 API 26 工具链构建主包和测试包；两包中的 `compileSdkVersion` 均为 `26.0.0.105`，目标和最低 API 元数据均为 API 26。88 项本地回归通过；独立 MateBook Pro / HarmonyOS 7.0.0.107 / API 26 模拟器分组运行编辑器 22 项、桌面窗口 3 项，全部通过，Failure、Error、Ignore 均为 0。升级验证中同时修复了输入法空提交删除选中文字的问题。个人签名、`local.properties`、构建缓存与已安装依赖不从来包迁入；安装到真实设备前，请在本机配置签名。
+
+命令行工具包不包含 JDK，可通过 `-JavaRoot` 指定本机 JDK 21。路径按自己的安装目录替换：
+
+```powershell
+./tools/Test-FlowText.ps1 -DevEcoRoot 'D:/software/CommandLineTools-26.0.0.851' -JavaRoot 'D:/software/DevEco Studio/jbr' -BuildOnly
+```
+
+脚本在构建前检查实际 SDK，在安装前检查设备 API。API 23 开发工具或模拟器不能用于当前最低 API 26 的工程。
 
 来包新增了窗口排版、绘制缓存、列表读取裁剪与保存修订号保护；其原始审查报告保存在 [2026-10-13 来包报告](docs/reviews/upstream-review-2026-10-13.html)。该报告保留部分修改前结论，验证结果需以当前源码的测试为准。
 
