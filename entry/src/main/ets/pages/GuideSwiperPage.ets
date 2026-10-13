@@ -11,10 +11,12 @@
 // 2. 轮播页数量是固定的 4 个，不需要 ForEach，直接列出即可 —— 少一层差量算法就少一处不确定。
 // 3. 文案以固定数组驱动，无需状态，因此不存在"选中态同步"这类问题。
 import { router } from '@kit.ArkUI'
+import { deviceInfo } from '@kit.BasicServicesKit'
 import { app } from '../store/AppStores'
 import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { tokensFor, WeaverColorSet, WeaverRadii } from '../constants/DesignTokens'
+import { PcWindowBar } from '../shell/PcWindowBar'
 
 interface GuideSlide {
   title: string
@@ -91,7 +93,10 @@ struct GuideContent {
 struct GuideSwiperPage {
   build() {
     Column() {
-      GuideContent()
+      if (deviceInfo.deviceType === '2in1') {
+        PcWindowBar({ app: app })
+      }
+      GuideContent().layoutWeight(1)
     }.width('100%').height('100%')
   }
 }

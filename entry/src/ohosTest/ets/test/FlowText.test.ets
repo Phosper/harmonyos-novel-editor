@@ -267,14 +267,25 @@ export default function flowTextTest(): void {
       controller.setText('ABCDE'); controller.setCaretPosition(4); controller.focus();
       const editor = await driver.waitForComponent(ON.id('canvasTextEditor'), 5000);
       expect(await editor.isFocused()).assertTrue();
+      // 焦点确认不等于异步 IME attach 和编辑器帧已落定；先等待输入准备结束。
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      expect(FlowTextFixture.savedCaret).assertEqual(4);
       await driver.triggerCombineKeys(KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_DPAD_LEFT);
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      expect(FlowTextFixture.selectionStart).assertEqual(3);
+      expect(FlowTextFixture.selectionEnd).assertEqual(4);
       await driver.triggerCombineKeys(KeyCode.KEYCODE_SHIFT_LEFT, KeyCode.KEYCODE_DPAD_LEFT);
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
       expect(FlowTextFixture.selectionStart).assertEqual(2);
       expect(FlowTextFixture.selectionEnd).assertEqual(4);
       await driver.triggerKey(KeyCode.KEYCODE_DPAD_LEFT);
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
       expect(FlowTextFixture.savedCaret).assertEqual(2);
       controller.setText('A😀'); controller.setCaretPosition(3);
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      expect(FlowTextFixture.savedCaret).assertEqual(3);
       await driver.triggerKey(KeyCode.KEYCODE_DEL);
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
       expect(controller.getText()).assertEqual('A');
     });
   });

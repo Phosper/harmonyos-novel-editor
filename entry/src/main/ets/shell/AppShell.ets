@@ -14,6 +14,7 @@
 //    hideNavBar 保持 false —— 设为 true 会连同**内容区**一起隐藏，栈空即整屏空白。
 // 4. 二级页面用 NavDestination（官方路径），返回键由路由栈接管，无需手写 onBackPress。
 import { promptAction, window } from '@kit.ArkUI'
+import { deviceInfo } from '@kit.BasicServicesKit'
 import { BreakPoint, breakPointFrom } from '../utils/BreakPoint'
 import { Logger } from '../utils/Logger'
 import { WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
@@ -208,13 +209,19 @@ export struct AppShell {
   build() {
     Stack() {
       Column() {
-        if (this.loading) {
-          this.loadingView()
-        } else if (this.loadError !== '') {
-          this.errorView()
-        } else {
-          this.mainLayout()
+        if (deviceInfo.deviceType === '2in1') {
+          PcWindowBar({ app: app })
         }
+        Column() {
+          if (this.loading) {
+            this.loadingView()
+          } else if (this.loadError !== '') {
+            this.errorView()
+          } else {
+            this.mainLayout()
+          }
+        }
+        .layoutWeight(1).width('100%')
       }
       .width('100%').height('100%')
       // 沉浸式（官方两步法）：
@@ -273,9 +280,6 @@ export struct AppShell {
   @Builder
   mainLayout() {
     Column() {
-      if (app.ui.isPc) {
-        PcWindowBar({ app: app })
-      }
       // 断点分发：lg 及以上走现有三栏（完全不变）；sm/md 走手机端外壳。
       if (this.breakPoint === BreakPoint.LG) {
         this.appBar()

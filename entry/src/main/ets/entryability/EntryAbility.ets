@@ -5,8 +5,13 @@ import { prefs } from '../utils/PreferenceHelper';
 import { setAppContext } from '../utils/AppContext';
 import { Logger } from '../utils/Logger';
 import { app } from '../store/AppStores';
+import { configureDesktopChrome } from '../utils/DesktopWindowChrome';
 
 export default class EntryAbility extends UIAbility {
+  private mainWindow: window.Window | null = null;
+  private isDesktop: boolean = false;
+  private contentReady: boolean = false;
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     setAppContext(this.context)
     Logger.info('Ability onCreate');
@@ -23,6 +28,8 @@ export default class EntryAbility extends UIAbility {
     Logger.info('Ability onWindowStageCreate');
 
     const mainWin: window.Window = windowStage.getMainWindowSync()
+    this.mainWindow = mainWin
+    this.contentReady = false
 
     AppStorage.setOrCreate<window.Window>('mainWindow', mainWin)
 
@@ -32,18 +39,8 @@ export default class EntryAbility extends UIAbility {
     //     loadContent 之前窗口还没有 UIContent，调用会抛
     //     "This window state is abnormal / 1300002" 并被系统按 JS 错误直接杀进程。
     const isDesktop: boolean = deviceInfo.deviceType === '2in1'
+    this.isDesktop = isDesktop
     AppStorage.setOrCreate<boolean>('isPcDevice', isDesktop)
-
-    if (isDesktop) {
-      try {
-        // 隐藏系统窗口装饰（标题栏 + 最小化/最大化/关闭三键），改由 PcWindowBar 自绘承载
-        mainWin.setWindowDecorVisible(false)
-        // 与 PcWindowBar 高度保持一致，避免自绘条与系统预留高度打架
-        mainWin.setWindowDecorHeight(36)
-      } catch (e) {
-        Logger.warn('Window decor config failed: ' + String(e))
-      }
-    }
 
     // 沉浸式：**所有设备**（手机/平板/PC）布局扩展到系统栏区域，系统栏透明。
     // 必须在 loadContent 之前开启：官方明确，未开全屏布局时
@@ -60,6 +57,14 @@ export default class EntryAbility extends UIAbility {
           return;
         }
         Logger.info('Succeeded in loading the content.');
+        // 原生标题栏依赖已加载的 UIContent；全屏热区显隐也要独立配置。
+        // 自绘栏的 36vp 高度不设置给原生装饰栏（原生接口的下限为 37vp）。
+        if (this.mainWindow === mainWin) {
+          this.contentReady = true
+          if (this.isDesktop) {
+            configureDesktopChrome(mainWin)
+          }
+        }
         // 窗口底色由 SystemBars.applySystemBars 统一设为主题底色（勿在此设回透明）：
         // 状态栏全透明后，状态栏区域由窗口底色/根背景承托，须与页面同色。
         // 内容加载完成后再按实际主题设一次系统栏
@@ -98,6 +103,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    this.contentReady = false
+    this.mainWindow = null
     Logger.info('Ability onWindowStageDestroy');
   }
 
@@ -115,6 +122,9 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     Logger.info('Ability onForeground');
+    if (this.isDesktop && this.contentReady && this.mainWindow !== null) {
+      configureDesktopChrome(this.mainWindow)
+    }
     // 前台时窗口才真正就绪；按实际主题同步系统栏前景色
     app.ui.syncSystemBars()
   }

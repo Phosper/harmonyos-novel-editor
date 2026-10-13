@@ -39,15 +39,22 @@ try {
       $installed | Set-Content -LiteralPath (Join-Path $taskOutput "$target-install.log")
       if (($installed -join "`n") -notmatch 'install bundle successfully') { throw "$target install failed: $installed" }
     }
-    $testLog = Join-Path $taskOutput 'device-tests.log'
-    & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -w 60 *> $testLog
-    $result = Get-Content -Raw -LiteralPath $testLog
-    # aa can exit 0 even when Hypium reports errors; inspect the actual test summary.
-    if ($result -notmatch 'Tests run: [1-9]\d*, Failure: 0, Error: 0, Pass: [1-9]\d*, Ignore: 0') {
-      Get-Content -LiteralPath $testLog -Tail 30
-      throw 'FlowText device regression failed; inspect device-tests.log'
+    # Keep editor focus tests separate from tests that activate the real EntryAbility.
+    foreach ($testGroup in @(
+      @{ Name = 'editor'; Classes = 'ActsAbilityTest,FlowTextRegression'; Log = 'device-tests.log' },
+      @{ Name = 'window'; Classes = 'WindowChromeRegression'; Log = 'window-tests.log' }
+    )) {
+      $testLog = Join-Path $taskOutput $testGroup.Log
+      & $taskHdc -t $Device shell aa force-stop com.chungu.weaver | Out-Null
+      & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -s class $testGroup.Classes -s timeout 20000 -w 60 *> $testLog
+      $result = Get-Content -Raw -LiteralPath $testLog
+      # aa can exit 0 even when Hypium reports errors; inspect the actual test summary.
+      if ($result -notmatch 'Tests run: ([1-9]\d*), Failure: 0, Error: 0, Pass: ([1-9]\d*), Ignore: 0' -or $Matches[1] -ne $Matches[2]) {
+        Get-Content -LiteralPath $testLog -Tail 30
+        throw ($testGroup.Name + ' device regression failed; inspect ' + $testGroup.Log)
+      }
+      Write-Output ($testGroup.Name + ': ' + $Matches[0])
     }
-    Write-Output ($Matches[0])
   }
   Write-Output "Logs: $taskOutput"
 } finally {
