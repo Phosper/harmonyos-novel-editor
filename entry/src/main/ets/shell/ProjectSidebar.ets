@@ -1,6 +1,7 @@
 // 侧栏 —— 文库分类 + 项目列表
 import { tokensFor, WeaverColorSet, WeaverRadii, LibId, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
+import { fireAndLog } from '../store/AppStores'
 import type { ProjectItem } from '../store/StoreModels'
 
 interface LibEntry {
@@ -48,7 +49,8 @@ export struct ProjectSidebar {
           .borderRadius(WeaverRadii.SM)
           .onClick(() => {
             if (this.app !== null) {
-              this.app.createChapter()
+              // 这些动作末端都会走 DAO 的 throw，onClick 无法 await → 必须接住拒绝
+              fireAndLog(this.app.createChapter(), 'createChapter')
             }
           })
       }
@@ -84,7 +86,7 @@ export struct ProjectSidebar {
             .margin({ bottom: 4 })
             .onClick(() => {
               if (this.app !== null) {
-                this.app.setLibFilter(lib.id)
+                fireAndLog(this.app.setLibFilter(lib.id), 'setLibFilter')
               }
             })
           }, (lib: LibEntry) => lib.id)
@@ -115,7 +117,7 @@ export struct ProjectSidebar {
             .margin({ bottom: 4 })
             .onClick(() => {
               if (this.app !== null) {
-                this.app.selectBook(p.id)
+                fireAndLog(this.app.selectBook(p.id), 'selectBook')
               }
             })
             .gesture(LongPressGesture().onAction(() => this.onDeleteProject(p.id)))

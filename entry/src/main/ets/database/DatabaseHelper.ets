@@ -34,19 +34,24 @@ export class DatabaseHelper {
       securityLevel: relationalStore.SecurityLevel.S1
     }
     try {
-      this.store = await relationalStore.getRdbStore(context, config)
-      await this.store.executeSql('PRAGMA foreign_keys = ON')
-      await this.createTables()
-      await this.ensureColumns()
+      // store 先放局部变量：建表/补列任一句失败时 this.store 必须保持 null。
+      // 旧实现先赋值再建表，DDL 失败后 UI 的「重试」会在开头直接返回一个
+      // 「建表没做完」的 store，后续所有查询持续报 14800021 且重试永远修不好。
+      const store: relationalStore.RdbStore = await relationalStore.getRdbStore(context, config)
+      await store.executeSql('PRAGMA foreign_keys = ON')
+      await this.createTables(store)
+      await this.ensureColumns(store)
+      this.store = store
       Logger.info('Database initialized (version ' + DB_VERSION + ')')
     } catch (e) {
+      this.store = null
       Logger.error('Database init failed: ' + String(e))
       throw new Error(String(e))
     }
     return this.store
   }
 
-  private async createTables(): Promise<void> {
+  private async createTables(store: relationalStore.RdbStore): Promise<void> {
     const sqls: string[] = [
       'CREATE TABLE IF NOT EXISTS books (' +
         'id TEXT PRIMARY KEY,' +
@@ -125,7 +130,7 @@ export class DatabaseHelper {
     ]
     for (const sql of sqls) {
       try {
-        await this.store!.executeSql(sql)
+        await store.executeSql(sql)
       } catch (e) {
         Logger.error('Create table failed: ' + String(e))
         throw new Error(String(e))
@@ -136,7 +141,7 @@ export class DatabaseHelper {
   // 幂等补齐新增列：CREATE TABLE IF NOT EXISTS 不会改动已存在的表，
   // 故对旧库需显式 ALTER。只增列，不删列、不改列（is_private 等废弃列留在旧库中即可，
   // 模型层不再读写它们）。
-  private async ensureColumns(): Promise<void> {
+  private async ensureColumns(store: relationalStore.RdbStore): Promise<void> {
     const existing: Map<string, string[]> = new Map<string, string[]>()
     for (const entry of EXPECTED_COLUMNS) {
       const table: string = entry[0]
@@ -144,13 +149,13 @@ export class DatabaseHelper {
       const columnName: string = definition.split(' ')[0]
       let columns: string[] = existing.get(table) ?? []
       if (!existing.has(table)) {
-        columns = await this.tableColumns(table)
+        columns = await this.tableColumns(store, table)
         existing.set(table, columns)
       }
       if (!columns.includes(columnName)) {
         const sql: string = 'ALTER TABLE ' + table + ' ADD COLUMN ' + definition
         try {
-          await this.store!.executeSql(sql)
+          await store.executeSql(sql)
           columns.push(columnName)
           Logger.info('Schema upgraded: ' + sql)
         } catch (e) {
@@ -162,23 +167,31 @@ export class DatabaseHelper {
   }
 
   // 读取表已有列名（PRAGMA table_info 结果集的 name 列）
-  private async tableColumns(table: string): Promise<string[]> {
+  private async tableColumns(store: relationalStore.RdbStore, table: string): Promise<string[]> {
     const names: string[] = []
+    let rs: relationalStore.ResultSet | null = null
     try {
-      const rs: relationalStore.ResultSet =
-        await this.store!.querySql('PRAGMA table_info(' + table + ')')
+      rs = await store.querySql('PRAGMA table_info(' + table + ')')
       const idx: number = rs.getColumnIndex('name')
       if (idx >= 0) {
         while (rs.goToNextRow()) {
           names.push(rs.getString(idx))
         }
       }
-      rs.close()
+      return names
     } catch (e) {
       Logger.error('Read table columns failed: ' + table + ' :: ' + String(e))
       throw new Error(String(e))
+    } finally {
+      if (rs !== null) {
+        // finally 里 close 抛错会掩盖真正的异常，且失败已无可挽回 → 吞掉并记日志
+        try {
+          rs.close()
+        } catch (closeError) {
+          Logger.warn('Close table_info result set failed: ' + String(closeError))
+        }
+      }
     }
-    return names
   }
 
   getStore(): relationalStore.RdbStore {
@@ -189,29 +202,21 @@ export class DatabaseHelper {
   }
 
   /**
-   * 以事务执行一组写操作：全部成功才提交，任一失败整组回滚。
+   * 开启一个**独立写事务**，调用方负责 commit / rollback。
    *
-   * 备份恢复要连写项目 / 人物 / 世界观 / 灵感 / 文稿 / 关系若干张表，
-   * 逐条 await 写入时一旦中途失败（例如磁盘满、进程被杀），
-   * 库里会留下一个"半成品项目"——项目名在、文稿缺一半、关系全无，
-   * 用户既看不出来也删不干净。整组回滚可避免这种脏数据。
+   * 为什么不用 beginTransaction：官方文档在 createTransaction 条目下明确写着
+   * 「与 beginTransaction 的区别在于：createTransaction 接口会返回一个事务对象，
+   * 不同事务对象之间是隔离的」，并且「**优先使用 createTransaction，不再推荐使用
+   * beginTransaction**」。beginTransaction 把事务建在 store 的共享写连接上，
+   * 事务回调里每次 await 的间隙事件循环都会跑其它任务（编辑器防抖保存、30 秒安全网），
+   * 那些 UPDATE 会落到同一条写连接并**被并入本事务** —— 恢复一旦失败回滚，
+   * 用户刚保存的正文会被一起回滚，而界面已经显示「已保存」，属静默数据丢失。
+   *
+   * 事务内的写入需经 BaseDao.setTransaction 重定向到返回的事务对象；
+   * 统一的编排入口是 Repos.runInTransaction。
    */
-  async runInTransaction(work: () => Promise<void>): Promise<void> {
-    const store: relationalStore.RdbStore = this.getStore()
-    await store.beginTransaction()
-    try {
-      await work()
-      await store.commit()
-    } catch (e) {
-      try {
-        await store.rollBack()
-      } catch (rollbackError) {
-        // 回滚本身失败已无法挽回，记日志后按原异常抛出
-        Logger.error('Rollback failed: ' + String(rollbackError))
-      }
-      Logger.error('Transaction rolled back: ' + String(e))
-      throw new Error(String(e))
-    }
+  beginTransaction(): Promise<relationalStore.Transaction> {
+    return this.getStore().createTransaction()
   }
 }
 

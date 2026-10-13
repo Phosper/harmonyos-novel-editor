@@ -1,4 +1,10 @@
 // 章节（文稿）仓储 —— 用例级方法
+//
+// 读取分三条路径，别混用：
+//   loadChapters()     列表用：正文只取前缀，不读 format_runs（见 ChapterDao.queryList）
+//   loadOne()          打开文稿用：按 id 取完整正文与格式边车
+//   loadChaptersFull() 备份导出用：整篇正文
+import { relationalStore } from '@kit.ArkData'
 import { ChapterDao, ChapterFilter } from '../database/ChapterDao'
 import type { ChapterOrderStat } from '../database/ChapterDao'
 import { IdGenerator } from '../utils/IdGenerator'
@@ -9,14 +15,37 @@ import { LibId, LibCounts } from '../constants/DesignTokens'
 export class ChapterRepository {
   private dao: ChapterDao = new ChapterDao()
 
+  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
+  setTransaction(tx: relationalStore.Transaction | null): void {
+    this.dao.setTransaction(tx)
+  }
+
   // 按当前书籍与文库分类加载章节。
   // bookId === '' 表示"未归类"视图（book_id 为空串的文稿）；废纸篓不分书籍。
   async loadChapters(bookId: string, lib: LibId): Promise<ChapterModel[]> {
+    return this.dao.queryList(ChapterRepository.filterFor(bookId, lib))
+  }
+
+  /**
+   * 打开文稿：必须按 id 取**完整**正文。
+   * 列表投影里的正文只有前缀，且内存里的 chapter 可能已被编辑过；
+   * 直接用列表项当草稿初值会把旧正文写回去（关掉标签再打开即丢稿）。
+   */
+  async loadOne(chapterId: string): Promise<ChapterModel | null> {
+    return this.dao.queryById(chapterId)
+  }
+
+  /** 整本导出 / 备份：需要每篇的完整正文与格式边车 */
+  async loadChaptersFull(bookId: string): Promise<ChapterModel[]> {
+    return this.dao.queryFull(ChapterRepository.filterFor(bookId, LibId.ALL))
+  }
+
+  private static filterFor(bookId: string, lib: LibId): ChapterFilter {
     const f: ChapterFilter = new ChapterFilter()
     if (lib === LibId.TRASH) {
       f.bookId = bookId === '' ? null : bookId
       f.trash = true
-      return this.dao.query(f)
+      return f
     }
     f.bookId = bookId
     f.trash = false
@@ -29,7 +58,7 @@ export class ChapterRepository {
       f.orderBy = bookId === '' ? 'updated_at' : 'sort_order'
       f.ascending = bookId !== ''
     }
-    return this.dao.query(f)
+    return f
   }
 
   async createChapter(bookId: string, title?: string,
@@ -64,25 +93,19 @@ export class ChapterRepository {
     await this.dao.insert(chapter)
   }
 
+  /** 只改标题：旧实现先读全文再连正文一起写回（改名这类高频操作不该搬动 1.75MB 的 TEXT） */
   async rename(chapterId: string, title: string): Promise<void> {
-    const ch: ChapterModel | null = await this.dao.queryById(chapterId)
-    if (ch === null) {
-      return
-    }
-    await this.dao.updateTitleAndContent(chapterId, title.trim(), ch.content)
+    await this.dao.updateTitle(chapterId, title.trim())
   }
 
   async updateContent(chapterId: string, content: string): Promise<void> {
     await this.dao.updateContent(chapterId, content)
   }
 
-  async updateCaretOffset(chapterId: string, offset: number): Promise<void> {
-    await this.dao.updateCaretOffset(chapterId, offset)
-  }
-
-  /** 写入格式标注边车（T025） */
-  async updateFormatRuns(chapterId: string, json: string): Promise<void> {
-    await this.dao.updateFormatRuns(chapterId, json)
+  /** 一次自动保存：正文 / 光标 / 格式边车走单条 UPDATE */
+  async saveDraft(chapterId: string, content: string, caretOffset: number,
+    formatRuns: string): Promise<void> {
+    await this.dao.saveDraft(chapterId, content, caretOffset, formatRuns)
   }
 
   async setFormat(chapterId: string, format: ChapterFormat): Promise<void> {
@@ -124,27 +147,17 @@ export class ChapterRepository {
   async restore(chapterId: string): Promise<void> {
     const target: ChapterModel | null = await this.dao.queryById(chapterId)
     if (target !== null) {
-      const f: ChapterFilter = new ChapterFilter()
-      f.bookId = target.bookId
-      f.orderBy = 'sort_order'
-      f.ascending = true
-      const active: ChapterModel[] = await this.dao.query(f)
+      // 重名检测只需要标题：旧实现先取回目标全文，再查询整本书（含全文）
+      // 逐个比对，等于用「读全库正文」换一个标题字符串。
+      const titles: string[] = await this.dao.activeTitles(target.bookId)
       let newTitle: string = target.title
       let suffix: number = 2
-      let conflict: boolean = true
-      while (conflict) {
-        conflict = false
-        for (const c of active) {
-          if (c.title === newTitle) {
-            newTitle = target.title + '(' + suffix + ')'
-            suffix++
-            conflict = true
-            break
-          }
-        }
+      while (titles.includes(newTitle)) {
+        newTitle = target.title + '(' + suffix + ')'
+        suffix++
       }
       if (newTitle !== target.title) {
-        await this.dao.updateTitleAndContent(chapterId, newTitle, target.content)
+        await this.dao.updateTitle(chapterId, newTitle)
       }
     }
     await this.dao.setTrash(chapterId, false)

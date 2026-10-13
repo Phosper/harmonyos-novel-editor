@@ -8,6 +8,9 @@
 //    这里不再对空内容做任何特殊处理。
 // 3. 旧版撤销栈从来没有写入点（pushUndoState 零调用），撤销/重做是死按钮。
 //    这里由 setContent 自动记录历史快照（带时间窗合并，避免逐键一条）。
+// 4. 落库竞态：旧实现「await 写入 → 无条件清 dirty」会把写入窗口内的新输入
+//    判成已保存（那批输入本会话内永不落库）。现由 OpenDoc.rev 修订号守卫，
+//    并把落库串行化，避免两次并发 flush 互相覆盖。
 import { ChapterFormat } from '../model/Chapter'
 import type { ChapterModel } from '../model/Chapter'
 import { DOC_TAB_COLORS } from '../constants/DesignTokens'
@@ -41,13 +44,23 @@ export class EditorStore {
    */
   @Trace contentRev: number = 0
 
-  private undoStack: HistoryEntry[] = []
-  private redoStack: HistoryEntry[] = []
+  /**
+   * 撤销/重做栈必须加 @Trace：canUndo/canRedo 在 build 中被读取，
+   * 若字段不可观察，UI 不会因为栈变化被标脏 —— 表现为「撤销/重做按钮永远停在禁用配色」。
+   */
+  @Trace undoStack: HistoryEntry[] = []
+  @Trace redoStack: HistoryEntry[] = []
   private debounceTimer: number = -1
   private safetyTimer: number = -1
   private lastHistoryAt: number = 0
   /** 撤销/重做/载入期间抑制历史记录，避免把回退动作本身也记成一步 */
   private restoring: boolean = false
+  /**
+   * 落库串行链。防抖与 30 秒安全网可能在同一行的两次写入之间重叠，
+   * 若不串行，「新内容先写、旧内容后写」会把新内容覆盖掉，
+   * 而此时 dirty 已被清 → 静默丢稿。
+   */
+  private flushChain: Promise<void> = Promise.resolve()
 
   // ===== 派生 =====
 
@@ -186,12 +199,13 @@ export class EditorStore {
   setEditorState(text: string, runsJson: string, caret: number): void {
     const doc: OpenDoc | undefined = this.activeDoc
     if (doc === undefined) { return }
-    if (doc.draft === text && doc.runsJson === runsJson) { doc.caret = caret; return }
+    if (doc.draft === text && doc.runsJson === runsJson) { doc.caret = caret; doc.rev++; return }
     this.remember(doc)
     doc.draft = text
     doc.runsJson = runsJson
     doc.caret = caret
     doc.dirty = true
+    doc.rev++
     this.scheduleFlush()
     this.saveState = SaveState.IDLE
     this.saveHint = '编辑中…'
@@ -206,6 +220,7 @@ export class EditorStore {
     this.remember(doc)
     doc.draft = text
     doc.dirty = true
+    doc.rev++
     this.scheduleFlush()
     this.saveState = SaveState.IDLE
     this.saveHint = '编辑中…'
@@ -216,6 +231,7 @@ export class EditorStore {
     const doc: OpenDoc | undefined = this.activeDoc
     if (doc !== undefined) {
       doc.caret = offset
+      doc.rev++
     }
   }
 
@@ -228,6 +244,7 @@ export class EditorStore {
     this.remember(doc)
     doc.runsJson = json
     doc.dirty = true
+    doc.rev++
     this.scheduleFlush()
     this.saveState = SaveState.IDLE
     this.saveHint = '编辑中…'
@@ -248,6 +265,7 @@ export class EditorStore {
     doc.draft = text
     doc.runsJson = ''
     doc.dirty = true
+    doc.rev++
     this.restoring = false
     this.contentRev++
     this.scheduleFlush()
@@ -288,6 +306,7 @@ export class EditorStore {
     let index: number = from.length - 1
     while (index >= 0 && from[index].docId !== doc.id) { index-- }
     if (index < 0) { return }
+    // V2 的 @Trace 数组可观测 push/splice 等原地改动，故 canUndo/canRedo 能随栈变化刷新
     const entry: HistoryEntry = from.splice(index, 1)[0]
     to.push(new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson))
     this.restoring = true
@@ -295,6 +314,7 @@ export class EditorStore {
     doc.caret = entry.caret
     doc.runsJson = entry.runsJson
     doc.dirty = true
+    doc.rev++
     this.restoring = false
     // 通知编辑器把画布正文回退到新 draft（否则界面与数据会不一致）
     this.contentRev++
@@ -309,6 +329,7 @@ export class EditorStore {
     }
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = -1
+      // flushActive 内部吞掉异常（见其说明），定时器里不会产生未处理拒绝
       this.flushActive()
     }, SAVE_DEBOUNCE_MS)
   }
@@ -318,6 +339,7 @@ export class EditorStore {
       return
     }
     this.safetyTimer = setInterval(() => {
+      // 安全网兜底：flushAll 内部逐篇 try/catch，永不 reject
       this.flushAll()
     }, SAVE_SAFETY_MS)
   }
@@ -333,9 +355,21 @@ export class EditorStore {
     }
   }
 
+  /** 串行排队：保证同一行的两次落库不会并发，后写的才是新内容 */
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run: Promise<void> = this.flushChain.then(task)
+    // 链表本身吞掉拒绝，否则一次失败会让后续任务全部被跳过
+    this.flushChain = run.then((): void => {}, (): void => {})
+    return run
+  }
+
   /**
    * 落库单篇。正文为空也照常写入 —— 用户清空一篇文稿必须是可保存的意图，
    * 而不是被静默忽略。
+   *
+   * 失败时保持 doc.dirty = true 并 throw：调用方（flushAll / flushActive）自行决定
+   * 是否吞掉，但 dirty 一定留给防抖或安全网重试。事务占用期返回的 14800024
+   * （database is locked）也走这条路 —— 是可重试的显式失败，而不是静默丢数据。
    */
   async flushDoc(id: string): Promise<void> {
     const doc: OpenDoc | undefined = this.openDocs.find((d: OpenDoc) => d.id === id)
@@ -351,14 +385,27 @@ export class EditorStore {
       this.saveHint = contentLimitMessage()
       return
     }
+    // 取本次落库的快照与修订号。await 期间事件循环会跑用户输入，
+    // 结束时 rev 若已变化，说明这批快照之后又有新输入，不能清 dirty。
+    const rev: number = doc.rev
+    const draft: string = doc.draft
+    const caret: number = doc.caret
+    const runsJson: string = doc.runsJson
     this.saveState = SaveState.SAVING
     try {
-      await chapterRepo.updateContent(id, doc.draft)
-      await chapterRepo.updateCaretOffset(id, doc.caret)
-      await chapterRepo.updateFormatRuns(id, doc.runsJson)
-      doc.dirty = false
-      this.saveState = SaveState.IDLE
-      this.saveHint = '已保存'
+      // 正文 / 光标 / 格式边车一次 UPDATE 落库（旧实现拆成 3 条，中途失败留半更新状态）
+      await chapterRepo.saveDraft(id, draft, caret, runsJson)
+      if (doc.rev === rev) {
+        doc.dirty = false
+        this.saveState = SaveState.IDLE
+        this.saveHint = '已保存'
+      } else {
+        // 落库期间用户继续输入：这批输入还没进库。
+        // 旧实现在这里无条件清 dirty → 那批输入本会话内永远不会落库，界面却显示「已保存」。
+        // 保留 dirty，等在途的防抖定时器或 30 秒安全网再来一次。
+        this.saveState = SaveState.IDLE
+        this.saveHint = '编辑中…'
+      }
     } catch (e) {
       Logger.error('Save chapter failed [' + id + ']: ' + String(e))
       this.saveState = SaveState.FAILED
@@ -367,19 +414,32 @@ export class EditorStore {
     }
   }
 
+  /**
+   * 落库当前文稿。**永不 reject**：失败已记录到 saveState/saveHint 并打日志，
+   * 这样定时器、onRequestSave、生命周期回调都不需要各自加 catch，
+   * 也就不会出现「未处理的 Promise 拒绝被系统按 JS 错误杀进程」。
+   */
   async flushActive(): Promise<void> {
     const doc: OpenDoc | undefined = this.activeDoc
-    if (doc !== undefined) {
-      await this.flushDoc(doc.id)
+    if (doc === undefined) {
+      return
+    }
+    try {
+      await this.enqueue((): Promise<void> => this.flushDoc(doc.id))
+    } catch (e) {
+      Logger.error('flushActive failed: ' + String(e))
     }
   }
 
-  /** 全部落库：退后台、销毁、切项目、退出编辑页时调用 */
+  /**
+   * 全部落库：退后台、销毁、切项目、退出编辑页时调用。
+   * **永不 reject**（逐篇 try/catch），故调用方可以不接 catch。
+   */
   async flushAll(): Promise<void> {
     const ids: string[] = this.openDocs.map((d: OpenDoc) => d.id)
     for (const id of ids) {
       try {
-        await this.flushDoc(id)
+        await this.enqueue((): Promise<void> => this.flushDoc(id))
       } catch (e) {
         Logger.error('flushAll: chapter ' + id + ' failed, continue')
       }
@@ -394,6 +454,7 @@ export class EditorStore {
     if (this.saveState === SaveState.TOO_LARGE) {
       return
     }
+    // flushAll 永不 reject；显式 void 表明这里刻意不等待
     this.flushAll()
   }
 

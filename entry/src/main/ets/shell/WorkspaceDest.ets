@@ -10,7 +10,7 @@
 //   - 更多：`bindSheet` 底部弹层（替代 showActionMenu）；设置作为**二级页**（nav.pushPath）。
 import { inputMethod } from '@kit.IMEKit'
 import { tokensFor, WeaverColorSet, WeaverRadii } from '../constants/DesignTokens'
-import { app } from '../store/AppStores'
+import { app, fireAndLog } from '../store/AppStores'
 import { ShellDialog } from '../store/UiStore'
 import { nav } from './Navigator'
 import { EditorPane } from './EditorPane'
@@ -27,6 +27,12 @@ export struct WorkspaceDest {
   @Local moreOpen: boolean = false
   /** 弹层内的层级：0=更多动作，1=设置（在弹层内二级跳转，非独立页面） */
   @Local sheetPage: number = 0
+
+  /** 抽屉蒙层在 padding 内容区内、盖不到状态栏条：开关抽屉时同步压暗/还原状态栏 */
+  @Monitor('listOpen')
+  onListOpenChange(): void {
+    app.ui.setOverlayDim(app.ui.isNarrow && this.listOpen)
+  }
 
   private colors(): WeaverColorSet {
     return tokensFor(app.ui.themeId)
@@ -57,7 +63,8 @@ export struct WorkspaceDest {
 
   /** 面板里点某篇：切到该文稿（同页内切换，不 push），并收起抽屉 */
   private openDoc(id: string): void {
-    app.openChapter(id)
+    // openChapter 现在按 id 读取完整正文，读库可能失败 → 必须接住拒绝
+    fireAndLog(app.openChapter(id), 'WorkspaceDest.openDoc')
     this.listOpen = false
   }
 
@@ -112,7 +119,14 @@ export struct WorkspaceDest {
           .width('100%').height('100%')
         }
         .showSideBar(app.ui.isNarrow ? this.listOpen : true)
-        .onChange((v: boolean) => { if (app.ui.isNarrow) { this.listOpen = v } })
+        .onChange((v: boolean) => {
+          if (app.ui.isNarrow) {
+            this.listOpen = v
+          } else {
+            // 宽屏侧栏常驻（Embed）无蒙层；断点切换瞬间纠正状态栏压暗态
+            app.ui.setOverlayDim(false)
+          }
+        })
         .showControlButton(false)
         .sideBarWidth(300)
         .minSideBarWidth(240)
@@ -167,10 +181,10 @@ export struct WorkspaceDest {
           .onClick(() => { this.moreOpen = false; app.formatActiveDoc() })
         Text('收藏 / 取消收藏').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
-          .onClick(() => { this.moreOpen = false; app.toggleFav(app.editor.activeId) })
+          .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleFav(app.editor.activeId), 'toggleFav') })
         Text('移入 / 移出灵感池').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
-          .onClick(() => { this.moreOpen = false; app.toggleInspiration(app.editor.activeId) })
+          .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleInspiration(app.editor.activeId), 'toggleInspiration') })
 
         // 设置：在弹层内进入二级（保持同一个弹层，不跳独立页）
         Row() {
@@ -246,7 +260,7 @@ export struct WorkspaceDest {
         Text('+ 新建文稿')
           .fontSize(13).fontColor(this.colors().brand)
           .padding({ top: 4, bottom: 4 })
-          .onClick(() => { app.createChapter() })
+          .onClick(() => { fireAndLog(app.createChapter(), 'createChapter') })
       }
       .width('100%').padding({ left: 16, right: 16, bottom: 10 })
 

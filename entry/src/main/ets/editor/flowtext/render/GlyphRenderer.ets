@@ -9,7 +9,7 @@
  * 处于动画中的字形从批量 TextBlob 中剔除、单独绘制（位置/透明度/缩放插值）。
  */
 import { drawing, common2D } from '@kit.ArkGraphics2D';
-import { LayoutLine } from './TextLayoutEngine';
+import { LayoutLine, GlyphRunData } from './TextLayoutEngine';
 import { CursorState } from '../interaction/CursorState';
 import { SelectionInfo, PreviewInfo, ViewportInfo } from '../model/EditorTypes';
 import { HitTester } from '../interaction/HitTester';
@@ -47,6 +47,11 @@ export class GlyphAnimState {
   font: drawing.Font | null = null;
   glyphWidth: number = 0;
   glyphHeight: number = 0;
+  /**
+   * 单字形 TextBlob 缓存：动画生命周期内 glyph/font 都不变，
+   * 每帧重建是纯浪费（一次编辑最多 80 个 slide + 24 个 exit，即约 1.2 万次分配/秒）。
+   */
+  blob: drawing.TextBlob | null = null;
 }
 
 export class GlyphAnimRegistry {
@@ -78,8 +83,35 @@ export class GlyphAnimRegistry {
 export class GlyphRenderer {
   private opts: RenderTheme;
 
+  /**
+   * 复用的画刷。draw 是 60fps 热路径（光标弹簧动画、字形动画、闪烁、惯性滚动
+   * 都会调 drawNow），每帧 new 一个是纯浪费。
+   *
+   * 另外必须显式 setAntiAlias(true)：官方 Brush 文档写明「未调用此接口设置时，
+   * 系统默认关闭抗锯齿」，而本渲染器走 DrawingRenderingContext（这是正确的高性能
+   * 选择），无法用 RenderingContextSettings(true) 开抗锯齿 —— 不设置的话
+   * 字形边缘、光标竖条、选区手柄全是硬边。
+   */
+  private textBrush: drawing.Brush = new drawing.Brush();
+  private animBrush: drawing.Brush = new drawing.Brush();
+  private selectionBrush: drawing.Brush = new drawing.Brush();
+  private handleBrush: drawing.Brush = new drawing.Brush();
+  private caretBrush: drawing.Brush = new drawing.Brush();
+  private previewBrush: drawing.Brush = new drawing.Brush();
+  /** 预上屏字体与 TextBlob 缓存（字号变化 / 文本变化时才重建） */
+  private previewFont: drawing.Font | null = null;
+  private previewFontSizePx: number = -1;
+  private previewBlob: drawing.TextBlob | null = null;
+  private previewBlobText: string = '';
+
   constructor(opts: RenderTheme) {
     this.opts = opts;
+    this.textBrush.setAntiAlias(true);
+    this.animBrush.setAntiAlias(true);
+    this.selectionBrush.setAntiAlias(true);
+    this.handleBrush.setAntiAlias(true);
+    this.caretBrush.setAntiAlias(true);
+    this.previewBrush.setAntiAlias(true);
   }
 
   /** vp → px（绘制模块按物理 px 解释坐标；布局/触摸为 vp，绘制需换算） */
@@ -113,10 +145,10 @@ export class GlyphRenderer {
     ctx.invalidate();
   }
 
-  /** 字形绘制：批量 TextBlob + 动画字形单独插值绘制（仅可视区行） */
+  /** 字形绘制：批量 TextBlob（**按 run 缓存**）+ 动画字形单独插值绘制（仅可视区行） */
   private drawText(canvas: DrawingCanvas, lines: LayoutLine[], viewport: ViewportInfo,
     anims: GlyphAnimRegistry | null): void {
-    const brush = new drawing.Brush();
+    const brush: drawing.Brush = this.textBrush;
     brush.setColor(this.opts.textColor);
     canvas.attachBrush(brush);
     for (let i = 0; i < lines.length; i++) {
@@ -131,31 +163,31 @@ export class GlyphRenderer {
         if (run.glyphs.length === 0 || run.font === null) {
           continue;
         }
-        // 批量构建（剔除动画字形）
+        // 常规路径（绝大多数帧）：本 run 没有处于动画中的字形，
+        // 直接画缓存好的整 run TextBlob —— 不再逐字形建对象、不再重建 blob。
+        if (!this.hasAnimatedGlyph(run, anims)) {
+          const cached: drawing.TextBlob | null = this.runBlob(run);
+          if (cached !== null) {
+            canvas.drawTextBlob(cached, lineX + this.pv(run.runOffsetX), baselineY);
+          }
+          continue;
+        }
+        // 慢路径：仅出现在编辑后几百毫秒内、且该 run 内有正在插值的字形
         const runBuffer: drawing.TextBlobRunBuffer[] = [];
-        const animGlyphCount: number[] = [];
         for (let g = 0; g < run.glyphs.length; g++) {
-          // 动画键必须是该字形的真实码元偏移（与 GlyphAnimator 注册键一致），
-          // 不能用 textStart + g：emoji 占 2 码元会让键错位，动画套到邻近字符上
           const offset: number = run.textStart + (g < run.glyphOffsets.length ? run.glyphOffsets[g] : g);
-          const animated: boolean = anims !== null && anims.has(offset);
-          if (!animated) {
+          if (this.animStateAt(anims, offset) === undefined) {
             runBuffer.push({ glyph: run.glyphs[g], positionX: this.pv(run.positions[g].x), positionY: this.pv(run.positions[g].y) });
-          } else {
-            animGlyphCount.push(g);
           }
         }
         if (runBuffer.length > 0) {
-          canvas.attachBrush(brush);
           const blob: drawing.TextBlob = drawing.TextBlob.makeFromRunBuffer(runBuffer, run.font, null);
           canvas.drawTextBlob(blob, lineX + this.pv(run.runOffsetX), baselineY);
         }
-        // 动画字形单独绘制
-        if (anims !== null) {
-          for (let k = 0; k < animGlyphCount.length; k++) {
-            const g: number = animGlyphCount[k];
-            const offset: number = run.textStart + (g < run.glyphOffsets.length ? run.glyphOffsets[g] : g);
-            const st: GlyphAnimState = anims.get(offset) as GlyphAnimState;
+        for (let g = 0; g < run.glyphs.length; g++) {
+          const offset: number = run.textStart + (g < run.glyphOffsets.length ? run.glyphOffsets[g] : g);
+          const st: GlyphAnimState | undefined = this.animStateAt(anims, offset);
+          if (st !== undefined) {
             this.drawAnimatedGlyph(canvas, st, viewport);
           }
         }
@@ -165,6 +197,51 @@ export class GlyphRenderer {
       for (let i: number = 0; i < anims.exits.length; i++) { this.drawAnimatedGlyph(canvas, anims.exits[i], viewport); }
     }
     canvas.detachBrush();
+  }
+
+  private animStateAt(anims: GlyphAnimRegistry | null, offset: number): GlyphAnimState | undefined {
+    return anims === null ? undefined : anims.get(offset);
+  }
+
+  /** 本 run 是否有字形处于动画中（只读一遍，无分配，供热路径早退用） */
+  private hasAnimatedGlyph(run: GlyphRunData, anims: GlyphAnimRegistry | null): boolean {
+    if (anims === null || anims.map.size === 0) {
+      return false;
+    }
+    for (let g: number = 0; g < run.glyphs.length; g++) {
+      const offset: number = run.textStart + (g < run.glyphOffsets.length ? run.glyphOffsets[g] : g);
+      if (anims.has(offset)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 整 run 的 TextBlob：首次绘制时构建并缓存在 run 数据上。
+   * 缓存随布局重建自动失效（新 GlyphRunData 的 blob 为 null），
+   * 而光标动画/闪烁/滚动这些不改变布局的帧全部命中缓存。
+   */
+  private runBlob(run: GlyphRunData): drawing.TextBlob | null {
+    const cached: drawing.TextBlob | null = run.blob;
+    if (cached !== null) {
+      return cached;
+    }
+    const font: drawing.Font | null = run.font;
+    if (font === null) {
+      return null;
+    }
+    const runBuffer: drawing.TextBlobRunBuffer[] = [];
+    for (let g: number = 0; g < run.glyphs.length; g++) {
+      runBuffer.push({
+        glyph: run.glyphs[g],
+        positionX: this.pv(run.positions[g].x),
+        positionY: this.pv(run.positions[g].y)
+      });
+    }
+    const blob: drawing.TextBlob = drawing.TextBlob.makeFromRunBuffer(runBuffer, font, null);
+    run.blob = blob;
+    return blob;
   }
 
   /** 动画字形：位置/透明度/缩放插值绘制（绕字形中心缩放） */
@@ -191,7 +268,7 @@ export class GlyphRenderer {
     const glyphW: number = this.pv(st.glyphWidth);
     const glyphH: number = this.pv(st.glyphHeight);
 
-    const brush = new drawing.Brush();
+    const brush: drawing.Brush = this.animBrush;
     brush.setColor({
       alpha: Math.round(alpha * 255),
       red: this.opts.textColor.red,
@@ -200,8 +277,13 @@ export class GlyphRenderer {
     });
     canvas.attachBrush(brush);
 
-    const blob: drawing.TextBlob = drawing.TextBlob.makeFromRunBuffer(
-      [{ glyph: st.glyph, positionX: 0, positionY: 0 }], st.font, null);
+    // 单字形 TextBlob 在动画生命周期内不变（glyph/font 已固定），构建一次即可
+    let blob: drawing.TextBlob | null = st.blob;
+    if (blob === null) {
+      blob = drawing.TextBlob.makeFromRunBuffer(
+        [{ glyph: st.glyph, positionX: 0, positionY: 0 }], st.font, null);
+      st.blob = blob;
+    }
     if (Math.abs(scale - 1) > 0.01) {
       const cx: number = xPx + glyphW / 2;
       const cy: number = baseline + glyphH / 2;
@@ -219,7 +301,7 @@ export class GlyphRenderer {
 
   /** 选区高亮：命中 [start,end) 区间的字形绘制半透明背景矩形 */
   private drawSelection(canvas: DrawingCanvas, lines: LayoutLine[], selection: SelectionInfo, viewport: ViewportInfo): void {
-    const brush = new drawing.Brush();
+    const brush: drawing.Brush = this.selectionBrush;
     brush.setColor(this.opts.selectionColor);
     canvas.attachBrush(brush);
     for (let i = 0; i < lines.length; i++) {
@@ -245,7 +327,7 @@ export class GlyphRenderer {
     if (handles.length === 0) {
       return;
     }
-    const brush = new drawing.Brush();
+    const brush: drawing.Brush = this.handleBrush;
     brush.setColor(this.opts.caretColor);
     canvas.attachBrush(brush);
     const rVp: number = 5;
@@ -274,7 +356,7 @@ export class GlyphRenderer {
       return;
     }
     const screenY: number = this.pv(screenYVp);
-    const brush = new drawing.Brush();
+    const brush: drawing.Brush = this.caretBrush;
     brush.setColor(this.opts.caretColor);
     canvas.attachBrush(brush);
     // 光标条以字符边界为中线居中绘制（左右各半宽）：
@@ -294,12 +376,30 @@ export class GlyphRenderer {
   /** 预上屏文本：以灰色绘制在光标之后（MVP：不参与断行） */
   private drawPreview(canvas: DrawingCanvas, preview: PreviewInfo, caret: CursorState | null,
     viewport: ViewportInfo): void {
-    const font = new drawing.Font();
-    // 画布为 VP 单位，Font.setSize 为物理 px 语义：字号 = fontSizeVp * pxPerVp，使预上屏尺寸与正文一致。
-    font.setSize(this.opts.fontSizeVp * this.opts.pxPerVp);
-    const blob: drawing.TextBlob = drawing.TextBlob.makeFromString(preview.text, font,
-      drawing.TextEncoding.TEXT_ENCODING_UTF16);
-    const brush = new drawing.Brush();
+    // 画布为 VP 单位，Font.setSize 为物理 px 语义：字号 = fontSizeVp * pxPerVp，
+    // 使预上屏尺寸与正文一致。Font 只在字号变化时重建（合成期间这个函数每帧都会调用）。
+    const sizePx: number = this.opts.fontSizeVp * this.opts.pxPerVp;
+    if (this.previewFont === null || this.previewFontSizePx !== sizePx) {
+      const built = new drawing.Font();
+      built.setSize(sizePx);
+      this.previewFont = built;
+      this.previewFontSizePx = sizePx;
+      this.previewBlob = null;
+      this.previewBlobText = '';
+    }
+    const font: drawing.Font | null = this.previewFont;
+    if (font === null) {
+      return;
+    }
+    // TextBlob 按预上屏文本缓存：拼音合成期文本变化远低于帧率
+    let blob: drawing.TextBlob | null = this.previewBlob;
+    if (blob === null || this.previewBlobText !== preview.text) {
+      blob = drawing.TextBlob.makeFromString(preview.text, font,
+        drawing.TextEncoding.TEXT_ENCODING_UTF16);
+      this.previewBlob = blob;
+      this.previewBlobText = preview.text;
+    }
+    const brush: drawing.Brush = this.previewBrush;
     brush.setColor(this.opts.previewColor);
     canvas.attachBrush(brush);
     let px: number = this.pv(this.opts.paddingLeftVp);

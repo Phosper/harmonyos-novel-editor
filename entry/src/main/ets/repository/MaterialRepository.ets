@@ -1,4 +1,5 @@
 // 素材仓储 —— 人物 / 世界观 / 灵感
+import { relationalStore } from '@kit.ArkData'
 import { CharacterDao } from '../database/CharacterDao'
 import { WorldSettingDao } from '../database/WorldSettingDao'
 import { InspirationDao } from '../database/InspirationDao'
@@ -13,6 +14,13 @@ export class MaterialRepository {
   private charDao: CharacterDao = new CharacterDao()
   private worldDao: WorldSettingDao = new WorldSettingDao()
   private inspDao: InspirationDao = new InspirationDao()
+
+  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
+  setTransaction(tx: relationalStore.Transaction | null): void {
+    this.charDao.setTransaction(tx)
+    this.worldDao.setTransaction(tx)
+    this.inspDao.setTransaction(tx)
+  }
 
   // ===== 人物 =====
   async loadCharacters(bookId: string): Promise<CharacterModel[]> {

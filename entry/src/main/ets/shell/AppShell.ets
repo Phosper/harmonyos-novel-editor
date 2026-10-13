@@ -57,8 +57,16 @@ export struct AppShell {
     app.ui.isPcDevice = pc !== undefined ? pc : false
     // 沉浸式：全设备全屏布局，内容延伸到系统栏区域 → 按避让区推开顶部/底部
     this.safeDisposer = watchSafeArea(() => {
-      this.safeTop = safeTopVp()
-      this.safeBottom = safeBottomVp()
+      // 避让区变化（旋转/折叠/分屏）会连续触发多次：只在数值真的变了才写 @Local，
+      // 否则整棵 AppShell 子树会被无意义地重渲染（旋转动画期间掉帧）。
+      const top: number = safeTopVp()
+      const bottom: number = safeBottomVp()
+      if (top !== this.safeTop) {
+        this.safeTop = top
+      }
+      if (bottom !== this.safeBottom) {
+        this.safeBottom = bottom
+      }
     })
     this.safeTop = safeTopVp()
     this.safeBottom = safeBottomVp()
@@ -201,8 +209,11 @@ export struct AppShell {
       .width('100%').height('100%')
       // 沉浸式（官方两步法）：
       //   ① setWindowLayoutFullScreen(true) 已在 EntryAbility 开启；
-      //   ② 这里用 expandSafeArea 让**背景**铺满状态栏/导航条区域，内容再按顶部避让。
-      .padding({ top: this.safeTop })
+      //   ② 这里用 expandSafeArea 让**背景**铺满状态栏/导航条区域，内容再按避让区推开。
+      // 底部必须一起避让：官方 FAQ 明确 SafeAreaType.SYSTEM **不含**底部导航栏，
+      // 底部高度来自 TYPE_NAVIGATION_INDICATOR；只避让顶部会让列表末行/正文末行
+      // 伸到手势条下方，且那片区域的点击优先被系统拦截。
+      .padding({ top: this.safeTop, bottom: this.safeBottom })
       .backgroundColor(this.colors().bgPrimary)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
@@ -492,7 +503,12 @@ export struct AppShell {
       if (err) {
         return
       }
-      this.doExport(data.index)
+      // doExport 现在会按 id 读**完整**正文（列表投影只有前缀），读库可能失败；
+      // 必须接住，否则会变成未处理的 Promise 拒绝（项目自身注释：会被系统按 JS 错误杀进程）
+      this.doExport(data.index).catch((e: Error) => {
+        Logger.error('AppShell: export failed: ' + String(e))
+        this.toast('导出失败：' + e.message)
+      })
     })
   }
 
@@ -526,7 +542,10 @@ export struct AppShell {
       return
     }
 
-    const chapters: ExportableChapter[] = app.project.chapters
+    // 必须取完整文稿：project.chapters 是列表投影，正文只有前缀，
+    // 直接拿它导出会让整本 TXT/MD/HTML 只剩每篇开头几百字。
+    const full: ChapterModel[] = await app.loadFullChapters()
+    const chapters: ExportableChapter[] = full
       .filter((c: ChapterModel) => !c.isTrash)
       .map((c: ChapterModel): ExportableChapter => ({
         title: c.title, content: c.content, format: c.format,
@@ -540,11 +559,18 @@ export struct AppShell {
     await ExportService.saveText(bookName + ExportService.extensionOf(target), text)
   }
 
-  private async runImport(): Promise<void> {
-    const result: string = await app.importFiles()
-    if (result !== '') {
-      this.toast(result)
-    }
+  private runImport(): void {
+    // 同上：导入会读文件、写库、恢复备份，失败必须收敛到提示而不是未处理拒绝
+    app.importFiles()
+      .then((result: string) => {
+        if (result !== '') {
+          this.toast(result)
+        }
+      })
+      .catch((e: Error) => {
+        Logger.error('AppShell: import failed: ' + String(e))
+        this.toast('导入失败：' + e.message)
+      })
   }
 
   private toast(message: string): void {

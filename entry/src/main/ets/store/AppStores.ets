@@ -22,7 +22,7 @@ import type { WorldSettingModel } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 import type { RelationshipModel } from '../model/Relationship'
 import { RelationshipType } from '../model/Relationship'
-import { bookRepo, chapterRepo, materialRepo, relationRepo } from './Repos'
+import { bookRepo, chapterRepo, materialRepo, relationRepo, runInTransaction } from './Repos'
 import { BookBackupSnapshot, BackupPayload, BackupPayloadLoose } from './BackupTypes'
 import { UiStore } from './UiStore'
 import { ProjectStore } from './ProjectStore'
@@ -142,8 +142,11 @@ export class AppStores {
 
   /** 打开文稿（进入编辑） */
   async openChapter(chapterId: string): Promise<void> {
-    const ch: ChapterModel | undefined = this.project.findChapter(chapterId)
-    if (ch === undefined) {
+    // 必须按 id 取**完整**正文：ProjectStore.chapters 是列表投影（正文只有前缀），
+    // 而且内存里的那行可能已经被编辑过 —— 直接拿它当草稿初值，会在
+    // 「关掉标签再打开」时把旧正文写回去，覆盖掉此前已保存的内容。
+    const ch: ChapterModel | null = await chapterRepo.loadOne(chapterId)
+    if (ch === null) {
       return
     }
     await this.editor.openChapter(ch)
@@ -399,17 +402,20 @@ export class AppStores {
       const snapshot: BookBackupSnapshot | null | undefined = payload.book
       const baseName: string = snapshot !== null && snapshot !== undefined ? snapshot.name : '导入备份'
       const mode: BookMode = snapshot !== null && snapshot !== undefined ? snapshot.mode : this.ui.mode
-      const book: BookModel = await bookRepo.createBook(baseName + '（导入）', mode)
 
-      const charIdMap: Map<string, string> = new Map<string, string>()
       let skippedChapters: number = 0
-      // 整组写入放进事务：中途失败整组回滚，不留半成品项目
-      await dbHelper.runInTransaction(async () => {
+      // 整组写入（**含项目行本身**）放进一个独立事务：中途失败整组回滚，
+      // 既不留「项目名在、文稿缺一半」的半成品，也不会把编辑器自动保存的正文
+      // 卷进这次回滚（见 Repos.runInTransaction 的说明）。
+      // 旧实现把 createBook 留在事务之外，回滚后仍会留下一个空的「xxx（导入）」项目。
+      const book: BookModel = await runInTransaction(async (): Promise<BookModel> => {
+        const created: BookModel = await bookRepo.createBook(baseName + '（导入）', mode)
+        const charIdMap: Map<string, string> = new Map<string, string>()
         for (const c of characters) {
           const newId: string = IdGenerator.generate()
           charIdMap.set(c.id, newId)
           const model: CharacterModel = {
-            id: newId, bookId: book.id, name: c.name, alias: c.alias, age: c.age,
+            id: newId, bookId: created.id, name: c.name, alias: c.alias, age: c.age,
             appearance: c.appearance, personality: c.personality, background: c.background,
             notes: c.notes, characterType: c.characterType,
             createdAt: c.createdAt, updatedAt: c.updatedAt
@@ -418,7 +424,7 @@ export class AppStores {
         }
         for (const w of worldSettings) {
           const model: WorldSettingModel = {
-            id: IdGenerator.generate(), bookId: book.id, name: w.name, category: w.category,
+            id: IdGenerator.generate(), bookId: created.id, name: w.name, category: w.category,
             region: w.region, description: w.description, notes: w.notes, content: w.content,
             createdAt: w.createdAt, updatedAt: w.updatedAt
           }
@@ -426,24 +432,24 @@ export class AppStores {
         }
         for (const ins of inspirations) {
           const model: InspirationModel = {
-            id: IdGenerator.generate(), bookId: book.id, content: ins.content,
+            id: IdGenerator.generate(), bookId: created.id, content: ins.content,
             createdAt: ins.createdAt, updatedAt: ins.updatedAt
           }
           await materialRepo.insertInspiration(model)
         }
-      let order: number = 0
-      for (const ch of chapters) {
-        const content: string = ch.content ?? ''
-        // 备份里若含超长正文，DAO 守卫会抛错并回滚**整个**恢复。
-        // 与其让用户什么都没导入，不如跳过这些篇章、恢复其余内容。
-        if (exceedsContentLimit(content)) {
-          Logger.warn('Backup restore: skip oversized chapter ' + ch.title)
-          skippedChapters++
-          continue
-        }
-        const model: ChapterModel = {
+        let order: number = 0
+        for (const ch of chapters) {
+          const content: string = ch.content ?? ''
+          // 备份里若含超长正文，DAO 守卫会抛错并回滚**整个**恢复。
+          // 与其让用户什么都没导入，不如跳过这些篇章、恢复其余内容。
+          if (exceedsContentLimit(content)) {
+            Logger.warn('Backup restore: skip oversized chapter ' + ch.title)
+            skippedChapters++
+            continue
+          }
+          const model: ChapterModel = {
             id: IdGenerator.generate(),
-            bookId: book.id,
+            bookId: created.id,
             title: ch.title !== undefined && ch.title.trim() !== '' ? ch.title : '无标题',
             content: content,
             format: ch.format === ChapterFormat.MD ? ChapterFormat.MD : ChapterFormat.TXT,
@@ -466,12 +472,13 @@ export class AppStores {
             continue
           }
           const model: RelationshipModel = {
-            id: IdGenerator.generate(), bookId: book.id, characterIdA: a, characterIdB: b,
+            id: IdGenerator.generate(), bookId: created.id, characterIdA: a, characterIdB: b,
             type: r.type, label: r.label, notes: r.notes,
             createdAt: r.createdAt, updatedAt: r.updatedAt
           }
           await relationRepo.insert(model)
         }
+        return created
       })
 
       await this.selectBook(book.id)
@@ -485,10 +492,19 @@ export class AppStores {
     }
   }
 
+  /**
+   * 整本导出用：当前项目的**完整**文稿（含正文与格式边车）。
+   * 注意不能用 project.chapters —— 那是列表投影，正文只有前缀。
+   */
+  async loadFullChapters(): Promise<ChapterModel[]> {
+    return chapterRepo.loadChaptersFull(this.project.currentBookId)
+  }
+
   /** 汇总当前项目的全部数据为备份载荷 */
   async exportBackupData(): Promise<BackupPayload> {
     const bookId: string = this.project.currentBookId
-    const chapters: ChapterModel[] = await chapterRepo.loadChapters(bookId, LibId.ALL)
+    // 备份必须是整篇正文：列表投影（loadChapters）只有前缀，用它导出会丢内容
+    const chapters: ChapterModel[] = await chapterRepo.loadChaptersFull(bookId)
     const book: BookModel | undefined = this.project.currentBook
     const snapshot: BookBackupSnapshot | null = book !== undefined
       ? { id: book.id, name: book.name, mode: book.mode }
@@ -521,3 +537,18 @@ export class AppStores {
 
 // 全局单例：跨页面共享同一份状态
 export const app: AppStores = new AppStores()
+
+/**
+ * 收敛「不该让异常冒出去」的异步动作（返回 void，调用点无法也不需要等待）。
+ *
+ * 为什么必须有：项目自身注释（AppShell 处理 app.init 的地方）已指出
+ * 「不能把异常抛成未处理的 Promise 拒绝（会被系统按 JS 错误杀进程）」。
+ * 而 store 层的写动作（createChapter / openChapter / toggleFav / moveToTrash …）
+ * 末端都会走到 DAO 的 throw，从 onClick、长按菜单回调这类无法 await 的位置调用时，
+ * 就必须显式接住 —— 否则一次「数据库被锁 (14800024)」或超限就会让整应用退出。
+ */
+export function fireAndLog<T>(action: Promise<T>, what: string): void {
+  action.catch((e: Error): void => {
+    Logger.error(what + ' failed: ' + String(e))
+  })
+}

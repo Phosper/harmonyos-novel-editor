@@ -39,6 +39,15 @@ export class GlyphRunData {
   textEnd: number = 0;
   /** run 在行内的起始 x（vp） */
   runOffsetX: number = 0;
+  /**
+   * 整段字形的 **TextBlob 缓存**（绘制器惰性填充）。
+   *
+   * 缓存放在数据上而不是绘制器里，是因为它的生命周期正好等于这一份排版结果：
+   * 布局重建 → 新 GlyphRunData → 缓存自然失效。Draw 热路径（光标弹簧动画、
+   * 闪烁、惯性滚动都以 60fps 调 draw）因此不必每帧重建 TextBlob。
+   * 含动画字形的 run 需要剔除后重绘，那条路径不读这个缓存。
+   */
+  blob: drawing.TextBlob | null = null;
 
   width(): number {
     if (this.advances.length === 0) {
@@ -110,6 +119,16 @@ export class TextLayoutEngine {
   /** 当前格式标注（T021）：布局按此分段套用差异化样式 */
   private runsValue: FormatRun[] = [];
   private indexMap: TextIndexMap = new TextIndexMap();
+  /**
+   * 当前 typeset / indexMap 对应的**窗口起点**（文档 UTF-16 码元偏移）。
+   *
+   * 对外接口一律收发文档绝对偏移，窗口化的换算全部收敛在本类内部：
+   * native 的 LineTypeset / Run 只认窗口内这一小段文本的下标。
+   * 窗口起点由 LayoutCache 保证落在码元边界（段落起点），因此
+   * `indexMap.toScalar(localStart)` 仍然等于文档级的 scalar 下标，
+   * LayoutLine.nativeStartIndex 与逐行 indexMap 的语义不受窗口影响。
+   */
+  private typesetBase: number = 0;
   /** 分词用段落对象（懒建、按文本缓存），用于双击/长按选词 */
   private wordParagraph: text.Paragraph | null = null;
   private wordParagraphText: string = '';
@@ -183,9 +202,30 @@ export class TextLayoutEngine {
     return st;
   }
 
-  /** 构建行排版器（成本低，~2ms），供 LayoutCache 增量断行复用；按格式分段套用样式（T021） */
+  /**
+   * 构建**整篇**行排版器。保留给"文档很短/需要一次排完"的场景；
+   * 长文请走 buildTypesetWindow，否则每次编辑都要为整篇文本重建 typeset。
+   */
   buildTypeset(content: string): text.LineTypeset {
-    this.indexMap = new TextIndexMap(content);
+    return this.buildTypesetWindow(content, 0, content.length);
+  }
+
+  /**
+   * 构建 [base, end) 窗口的行排版器（成本低，~2ms）；供 LayoutCache 增量断行复用。
+   *
+   * 旧实现每次编辑都用**整篇**文本调用 buildTypeset：行级缓存只省下了"行对象"，
+   * 没省下"整篇排版"——JS 侧要建整篇 TextIndexMap，原生侧还要为整篇文本构建字型 run。
+   * 这与项目自定规范 R9「避免整篇 typeset」直接冲突，长文下每次按键都是一次 O(文档) 开销。
+   *
+   * 窗口由 LayoutCache 保证**覆盖完整的段落**（起止都取段落边界），
+   * 因此窗口内的断行结果与整篇排版一致：一行永远不会跨窗口边界。
+   */
+  buildTypesetWindow(content: string, base: number, end: number): text.LineTypeset {
+    const lo: number = Math.max(0, Math.min(base, content.length));
+    const hi: number = Math.max(lo, Math.min(end, content.length));
+    const windowText: string = content.substring(lo, hi);
+    this.typesetBase = lo;
+    this.indexMap = new TextIndexMap(windowText);
     const baseStyle: text.TextStyle = {
       fontSize: this.fontSizePx,
       color: this.textColor
@@ -195,27 +235,28 @@ export class TextLayoutEngine {
     };
     const builder = new text.ParagraphBuilder(paragraphStyle, this.fontCollection);
     if (this.runsValue.length === 0) {
-      builder.addText(content);
+      builder.addText(windowText);
       return builder.buildLineTypeset();
     }
-    // 分段添加：格式区间 pushStyle，其余用基准样式；保证字形 run 在格式边界处断开
+    // 分段添加：格式区间 pushStyle，其余用基准样式；保证字形 run 在格式边界处断开。
+    // 标注本身是文档坐标，这里逐段裁剪到窗口并重定基（减 lo）。
     let cursor: number = 0;
     for (let i = 0; i < this.runsValue.length; i++) {
       const r: FormatRun = this.runsValue[i];
-      const s: number = Math.max(cursor, Math.min(r.startOffset, content.length));
-      const e: number = Math.min(r.endOffset, content.length);
+      const s: number = Math.max(cursor, Math.min(r.startOffset - lo, windowText.length));
+      const e: number = Math.max(s, Math.min(r.endOffset - lo, windowText.length));
       if (s > cursor) {
-        builder.addText(content.substring(cursor, s));
+        builder.addText(windowText.substring(cursor, s));
       }
       if (e > s) {
         builder.pushStyle(this.styleFor(r));
-        builder.addText(content.substring(s, e));
+        builder.addText(windowText.substring(s, e));
         builder.popStyle();
         cursor = e;
       }
     }
-    if (cursor < content.length) {
-      builder.addText(content.substring(cursor));
+    if (cursor < windowText.length) {
+      builder.addText(windowText.substring(cursor));
     }
     return builder.buildLineTypeset();
   }
@@ -225,15 +266,20 @@ export class TextLayoutEngine {
     return this.maxWidthPx;
   }
 
-  /** Native LineTypeset/Run indices count scalars; document/IME offsets count UTF-16. */
+  /**
+   * Native LineTypeset/Run indices count scalars; document/IME offsets count UTF-16.
+   * start 为**文档**偏移，这里换算成窗口内偏移再查表。
+   */
   lineBreak(typeset: text.LineTypeset, start: number): number {
-    const nativeStart: number = this.indexMap.toScalar(start);
+    const local: number = start - this.typesetBase;
+    const nativeStart: number = this.indexMap.toScalar(local);
     const count: number = typeset.getLineBreak(nativeStart, this.maxWidthPx);
-    return this.indexMap.fromScalar(nativeStart + count) - start;
+    return this.indexMap.fromScalar(nativeStart + count) - local;
   }
   createLayoutLine(typeset: text.LineTypeset, start: number, count: number, y: number): LayoutLine {
-    const nativeStart: number = this.indexMap.toScalar(start);
-    const nativeCount: number = this.indexMap.toScalar(start + count) - nativeStart;
+    const local: number = start - this.typesetBase;
+    const nativeStart: number = this.indexMap.toScalar(local);
+    const nativeCount: number = this.indexMap.toScalar(local + count) - nativeStart;
     return this.buildLayoutLine(typeset.createLine(nativeStart, nativeCount), start, count, y);
   }
 
@@ -263,14 +309,18 @@ export class TextLayoutEngine {
   }
 
   private buildLayoutLine(line: text.TextLine, textStart: number, count: number, yOffsetVp: number): LayoutLine {
+    // textStart/count 是文档偏移；窗口内偏移 = 减去 typesetBase
+    const localStart: number = textStart - this.typesetBase;
     const layoutLine: LayoutLine = new LayoutLine();
     const bounds: text.TypographicBounds = line.getTypographicBounds();
     layoutLine.startIndex = textStart;
     layoutLine.endIndex = textStart + count;
     layoutLine.consumedEnd = layoutLine.endIndex;
     layoutLine.nativeLine = line;
-    layoutLine.indexMap = this.indexMap.slice(textStart, textStart + count);
-    layoutLine.nativeStartIndex = this.indexMap.toScalar(textStart);
+    // 逐行索引表存**行本地**偏移（slice 会减去 localStart），因此与窗口无关，
+    // HitTester 拿到的 nativeStartIndex + indexMap.toScalar(行内偏移) 仍是文档级 scalar 下标
+    layoutLine.indexMap = this.indexMap.slice(localStart, localStart + count);
+    layoutLine.nativeStartIndex = this.indexMap.toScalar(localStart);
     layoutLine.pxPerVp = this.pxPerVp;
     layoutLine.yOffset = yOffsetVp;
     layoutLine.ascent = Math.abs(bounds.ascent) / this.pxPerVp;
@@ -290,10 +340,12 @@ export class TextLayoutEngine {
       const data: GlyphRunData = new GlyphRunData();
       data.glyphs = run.getGlyphs();
       data.font = run.getFont();
-      data.textStart = this.indexMap.fromScalar(range.start);
+      // run 的起止同样要加回 typesetBase，才能得到文档级偏移
+      const localRunStart: number = this.indexMap.fromScalar(range.start);
+      data.textStart = this.typesetBase + localRunStart;
       // Run APIs use end as LENGTH, unlike the document's end-exclusive ranges.
-      data.textEnd = this.indexMap.fromScalar(range.start + range.end);
-      data.glyphOffsets = indices.map((index: number): number => this.indexMap.fromScalar(index) - data.textStart);
+      data.textEnd = this.typesetBase + this.indexMap.fromScalar(range.start + range.end);
+      data.glyphOffsets = indices.map((index: number): number => this.indexMap.fromScalar(index) - localRunStart);
       data.runOffsetX = 0; // Native positions are relative to the line, including bidi placement.
       const advances: common2D.Point[] = run.getAdvances({ start: 0, end: data.glyphs.length });
       for (let g: number = 0; g < data.glyphs.length; g++) {

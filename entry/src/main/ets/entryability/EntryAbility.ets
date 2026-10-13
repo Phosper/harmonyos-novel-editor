@@ -60,13 +60,8 @@ export default class EntryAbility extends UIAbility {
           return;
         }
         Logger.info('Succeeded in loading the content.');
-        // 窗口底色透明：让页面自身的背景铺满（含状态栏/导航条区域），实现真正沉浸；
-        // 若给不透明底色，状态栏区域会露出一条与页面不一致的色带。
-        try {
-          mainWin.setWindowBackgroundColor('#00000000')
-        } catch (e) {
-          Logger.warn('setWindowBackgroundColor failed: ' + String(e))
-        }
+        // 窗口底色由 SystemBars.applySystemBars 统一设为主题底色（勿在此设回透明）：
+        // 状态栏全透明后，状态栏区域由窗口底色/根背景承托，须与页面同色。
         // 内容加载完成后再按实际主题设一次系统栏
         app.ui.syncSystemBars()
       });

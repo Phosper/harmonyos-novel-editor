@@ -11,7 +11,7 @@
 import { promptAction } from '@kit.ArkUI'
 import { BreakPoint } from '../utils/BreakPoint'
 import { tokensFor, WeaverColorSet, WeaverMobile, MobileTab } from '../constants/DesignTokens'
-import { app } from '../store/AppStores'
+import { app, fireAndLog } from '../store/AppStores'
 import { ShellDialog } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
 import { nav, Routes } from './Navigator'
@@ -192,11 +192,12 @@ export struct MobileShell {
   }
 
   private openDoc(id: string): void {
-    app.openChapter(id).then(() => {
+    // openChapter 现在按 id 读取完整正文，读库可能失败 → then 链末端必须接住拒绝
+    fireAndLog(app.openChapter(id).then(() => {
       if (!nav.getAllPathName().includes(Routes.WORKSPACE)) {
         nav.pushPath({ name: Routes.WORKSPACE })
       }
-    })
+    }), 'MobileShell.openDoc')
   }
 
   private openMoreMenu(): void {

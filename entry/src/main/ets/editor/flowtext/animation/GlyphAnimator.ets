@@ -5,6 +5,13 @@
  *   前后均存在 → 让位/回流/换行（位置插值）
  *   仅新出现   → 入场（缩放 0.6→1 + 淡入）
  *   仅旧存在   → 退场（收缩 + 淡出，绘制于旧位置）
+ *
+ * **只对编辑点附近的窗口做差分**：
+ * 旧实现每次按键都对"整篇已排版字形"建两份 Map（5 万字 ≈ 2×5 万个 GlyphPoint），
+ * 再把两张表的键合并成数组 + Set 去重，而最终真正需要动画的字形上限只有
+ * MAX_SLIDES + MAX_EXITS = 104 个 —— 相当于为了 104 个字形处理了 10 万个。
+ * 窗口外的字形本来就不需要过渡（它们直接以新位置绘制），排除后每键成本与
+ * 文稿长度解耦。
  */
 import { drawing } from '@kit.ArkGraphics2D';
 import { LayoutLine } from '../render/TextLayoutEngine';
@@ -21,16 +28,44 @@ export class GlyphPoint {
   height: number = 0;
 }
 
+/** 字形差分参数（字段多，用类承载以便调用点可读） */
+export class GlyphDiffOptions {
+  paddingLeftPx: number = 0;
+  paddingTopPx: number = 0;
+  /** 视为"跨行动（换行/回行）"的最小纵向位移（vp） */
+  rowThresholdVp: number = 0;
+  oldText: string = '';
+  newText: string = '';
+  /** 本次编辑的起点（文档 UTF-16 偏移），差分窗口以它为中心 */
+  hintOffset: number = 0;
+  /**
+   * 窗口半径（码元）。视口约 30 行 × 20 字形 ≈ 600 码元，
+   * 1024 ≈ 前后各一个多半视口，足够覆盖会"让位"的字形。
+   */
+  windowRadius: number = 1024;
+}
+
 export class GlyphAnimator {
-  /** 构建"字符偏移 → 字形位置+绘制数据"映射（输入为排版行数组） */
-  static buildGlyphMapFromLines(lines: LayoutLine[], paddingLeftPx: number, paddingTopPx: number): Map<number, GlyphPoint> {
+  /**
+   * 构建"字符偏移 → 字形位置+绘制数据"映射（输入为排版行数组）。
+   * 只保留与 [fromOffset, toOffset] 相交的行。
+   */
+  static buildGlyphMapFromLines(lines: LayoutLine[], paddingLeftPx: number, paddingTopPx: number,
+    fromOffset: number, toOffset: number): Map<number, GlyphPoint> {
     const map = new Map<number, GlyphPoint>();
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      // 与窗口不相交的行直接跳过 —— 整篇建 Map 正是"每键 O(文档)"的主因
+      if (line.endIndex < fromOffset || line.startIndex > toOffset) {
+        continue;
+      }
       for (let r = 0; r < line.runs.length; r++) {
         const run = line.runs[r];
-        let x = paddingLeftPx + run.runOffsetX;
         for (let g = 0; g < run.glyphs.length; g++) {
+          const offset: number = run.textStart + (g < run.glyphOffsets.length ? run.glyphOffsets[g] : g);
+          if (offset < fromOffset || offset > toOffset) {
+            continue;
+          }
           const pt = new GlyphPoint();
           pt.x = paddingLeftPx + run.runOffsetX + run.positions[g].x;
           pt.y = line.baseline + run.positions[g].y;
@@ -39,36 +74,52 @@ export class GlyphAnimator {
           pt.width = run.advances[g].x;
           pt.height = line.ascent + line.descent;
           // 注册键用真实码元偏移，与 GlyphRenderer 查找键保持一致
-          map.set(run.textStart + (g < run.glyphOffsets.length ? run.glyphOffsets[g] : g), pt);
-          x += run.advances[g].x;
+          map.set(offset, pt);
         }
       }
     }
     return map;
   }
 
-  /** 编辑前后对比生成字形动画集合（输入为排版行数组）
-   *  rowThresholdVp：视为"跨行动（换行/回行）"的最小纵向位移，用于对已存在但换行的字形做短时滑动过渡。 */
+  /** 编辑前后对比生成字形动画集合（输入为排版行数组） */
   static createEditAnimations(oldLines: LayoutLine[], newLines: LayoutLine[],
-    paddingLeftPx: number, paddingTopPx: number, rowThresholdVp: number = 0,
-    oldText: string = '', newText: string = ''): GlyphAnimRegistry {
+    opts: GlyphDiffOptions): GlyphAnimRegistry {
     const anims = new GlyphAnimRegistry();
+    const from: number = Math.max(0, opts.hintOffset - opts.windowRadius);
+    const to: number = opts.hintOffset + opts.windowRadius;
+
     const originalMap: Map<number, GlyphPoint> =
-      GlyphAnimator.buildGlyphMapFromLines(oldLines, paddingLeftPx, paddingTopPx);
+      GlyphAnimator.buildGlyphMapFromLines(oldLines, opts.paddingLeftPx, opts.paddingTopPx, from, to);
     const oldMap: Map<number, GlyphPoint> = new Map<number, GlyphPoint>();
-    let prefix: number = 0;
-    while (prefix < oldText.length && prefix < newText.length && oldText.charAt(prefix) === newText.charAt(prefix)) { prefix++; }
-    prefix = Math.min(GraphemeUtil.snapToBoundary(oldText, prefix), GraphemeUtil.snapToBoundary(newText, prefix));
-    let oldEnd: number = oldText.length;
-    let newEnd: number = newText.length;
-    while (oldEnd > prefix && newEnd > prefix && oldText.charAt(oldEnd - 1) === newText.charAt(newEnd - 1)) { oldEnd--; newEnd--; }
-    while (oldEnd < oldText.length && (!GraphemeUtil.isBoundary(oldText, oldEnd) || !GraphemeUtil.isBoundary(newText, newEnd))) { oldEnd++; newEnd++; }
+
+    // 前后缀扫描只在**窗口内**求精确，边界处理如下：
+    //   前缀：从 from 开始扫（窗口之前的差异不影响窗口内的配对）；
+    //   后缀：下探到 max(prefix, from) 为止。两侧同步递减，故
+    //        newEnd - oldEnd（= 位移量 delta）始终正确；被判为"变更区"的字形
+    //        一定 < from，本就在窗口外、不参与动画。
+    // 旧实现从 0 扫到全文，而"在文末继续写"时前缀恰好等于全文长度 ——
+    // 每次按键都是一次 O(文档) 的字符比较。
+    let prefix: number = Math.min(from, Math.min(opts.oldText.length, opts.newText.length));
+    while (prefix < opts.oldText.length && prefix < opts.newText.length &&
+      opts.oldText.charCodeAt(prefix) === opts.newText.charCodeAt(prefix)) {
+      prefix++;
+    }
+    prefix = Math.min(GraphemeUtil.snapToBoundary(opts.oldText, prefix),
+      GraphemeUtil.snapToBoundary(opts.newText, prefix));
+    let oldEnd: number = opts.oldText.length;
+    let newEnd: number = opts.newText.length;
+    const suffixFloor: number = Math.max(prefix, from);
+    while (oldEnd > suffixFloor && newEnd > prefix &&
+      opts.oldText.charCodeAt(oldEnd - 1) === opts.newText.charCodeAt(newEnd - 1)) {
+      oldEnd--;
+      newEnd--;
+    }
     originalMap.forEach((point: GlyphPoint, offset: number) => {
       const key: number = offset < prefix ? offset : offset >= oldEnd ? offset + newEnd - oldEnd : -offset - 1;
       oldMap.set(key, point);
     });
     const newMap: Map<number, GlyphPoint> =
-      GlyphAnimator.buildGlyphMapFromLines(newLines, paddingLeftPx, paddingTopPx);
+      GlyphAnimator.buildGlyphMapFromLines(newLines, opts.paddingLeftPx, opts.paddingTopPx, from, to);
 
     // 单次编辑最多做滑动过渡的字形数（防止长文本折行时整段让位导致乱飞/性能）
     const MAX_SLIDES: number = 80;
@@ -77,67 +128,19 @@ export class GlyphAnimator {
     const MAX_EXITS: number = 24;
     let exitCount: number = 0;
 
-    const offsets: number[] = [];
-    oldMap.forEach((value: GlyphPoint, key: number) => {
-      offsets.push(key);
-    });
-    newMap.forEach((value: GlyphPoint, key: number) => {
-      offsets.push(key);
-    });
-    // 去重
-    const seen = new Set<number>();
-    for (let i = 0; i < offsets.length; i++) {
-      seen.add(offsets[i]);
-    }
-    seen.forEach((offset: number) => {
-      const oldP: GlyphPoint | undefined = oldMap.get(offset);
-      const newP: GlyphPoint | undefined = newMap.get(offset);
-      const st = new GlyphAnimState();
-      if (oldP !== undefined && newP !== undefined) {
-        // 前后均存在：默认位置由重排直接更新，不做让位动画（避免连续输入乱飞）。
-        // 仅当发生跨行动（换行/回行）且数量受控时，做一次短时纵向滑动过渡，缓解"换行动画乱跳"。
-        const dy: number = Math.abs(newP.y - oldP.y);
-        if (rowThresholdVp > 0 && dy > rowThresholdVp && slideCount < MAX_SLIDES) {
-          st.fromX = oldP.x;
-          st.fromY = oldP.y;
-          st.toX = newP.x;
-          st.toY = newP.y;
-          st.fromAlpha = 1;
-          st.toAlpha = 1;
-          st.fromScale = 1;
-          st.toScale = 1;
-          st.glyph = newP.glyph;
-          st.font = newP.font;
-          st.glyphWidth = newP.width;
-          st.glyphHeight = newP.height;
-          st.exiting = false;
-          anims.map.set(offset, st);
-          slideCount += 1;
-        }
-        return;
-      } else if (newP !== undefined) {
-        // 插入入场：缩放 + 淡入
-        st.fromX = newP.x;
-        st.fromY = newP.y;
-        st.toX = newP.x;
-        st.toY = newP.y;
-        st.fromAlpha = 0;
-        st.toAlpha = 1;
-        st.fromScale = 0.6;
-        st.toScale = 1;
-        st.glyph = newP.glyph;
-        st.font = newP.font;
-        st.glyphWidth = newP.width;
-        st.glyphHeight = newP.height;
-        st.exiting = false;
-        anims.map.set(offset, st);
-      } else if (oldP !== undefined) {
-        // 删除退场：收缩 + 淡出（绘制于旧位置）
-        // 大段删除时退场字形过多会既慢又乱（深色下尤其明显）：仅前 MAX_EXITS 个退场，其余瞬间消失
+    // 两趟代替「old+new 合并成数组再 Set 去重」：
+    // oldMap 的负键（-offset-1，表示落在变更区内）永远不会出现在 newMap 里
+    // （newMap 的键都是非负偏移），故两趟遍历与去重后的并集**完全等价**，
+    // 但省掉一个 2N 长度的数组和一次 N 项 Set 插入。
+    oldMap.forEach((oldP: GlyphPoint, key: number): void => {
+      const newP: GlyphPoint | undefined = newMap.get(key);
+      if (newP === undefined) {
+        // 仅旧存在 → 删除退场：收缩 + 淡出（绘制于旧位置）
         if (exitCount >= MAX_EXITS) {
           return;
         }
-        exitCount += 1;
+        exitCount++;
+        const st = new GlyphAnimState();
         st.fromX = oldP.x;
         st.fromY = oldP.y;
         st.toX = oldP.x;
@@ -152,7 +155,51 @@ export class GlyphAnimator {
         st.glyphHeight = oldP.height;
         st.exiting = true;
         anims.exits.push(st);
+        return;
       }
+      // 前后均存在：默认位置由重排直接更新，不做让位动画（避免连续输入乱飞）。
+      // 仅当发生跨行动（换行/回行）且数量受控时，做一次短时纵向滑动过渡，
+      // 缓解"换行动画乱跳"。
+      const dy: number = Math.abs(newP.y - oldP.y);
+      if (opts.rowThresholdVp > 0 && dy > opts.rowThresholdVp && slideCount < MAX_SLIDES) {
+        const st = new GlyphAnimState();
+        st.fromX = oldP.x;
+        st.fromY = oldP.y;
+        st.toX = newP.x;
+        st.toY = newP.y;
+        st.fromAlpha = 1;
+        st.toAlpha = 1;
+        st.fromScale = 1;
+        st.toScale = 1;
+        st.glyph = newP.glyph;
+        st.font = newP.font;
+        st.glyphWidth = newP.width;
+        st.glyphHeight = newP.height;
+        st.exiting = false;
+        anims.map.set(key, st);
+        slideCount++;
+      }
+    });
+    newMap.forEach((newP: GlyphPoint, key: number): void => {
+      if (oldMap.has(key)) {
+        return; // 已在上一趟处理（滑动或不动）
+      }
+      // 仅新存在 → 插入入场：缩放 + 淡入
+      const st = new GlyphAnimState();
+      st.fromX = newP.x;
+      st.fromY = newP.y;
+      st.toX = newP.x;
+      st.toY = newP.y;
+      st.fromAlpha = 0;
+      st.toAlpha = 1;
+      st.fromScale = 0.6;
+      st.toScale = 1;
+      st.glyph = newP.glyph;
+      st.font = newP.font;
+      st.glyphWidth = newP.width;
+      st.glyphHeight = newP.height;
+      st.exiting = false;
+      anims.map.set(key, st);
     });
     return anims;
   }

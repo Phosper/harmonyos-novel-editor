@@ -46,6 +46,17 @@ export class OpenDoc {
   /** 行内/段落格式标注的序列化边车（T024/T025） */
   @Trace runsJson: string = ''
 
+  /**
+   * 内容修订号：正文 / 光标 / 格式任一处变动就自增。
+   *
+   * 用途是消除自动保存的时序竞态：flushDoc 在 await 之前取一次 rev 快照，
+   * 落库返回后**只有 rev 未变**才允许清 dirty；变了说明这批改动之后又有新输入，
+   * 必须保留 dirty 交给防抖或 30 秒安全网重试。
+   *
+   * 刻意不加 @Trace：它只是落库时序标记，不参与 UI 渲染。
+   */
+  rev: number = 0
+
   constructor(id: string, title: string, format: ChapterFormat, color: string,
     draft: string, caret: number, runsJson: string = '') {
     this.id = id;

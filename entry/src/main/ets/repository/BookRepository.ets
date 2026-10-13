@@ -1,4 +1,5 @@
 // 书籍（项目）仓储 —— UI/VM 只依赖此层，不再直接 new Dao
+import { relationalStore } from '@kit.ArkData'
 import { BookDao } from '../database/BookDao'
 import { IdGenerator } from '../utils/IdGenerator'
 import type { BookModel } from '../model/Book'
@@ -6,6 +7,11 @@ import { BookMode } from '../model/Book'
 
 export class BookRepository {
   private dao: BookDao = new BookDao()
+
+  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
+  setTransaction(tx: relationalStore.Transaction | null): void {
+    this.dao.setTransaction(tx)
+  }
 
   async createBook(name: string, mode: BookMode = BookMode.PROFESSIONAL): Promise<BookModel> {
     const book: BookModel = {

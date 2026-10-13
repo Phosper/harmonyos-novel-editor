@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weaver 代码优化审查报告 · 2026-10-13</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1f2329; --ink2:#4e5969; --ink3:#86909c;
+    --line:#e5e6eb; --line2:#f2f3f5;
+    --p0:#c62828; --p0bg:#fdecec;
+    --p1:#d97706; --p1bg:#fef4e6;
+    --p2:#0a59f7; --p2bg:#eaf1ff;
+    --p3:#5a6b7b; --p3bg:#eef1f4;
+    --brand:#0a59f7; --warn:#d97706; --ok:#0a8f4d;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei","Source Han Sans SC","Noto Sans CJK SC",sans-serif;
+    font-size:16.5px; line-height:1.9; letter-spacing:.01em;
+  }
+  .wrap{max-width:1000px;margin:0 auto;padding:0 22px 80px}
+
+  header.top{
+    background:linear-gradient(180deg,#fff 0%,#f6f7f9 100%);
+    border-bottom:1px solid var(--line);
+    padding:38px 22px 26px; margin-bottom:26px;
+  }
+  header.top .inner{max-width:1000px;margin:0 auto}
+  h1{font-size:30px;line-height:1.35;margin:0 0 8px;letter-spacing:-.01em}
+  .sub{color:var(--ink2);font-size:14.5px;line-height:1.75;margin:0}
+  .chips{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+  .chip{
+    display:inline-block;font-size:13px;line-height:1.6;padding:3px 11px;border-radius:999px;
+    background:#fff;border:1px solid var(--line);color:var(--ink2)
+  }
+  .chip b{color:var(--ink);font-weight:600}
+  .chip.hot{background:var(--p0bg);border-color:#f5c6c6;color:#8d1f1f}
+  .chip.hot b{color:#8d1f1f}
+
+  nav.toc{
+    background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px 22px;margin-bottom:26px
+  }
+  nav.toc h2{font-size:14px;letter-spacing:.08em;color:var(--ink3);margin:0 0 10px;font-weight:600;text-transform:uppercase}
+  nav.toc ol{margin:0;padding-left:0;list-style:none;columns:2;column-gap:28px}
+  nav.toc li{margin:0 0 3px;break-inside:avoid}
+  nav.toc a{color:var(--ink);text-decoration:none;font-size:15px;display:block;padding:2px 0}
+  nav.toc a:hover{color:var(--brand);text-decoration:underline}
+  nav.toc .n{color:var(--ink3);font-variant-numeric:tabular-nums;margin-right:7px;font-size:13.5px}
+
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px 28px;margin-bottom:22px}
+  section > h2{
+    font-size:21px;margin:0 0 4px;line-height:1.5;letter-spacing:-.005em;
+    display:flex;align-items:baseline;gap:10px;flex-wrap:wrap
+  }
+  section > h2 .tag{font-size:12.5px;font-weight:600;color:var(--ink3);letter-spacing:.06em}
+  section > h2 + .lead{color:var(--ink2);font-size:15px;margin:0 0 18px}
+  h3{font-size:17.5px;margin:26px 0 10px;line-height:1.55}
+  h4{font-size:15.5px;margin:18px 0 6px;color:var(--ink2)}
+  p{margin:0 0 12px}
+  ul,ol{margin:0 0 12px;padding-left:22px}
+  li{margin:0 0 6px}
+  code{
+    font-family:"SF Mono",Menlo,Consolas,"HarmonyOS Sans Mono",monospace;
+    font-size:.865em;background:var(--line2);padding:1.5px 5px;border-radius:5px;color:#b03060
+  }
+  pre{
+    background:#1f2329;color:#e8eaed;padding:14px 16px;border-radius:9px;overflow-x:auto;
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:13.2px;line-height:1.7;margin:0 0 14px
+  }
+  pre code{background:none;color:inherit;padding:0;font-size:inherit}
+  pre .c{color:#9aa5b1}
+  pre .k{color:#ffb86c}
+  pre .h{color:#7ee787}
+  a{color:var(--brand)}
+  strong{font-weight:600}
+  .hr{height:1px;background:var(--line);margin:22px 0}
+
+  table{width:100%;border-collapse:collapse;font-size:14.5px;line-height:1.7;margin:0 0 8px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafbfc;font-weight:600;font-size:13.5px;color:var(--ink2);white-space:nowrap;border-bottom:1px solid var(--line)}
+  tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink3);font-size:13px}
+  .tbl-scroll{overflow-x:auto;margin:0 0 14px}
+
+  .pill{display:inline-block;font-size:12px;font-weight:600;line-height:1.7;padding:1px 8px;border-radius:6px;white-space:nowrap}
+  .p0{background:var(--p0bg);color:var(--p0)}
+  .p1{background:var(--p1bg);color:var(--p1)}
+  .p2{background:var(--p2bg);color:var(--p2)}
+  .p3{background:var(--p3bg);color:var(--p3)}
+  .ok{background:#e6f4ec;color:var(--ok)}
+
+  .card{border:1px solid var(--line);border-left:4px solid var(--line);border-radius:10px;padding:16px 18px;margin:0 0 16px;background:#fff}
+  .card.lv0{border-left-color:var(--p0);background:#fffbfb}
+  .card.lv1{border-left-color:var(--p1);background:#fffdf9}
+  .card.lv2{border-left-color:var(--p2)}
+  .card .hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+  .card .hd h4{margin:0;font-size:16.5px;color:var(--ink);font-weight:600}
+  .meta{font-size:13.5px;color:var(--ink3);margin:0 0 10px;font-family:"SF Mono",Menlo,Consolas,monospace;word-break:break-all}
+  .lab{display:inline-block;font-size:12.5px;color:var(--ink3);font-weight:600;letter-spacing:.03em;margin-right:4px}
+  .note{background:#f7f8fa;border-radius:8px;padding:11px 14px;font-size:14.5px;color:var(--ink2);margin:0 0 12px}
+  .note.warn{background:var(--p1bg);color:#8a5300}
+  .note.good{background:#e9f6ef;color:#0a6b3c}
+  .note.bad{background:var(--p0bg);color:#8d1f1f}
+
+  .toolbar{
+    position:sticky;top:0;z-index:20;background:rgba(246,247,249,.96);backdrop-filter:blur(6px);
+    padding:12px 0 12px;margin:0 0 10px;border-bottom:1px solid var(--line);
+    display:flex;gap:10px;align-items:center;flex-wrap:wrap
+  }
+  .toolbar input[type=search]{
+    flex:1 1 220px;min-width:180px;font-size:15px;padding:8px 13px;border:1px solid var(--line);
+    border-radius:9px;background:#fff;color:var(--ink);outline:none;font-family:inherit
+  }
+  .toolbar input[type=search]:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(10,89,247,.12)}
+  .fbtn{
+    font-size:13.5px;padding:7px 13px;border-radius:999px;border:1px solid var(--line);background:#fff;
+    color:var(--ink2);cursor:pointer;font-family:inherit;line-height:1.5
+  }
+  .fbtn:hover{border-color:var(--ink3)}
+  .fbtn[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .fcount{font-size:13.5px;color:var(--ink3);margin-left:auto;white-space:nowrap}
+  .hide{display:none !important}
+
+  .kv{display:grid;grid-template-columns:112px 1fr;gap:4px 14px;font-size:15px;margin:0 0 12px}
+  .kv dt{color:var(--ink3);font-size:13.5px;padding-top:2px}
+  .kv dd{margin:0}
+
+  footer{color:var(--ink3);font-size:13.5px;text-align:center;padding:26px 0 0}
+
+  @media (max-width:720px){
+    body{font-size:16px}
+    .wrap{padding:0 14px 60px}
+    header.top{padding:26px 14px 20px}
+    h1{font-size:24px}
+    section{padding:20px 16px}
+    nav.toc ol{columns:1}
+    .kv{grid-template-columns:1fr;gap:0 0}
+    .kv dt{margin-top:8px}
+  }
+  @media print{
+    :root{--bg:#fff}
+    body{background:#fff;font-size:10.5pt;line-height:1.65}
+    header.top{background:#fff;border-bottom:2px solid #000;padding:0 0 12px}
+    nav.toc{break-inside:avoid;border:1px solid #bbb}
+    section{box-shadow:none;border:1px solid #bbb;margin-bottom:12px;padding:14px;break-inside:auto}
+    .toolbar{display:none}
+    .card{break-inside:avoid}
+    a{color:#000;text-decoration:none}
+    pre{background:#f4f4f4;color:#111;border:1px solid #ddd}
+    pre .c{color:#777} pre .k{color:#8a4b00} pre .h{color:#0a6b3c}
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="inner">
+    <h1>Weaver 代码优化审查报告</h1>
+    <p class="sub">
+      HarmonyOS / ArkTS · targetSdk 26.0.0 · 单模块 <code>entry</code> · 82 个 <code>.ets</code> 文件 / 13,928 行<br>
+      审查日期 2026-10-13 · 静态审查 + 官方文档核对 + Code Linter · 未做真机性能实测
+    </p>
+    <div class="chips">
+      <span class="chip hot">高危 P0 <b>6</b></span>
+      <span class="chip">高 P1 <b>10</b></span>
+      <span class="chip">中 P2 <b>31</b></span>
+      <span class="chip">低 / 提示 P3 <b>14</b></span>
+      <span class="chip">合计 <b>61</b> 条</span>
+      <span class="chip" style="background:#e6f4ec;border-color:#bfe3cf;color:#0a6b3c">本轮已实施 <b>17 项</b></span>
+      <span class="chip"><b>devecocli build</b> 通过</span>
+      <span class="chip">Lint 告警 <b>65</b></span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<nav class="toc" id="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s0"><span class="n">0</span>结论摘要与修复路线</a></li>
+    <li><a href="#impl"><span class="n">★</span>本轮已实施改动与验证证据</a></li>
+    <li><a href="#s1"><span class="n">1</span>审查方法与工具可用性</a></li>
+    <li><a href="#s2"><span class="n">2</span>全部问题清单（可筛选）</a></li>
+    <li><a href="#s3"><span class="n">3</span>编辑器性能（FlowText）</a></li>
+    <li><a href="#s4"><span class="n">4</span>数据可靠性与持久层</a></li>
+    <li><a href="#s5"><span class="n">5</span>状态管理与列表渲染</a></li>
+    <li><a href="#s6"><span class="n">6</span>UI 外壳 / 安全区 / 可访问性</a></li>
+    <li><a href="#s7"><span class="n">7</span>工程配置与代码整洁</a></li>
+    <li><a href="#s8"><span class="n">8</span>已核对：确认不是问题</a></li>
+    <li><a href="#s9"><span class="n">9</span>官方文档依据索引</a></li>
+    <li><a href="#s10"><span class="n">10</span>未验证项与后续建议</a></li>
+  </ol>
+</nav>
+
+<!-- ===================== 0 ===================== -->
+<section id="s0">
+  <h2>0 · 结论摘要与修复路线 <span class="tag">EXECUTIVE SUMMARY</span></h2>
+  <p class="lead">项目整体工程质量高于同类个人项目：<strong>V2 状态管理落地得很彻底</strong>（18 个 <code>@ComponentV2</code>、58 个 <code>@Trace</code>、列表项用 <code>@ObservedV2</code> 就地刷新而不是手工整体替换），持久层有统一 <code>BaseDao</code> 与事务封装，沉浸式/断点/系统栏都有官方依据注释，构建可复现通过。问题集中在两处：<strong>自绘编辑器的热路径</strong>与<strong>数据落库时序</strong>。</p>
+  <div class="note good">
+    <strong>状态更新（2026-10-13）：</strong>P0 六条 + <a href="#f-s2">S-2</a>/<a href="#f-u1">U-1</a>/C-2/C-6 共 <strong>17 项已实施并通过编译与 lint 验证</strong>，
+    含 D-11/D-12/D-7/E-13 四项顺手做掉的相关项。逐条改动与前后证据见 <a href="#impl">★ 本轮已实施改动</a>。下列清单保留原始审查结论与行号，便于对照。
+  </div>
+
+  <h3>最值得先做的六件事</h3>
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th>#</th><th>问题</th><th>一句话影响</th><th>改动量</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td><a href="#f-e1">每次按键对<strong>全篇已排版字形</strong>做双 Map 差分</a></td><td>打字延迟随文稿长度线性上升，直接击穿项目自定的「5 万字 &lt;50ms」指标</td><td>中</td></tr>
+      <tr><td class="num">2</td><td><a href="#f-e2">每次编辑<strong>重建整篇 LineTypeset</strong></a></td><td>行级缓存省了行对象，没省整篇排版，长文每键 O(文档) 原生开销</td><td>大</td></tr>
+      <tr><td class="num">3</td><td><a href="#f-e3">绘制热路径<strong>逐帧 new Brush / TextBlob / 对象</strong></a></td><td>光标弹簧动画、字形动画、闪烁、惯性滚动都在 60fps 分配，掉帧与 GC 抖动</td><td>中</td></tr>
+      <tr><td class="num">4</td><td><a href="#f-s1">自动保存<strong>在 await 之后才清 dirty</strong></a></td><td>写入窗口内的继续输入会被判为「已保存」而永不落库 → 静默丢稿</td><td><span class="pill ok">小</span></td></tr>
+      <tr><td class="num">5</td><td><a href="#f-d1">事务期间其它写入被<strong>并入同一事务</strong></a></td><td>备份恢复失败回滚时，会把用户刚保存的正文一起回滚掉</td><td>中</td></tr>
+      <tr><td class="num">6</td><td><a href="#f-d2">列表查询 <code>SELECT *</code> <strong>拉取全部正文</strong></a></td><td>单篇上限 1.75MB，每次切项目/收藏/重命名都把整库正文搬进主线程</td><td>中</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>建议实施顺序</h3>
+  <ol>
+    <li><strong>第 1 批（数据安全，1—2 天）</strong>：#4 保存竞态 → #5 事务隔离 → <a href="#f-d5">init 重试失效</a> → <a href="#f-s3">未处理 Promise 拒绝</a> → <a href="#f-s4">退出落库即发即忘</a>。<span class="pill ok">已实施</span></li>
+    <li><strong>第 2 批（编辑器可感知卡顿，3—5 天）</strong>：#1 差分窗口化 → #3 绘制对象缓存与抗锯齿 → #2 typeset 窗口化。<span class="pill ok">已实施</span> <em>（收益待真机验证）</em></li>
+    <li><strong>第 3 批（列表与查询，2—3 天）</strong>：#6 查询列裁剪 <span class="pill ok">已实施</span> → <a href="#f-d4">补索引</a> <span class="pill p2">待你确认 schema</span> → <a href="#f-l2">派生值改 @Computed</a> → <a href="#f-l1">Repeat 虚拟滚动</a>。<span class="pill p1">未做</span></li>
+    <li><strong>第 4 批（体验与工程，按需）</strong>：安全区底部避让 <span class="pill ok">已实施</span>、linter 规则集 <span class="pill ok">已实施</span>、深色启动底色 <span class="pill ok">已实施</span>；无障碍文本、Release 混淆、i18n 资源化仍未做。</li>
+  </ol>
+
+  <div class="note good">
+    <strong>已经做对、不要动的地方：</strong> V1/V2 混用边界是干净的（V1 只出现在编辑器两组件，V2 父组件只传基本类型与函数）；<code>DocListPane</code> 的 <code>ForEach</code> key 用 <code>item.id</code> 是正确的稳定键；<code>DrawingRenderingContext</code>（Native Drawing）路径优于 <code>CanvasRenderingContext2D</code> 的选择正确；<code>UnicodeGraphemeData</code> 用二分查找且仅 36KB，不存在启动内存陷阱；定时器/动画器在 <code>aboutToDisappear</code> 全部清理。
+  </div>
+</section>
+
+<!-- ===================== 本轮实施 ===================== -->
+<section id="impl">
+  <h2>★ 本轮已实施改动与验证证据 <span class="tag">IMPLEMENTED · 2026-10-13</span></h2>
+  <p class="lead">
+    按你选定的范围执行：<strong>P0 六条全修</strong>（数据安全四条 + 编辑器 E-1/E-2/E-3 + D-2）、<strong>四项低风险快赢</strong>；
+    边界为<strong>允许调整数据库 / 仓储层内部接口签名</strong>；验证方式为<strong>编译 + lint</strong>（本机无设备）。
+  </p>
+
+  <h3>落地清单</h3>
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th style="width:64px">ID</th><th style="width:130px">问题</th><th>关键做法</th><th style="width:250px">改动文件</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="pill p0">S-1</span></td><td>自动保存竞态</td>
+        <td>给 <code>OpenDoc</code> 加 <code>rev</code> 修订号（每次正文/光标/格式变动自增）；<code>flushDoc</code> 落库前取 <code>rev/draft/caret/runsJson</code> 快照，返回后<strong>仅当 rev 未变</strong>才清 <code>dirty</code>，否则保留 dirty 交给防抖或安全网重试。另加 <code>flushChain</code> 串行化落库，消除「两次并发 flush 把新内容覆盖成旧内容」的丢更新。</td>
+        <td class="num">store/StoreModels.ets<br>store/EditorStore.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">D-1</span></td><td>事务隔离</td>
+        <td><code>DatabaseHelper.runInTransaction</code> → <code>beginTransaction(): Promise&lt;Transaction&gt;</code>（<code>createTransaction</code>）；<code>BaseDao</code> 增加 <code>txTarget</code> + <code>setTransaction()</code>，写操作在事务内重定向到事务对象；编排收敛到 <code>Repos.runInTransaction&lt;T&gt;()</code>，<strong>项目行本身也纳入事务</strong>，<code>finally</code> 清空重定向。官方依据：createTransaction「不同事务对象之间是隔离的」「优先使用，不再推荐 beginTransaction」。</td>
+        <td class="num">database/DatabaseHelper.ets<br>database/BaseDao.ets<br>store/Repos.ets<br>repository/*.ets<br>store/AppStores.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">D-2</span></td><td>列表拉全文</td>
+        <td><code>ChapterDao.queryList()</code>：参数化 SQL + <code>substr(content,1,512)</code> + 不读 <code>format_runs</code> + <code>word_count</code> 为 0 时用 <code>length(content)</code> 兜底；排序字段走白名单后拼接、值全部 bindArgs。<code>queryFull()</code> 保留全文路径；新增 <code>loadOne()</code>（打开文稿按 id 取全文）、<code>loadChaptersFull()</code>（备份/整本导出）。<strong>同步修正 4 处被投影影响的读取路径</strong>（打开文稿、备份导出、整本导出、改名、废纸篓恢复）。</td>
+        <td class="num">database/ChapterDao.ets<br>repository/ChapterRepository.ets<br>store/AppStores.ets<br>shell/AppShell.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">D-5</span></td><td>init 重试失效</td>
+        <td><code>init()</code> 改用局部变量持有 store，<strong>建表 / 补列全部成功后才赋值</strong>给 <code>this.store</code>；<code>catch</code> 里置回 <code>null</code>。<code>createTables/ensureColumns/tableColumns</code> 改为接收 store 参数。此后 UI 的「重试」不再返回一个「建表没做完」的 store。</td>
+        <td class="num">database/DatabaseHelper.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">S-3<br>S-4</span></td><td>未处理拒绝</td>
+        <td><code>flushDoc</code> 失败保持 <code>dirty = true</code>；<code>flushActive/flushAll</code> 明确<strong>永不 reject</strong>（内部逐条 try/catch），于是定时器、<code>onRequestSave</code>、生命周期回调都不再可能抛出未处理拒绝。新增 <code>fireAndLog&lt;T&gt;()</code> 并接入 <strong>12 个无法 await 的调用点</strong>；<code>doExport</code>/<code>runImport</code> 补 catch + toast。</td>
+        <td class="num">store/AppStores.ets<br>store/EditorStore.ets<br>shell/DocListPane.ets<br>shell/ProjectSidebar.ets<br>shell/WorkspaceDest.ets<br>shell/MobileShell.ets<br>shell/EditorPane.ets<br>shell/AppShell.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">E-2</span></td><td>整篇 typeset</td>
+        <td><code>TextLayoutEngine.buildTypesetWindow(content, base, end)</code> + <code>typesetBase</code> 字段：native 侧只认窗口内的下标，<code>lineBreak/createLayoutLine/buildLayoutLine</code> 内部完成「文档偏移 ↔ 窗口偏移」换算，<strong>对外接口语义不变</strong>。<code>LayoutCache</code> 管理<strong>段落对齐</strong>的 4000 码元窗口（起点取段落起点、终点取段落边界，故一行永不跨窗口 → 断行结果与整篇排版一致）。</td>
+        <td class="num">render/TextLayoutEngine.ets<br>render/LayoutCache.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">E-1</span></td><td>全篇字形差分</td>
+        <td>差分参数收进 <code>GlyphDiffOptions</code>，只对 <code>lastEditOffset</code> ±1024 码元窗口建字形 Map；前后缀扫描同样只在窗口内求精确（<strong>后缀两侧同步递减，位移量 delta 恒正确</strong>，被判为「变更区」的字形必在窗口外）；<code>charAt</code> → <code>charCodeAt</code> 去掉逐字符小字符串分配；「old+new 合并数组 + Set 去重」改为两趟遍历（负键永不出现在 new 侧，故等价）。</td>
+        <td class="num">animation/GlyphAnimator.ets<br>flowtext/CanvasTextEditor.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p0">E-3</span></td><td>逐帧分配 + 锯齿</td>
+        <td><code>GlyphRunData.blob</code> 缓存整 run 的 TextBlob（含动画字形时才走剔除慢路径）；<code>GlyphAnimState.blob</code> 缓存单字形 Blob；6 个 Brush 提升为 renderer 字段并统一 <code>setAntiAlias(true)</code>；<code>previewFont</code>/<code>previewBlob</code> 按字号与文本缓存。</td>
+        <td class="num">render/GlyphRenderer.ets<br>render/TextLayoutEngine.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p1">D-11<br>D-12</span></td><td>改名搬全文<br>3 条 UPDATE</td>
+        <td><code>ChapterDao.updateTitle()</code>（只写 title/updated_at）替换「读全文 → 连正文写回」；<code>saveDraft()</code> 把正文/光标/格式边车合并为<strong>单条</strong> UPDATE；<code>activeTitles()</code> 让废纸篓恢复只用标题列做重名检测。</td>
+        <td class="num">database/ChapterDao.ets<br>repository/ChapterRepository.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p2">D-7</span></td><td>close 不在 finally</td>
+        <td>全部 <code>resultSet</code> 改为 <code>try/finally</code> 释放；新增 <code>closeQuietly()</code> 把 <code>close()</code> 自身的异常吞掉并记日志 —— 在 <code>finally</code> 里抛出会<strong>掩盖真正的异常</strong>。</td>
+        <td class="num">database/BaseDao.ets<br>database/ChapterDao.ets<br>database/DatabaseHelper.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p2">E-13</span></td><td>无用的 utf8 表</td>
+        <td><code>TextIndexMap</code> 去掉 <code>utf8</code> 表与 <code>toUtf8/fromUtf8</code>（全工程含 ohosTest 均无调用点）。该类每次 typeset 都要重建，等于每次白做一半 O(n) 分配 —— 正是 E-2 要降的那笔成本。</td>
+        <td class="num">model/TextIndexMap.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p1">S-2</span></td><td>撤销栈不可观察</td>
+        <td><code>undoStack</code>/<code>redoStack</code> 加 <code>@Trace</code>。</td>
+        <td class="num">store/EditorStore.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p2">U-1</span></td><td>底部不避让</td>
+        <td><code>padding</code> 补上 <code>bottom: this.safeBottom</code>；避让区回调改为<strong>只在数值真的变化时</strong>写 <code>@Local</code>，消除旋转/折叠时的无意义重渲染。</td>
+        <td class="num">shell/AppShell.ets</td>
+      </tr>
+      <tr>
+        <td><span class="pill p3">C-2</span></td><td>规则集未启用</td>
+        <td><code>code-linter.json5</code> 增加 <code>plugin:@cross-device-app-dev/recommended</code> 与 <code>plugin:@correctness/recommended</code>（已用官方文档确认这两个标识符有效）。</td>
+        <td class="num">code-linter.json5</td>
+      </tr>
+      <tr>
+        <td><span class="pill p3">C-6</span></td><td>深色启动闪黑</td>
+        <td><code>dark/element/color.json</code> 的 <code>start_window_background</code>：<code>#000000</code> → <code>#282828</code>（与应用深色底色一致）。</td>
+        <td class="num">resources/dark/element/color.json</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>验证证据</h3>
+  <div class="note good">
+    <strong>构建</strong>：<code>devecocli build</code> → <strong>BUILD SUCCESSFUL</strong>，0 error。
+    为排除增量缓存干扰，额外跑了 <code>devecocli build clean</code> 后全量重编 → 依然 <strong>BUILD SUCCESSFUL in 16.3s</strong>。
+  </div>
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th>检查项</th><th style="width:150px">改动前</th><th style="width:150px">改动后</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>编译错误</td><td class="num">0</td><td class="num">0</td><td>—</td></tr>
+      <tr><td>ArkTS 编译告警（全量重编）</td><td class="num">同口径基线不可得</td><td class="num">39</td><td>首次构建为 <code>UP-TO-DATE</code> 增量，未重新输出 DB 层各类告警，故拿不到「改前」同口径计数。<strong>未新增告警类别</strong>：全部为既有的「Function may throw exceptions」类 + 1 条 deprecated；且把 7 处 <code>finally</code> 里的裸 <code>close()</code> 收进 <code>closeQuietly</code>，该类告警实际减少。</td></tr>
+      <tr><td>Lint <code>@typescript-eslint/await-thenable</code></td><td class="num">3</td><td class="num">0</td><td><strong>D-1 的直接证据</strong>：原来 <code>beginTransaction/commit/rollBack</code> 上的三个无效 await 已随事务改造消失。</td></tr>
+      <tr><td>Lint <code>@performance/high-frequency-log-check</code></td><td class="num">42</td><td class="num">42</td><td>全在 <code>CanvasTextEditor</code> 的 <code>diag()</code> 链路，<code>DIAG_ENABLED=false</code> 时不会真的打印（见 C-4）。</td></tr>
+      <tr><td>Lint <code>@performance/avoid-overusing-custom-component-check</code></td><td class="num">2</td><td class="num">2</td><td>建议<strong>不要</strong>照改（见 C-4）。</td></tr>
+      <tr><td>Lint（因启用规则集而新增）</td><td class="num">0</td><td class="num">21</td><td><code>@cross-device-app-dev/color-value</code> 20 条（「颜色应通过 <code>$r</code> 设置以适配深浅色」，对应 U-9 的硬编码问题）+ <code>color-contrast</code> 1 条（<code>DocListPane.ets:187</code> 删除按钮白字/危险色对比度 &lt; 4.5:1）。<strong>这正是启用规则集的目的</strong>，属预期新增。</td></tr>
+      <tr><td>Lint 总计</td><td class="num">47</td><td class="num">65</td><td>errors 始终为 0。差异完全可归因：−3（await-thenable 已修）+ 21（新规则集）。</td></tr>
+      <tr><td>单元测试</td><td class="num">未运行</td><td class="num">未运行</td><td>本机无设备。<strong>但测试契约未被破坏</strong>：<code>FlowText.test.ets</code> 依赖的 <code>engine.buildTypeset()</code> 保留，且断言所用的 <code>line.nativeStartIndex + line.indexMap.toScalar(at - line.startIndex)</code> 语义被刻意保持不变（窗口化只在引擎内部换算，<code>nativeStartIndex</code> 仍是文档级 scalar 下标、逐行 <code>indexMap</code> 仍是行本地偏移）。</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note warn">
+    <strong>关于性能收益的诚实说明：</strong>E-1 / E-2 / E-3 的收益来自静态分析（去掉了每键 O(文档) 的 Map 构建与整篇 typeset、去掉了每帧的 Brush/TextBlob 分配），
+    <strong>本机无设备，未采集任何帧率或打字延迟数据</strong>。这三个改动必须真机验证才能确认 —— 建议用项目自定的 <code>SC-006</code>（5 万字输入 &lt;50ms、滚动 ≥50fps）做基线对比，
+    并开 <code>DIAG_ENABLED = true</code> 用 <code>devecocli log --keyword FlowTextDiag</code> 看现成的 <code>perf relayout=…ms</code> 埋点。
+  </div>
+
+  <h3>本轮未做（仍是开放项）</h3>
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th style="width:120px">项</th><th>为什么没做 / 怎么继续</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill p1">D-4</span> 索引</td><td>需要 <code>CREATE INDEX</code>，属 schema 变更 —— 你选的是「允许改内部接口签名」而非「连 schema 一起改」。6 条索引语句已在 §4 备好，可直接执行。</td></tr>
+      <tr><td><span class="pill p2">D-6</span> 版本迁移</td><td>同上，需引入 <code>store.version</code> 与逐版本 ALTER 流程，动的是已有用户数据库。建议与 D-4 合并成一次迁移。</td></tr>
+      <tr><td><span class="pill p1">S-5 L-1 L-2 L-3</span></td><td>列表刷新与渲染那批（就地去重、<code>@Computed</code>、<code>Repeat</code> 虚拟滚动、<code>summaryOf</code> 的 <code>new RegExp</code>）。属下一批「列表与查询」范围。</td></tr>
+      <tr><td><span class="pill p1">E-4</span> IME 整篇 IPC</td><td>编辑器第二批（含 E-5 打开长文全篇排版、E-6 每帧线性扫描、E-7 拖动逐帧写 @State 等）。</td></tr>
+      <tr><td><span class="pill p2">U-2…U-12</span></td><td>安全区挖孔、废弃 router、无障碍文本、i18n 资源化、两套 Navigation 共栈等。</td></tr>
+      <tr><td><span class="pill p3">C-1</span> Release 混淆</td><td>你本轮未勾选。<code>obfuscation.enable</code> 改 true 即可，但 filename 混淆需回归一次动态导入。</td></tr>
+      <tr><td>用户可见失败提示</td><td><code>fireAndLog</code> 只记日志（保证不杀进程）。「新建文稿失败」这类需要 toast 的场景，建议下一轮在组件侧补 <code>promptAction</code> 提示。</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ===================== 1 ===================== -->
+<section id="s1">
+  <h2>1 · 审查方法与工具可用性 <span class="tag">METHOD &amp; TOOLING</span></h2>
+  <p class="lead">先给出工具的真实可用状态，便于判断本报告每条结论的置信度。</p>
+
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th>手段</th><th>状态</th><th>产出 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>devecocli build</code></td><td><span class="pill ok">可用</span></td><td>BUILD SUCCESSFUL（5.6s，18 up-to-date）。工程可复现编译通过，无编译错误。</td></tr>
+      <tr><td><code>devecocli check lint</code></td><td><span class="pill ok">可用</span></td><td>47 条告警 / 0 错误，覆盖 4 个文件：<code>CanvasTextEditor.ets</code>(42)、<code>DatabaseHelper.ets</code>(3)、<code>GuideSwiperPage.ets</code>(1)、<code>SettingsPanel.ets</code>(1)。</td></tr>
+      <tr><td><code>devecocli docs search / read</code></td><td><span class="pill ok">可用</span></td><td>本地 HarmonyOS 文档库可检索，本报告所有「文档依据」均来自原文（见第 9 节）。</td></tr>
+      <tr><td><code>arkts_check</code>（ArkTS 严格静态检查）</td><td><span class="pill p0">不可用</span></td><td>本机未安装 DevEco Studio（仅 Command Line Tools），工具报 <code>DevEco Studio installation not found</code>。因此<strong>未</strong>获得 ArkTS 规范级诊断，相关结论仅来自 lint 与人工阅读。</td></tr>
+      <tr><td>真机 / 模拟器运行</td><td><span class="pill p0">未执行</span></td><td>本机为 HarmonyOS 原生 PC，无已连接设备。所有性能结论均为<strong>静态代码分析</strong>，未采集帧率、耗时、内存曲线。</td></tr>
+      <tr><td>UI 预览 / 截图验证</td><td><span class="pill p0">未执行</span></td><td>未做视觉回归，故外观类问题（锯齿、遮挡、挖孔）为代码推断，标注为待真机确认。</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>审查范围</h3>
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th>子系统</th><th>覆盖文件</th><th>行数</th></tr></thead>
+    <tbody>
+      <tr><td>自绘编辑器 FlowText</td><td><code>editor/TextEditorHost.ets</code> + <code>editor/flowtext/**</code>（23 个）</td><td class="num">6,463</td></tr>
+      <tr><td>持久层</td><td><code>database/*.ets</code>（8 个）+ <code>utils/PreferenceHelper.ets</code></td><td class="num">1,020</td></tr>
+      <tr><td>状态与仓储</td><td><code>store/*.ets</code>（10 个）+ <code>repository/*.ets</code> + <code>model/*.ets</code></td><td class="num">2,600</td></tr>
+      <tr><td>UI 外壳与页面</td><td><code>shell/*.ets</code>（12 个）+ <code>pages/**</code> + <code>entryability/</code></td><td class="num">2,900</td></tr>
+      <tr><td>工具与常量</td><td><code>utils/*.ets</code>（13 个）+ <code>constants/DesignTokens.ets</code></td><td class="num">1,430</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ===================== 2 ===================== -->
+<section id="s2">
+  <h2>2 · 全部问题清单 <span class="tag">61 ITEMS</span></h2>
+  <p class="lead">按等级筛选或搜索关键词。等级含义：<span class="pill p0">P0</span> 立即修（数据安全或核心手感） · <span class="pill p1">P1</span> 本迭代修 · <span class="pill p2">P2</span> 排期修 · <span class="pill p3">P3</span> 择机。</p>
+
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="搜索：文件名 / 关键词 / 现象…" autocomplete="off">
+    <button class="fbtn" data-lv="all" aria-pressed="true">全部</button>
+    <button class="fbtn" data-lv="0" aria-pressed="false">P0</button>
+    <button class="fbtn" data-lv="1" aria-pressed="false">P1</button>
+    <button class="fbtn" data-lv="2" aria-pressed="false">P2</button>
+    <button class="fbtn" data-lv="3" aria-pressed="false">P3</button>
+    <span class="fcount" id="cnt"></span>
+  </div>
+
+  <div class="tbl-scroll">
+  <table id="all">
+    <thead>
+      <tr><th style="width:52px">等级</th><th style="width:74px">ID</th><th style="width:150px">模块</th><th>问题</th><th style="width:250px">关键位置</th></tr>
+    </thead>
+    <tbody>
+      <tr data-lv="0"><td><span class="pill p0">P0</span></td><td class="num">E-1</td><td>编辑器</td><td>每键对全篇字形做双 Map 差分 + offsets 数组 + Set</td><td class="num">CanvasTextEditor.ets:1469<br>GlyphAnimator.ets:56-91</td></tr>
+      <tr data-lv="0"><td><span class="pill p0">P0</span></td><td class="num">E-2</td><td>编辑器</td><td>每次编辑重建整篇 LineTypeset（违反项目自定 R9）</td><td class="num">LayoutCache.ets:83<br>TextLayoutEngine.ets:187-221</td></tr>
+      <tr data-lv="0"><td><span class="pill p0">P0</span></td><td class="num">E-3</td><td>编辑器</td><td>绘制热路径逐帧 new Brush / TextBlob / 字形对象</td><td class="num">GlyphRenderer.ets:135,143,150,194,203,297</td></tr>
+      <tr data-lv="0"><td><span class="pill p0">P0</span></td><td class="num">S-1</td><td>状态/保存</td><td>flushDoc 在 3 次 await 之后才清 dirty → 保存窗口内丢稿</td><td class="num">EditorStore.ets:355-359</td></tr>
+      <tr data-lv="0"><td><span class="pill p0">P0</span></td><td class="num">D-1</td><td>持久层</td><td>beginTransaction 期间其它 DAO 写入被并入事务，可被一起回滚</td><td class="num">DatabaseHelper.ets:199-215</td></tr>
+      <tr data-lv="0"><td><span class="pill p0">P0</span></td><td class="num">D-2</td><td>持久层</td><td>列表查询 SELECT * 把每篇正文（上限 1.75MB）整表读进内存</td><td class="num">ChapterDao.ets:176-194<br>BaseDao.ets:43-51</td></tr>
+
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">S-2</td><td>状态</td><td>undo/redo 栈未加 @Trace → 撤销/重做可用态不刷新</td><td class="num">EditorStore.ets:44-45,93-99</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">S-3</td><td>状态</td><td>大量 async 动作未接 catch → 未处理 Promise 拒绝（项目自述会被杀进程）</td><td class="num">DocListPane.ets:157,159,175-179 等</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">S-4</td><td>状态</td><td>onBackground / onDestroy / aboutToDisappear 落库即发即忘</td><td class="num">EntryAbility.ets:17,124<br>AppShell.ets:105</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">S-5</td><td>状态</td><td>单列变更触发整表 reload + 两个全表聚合</td><td class="num">AppStores.ets:223-243</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">D-3</td><td>持久层</td><td>备份恢复逐行 insert、项目行建在事务外、失败静默</td><td class="num">AppStores.ets:402,407-475,482-485</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">D-4</td><td>持久层</td><td>全库零索引：所有列表/计数查询全表扫描</td><td class="num">DatabaseHelper.ets:49-134</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">L-1</td><td>渲染</td><td>List + ForEach 一次性创建全部子组件，无虚拟化</td><td class="num">DocListPane.ets:226-240 等 5 处</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">L-2</td><td>渲染</td><td>派生值写在 build 内的方法里，每次重渲染重复全量计算</td><td class="num">DocListPane.ets:201,215,227<br>EditorPane.ets:140,343</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">L-3</td><td>渲染</td><td>summaryOf 每章 new RegExp + 对整篇正文做正则扫描</td><td class="num">ProjectStore.ets:136-138,177-183</td></tr>
+      <tr data-lv="1"><td><span class="pill p1">P1</span></td><td class="num">E-4</td><td>编辑器</td><td>IME changeSelection 每次选区变化传整篇正文，且 .catch 静默吞错</td><td class="num">CanvasTextEditor.ets:1686-1695<br>ImeBridge.ets:80-82</td></tr>
+
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-5</td><td>编辑器</td><td>打开长文强制全篇排版；布局行永不淘汰</td><td class="num">CanvasTextEditor.ets:1412-1416<br>LayoutCache.ets:13,25-35</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-6</td><td>编辑器</td><td>每帧 handlePositions + HitTester 逐行线性扫描（lines 已有序，可二分）</td><td class="num">CanvasTextEditor.ets:1601-1616<br>HitTester.ets:57-64,116-126</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-7</td><td>编辑器</td><td>拖动选择时逐 Move 事件写 4 个 @State，浮层子树反复重渲染</td><td class="num">CanvasTextEditor.ets:355-385,1765,1789</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-8</td><td>编辑器</td><td>动画字形每帧每字形 new Brush + 构建 TextBlob</td><td class="num">GlyphRenderer.ets:194-204</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-9</td><td>编辑器</td><td>IME 预上屏每次按键克隆整篇文档 + 新建 LayoutCache</td><td class="num">CanvasTextEditor.ets:1024-1036</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-10</td><td>编辑器</td><td>预上屏每帧 new Font + TextBlob.makeFromString</td><td class="num">GlyphRenderer.ets:297-301</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-11</td><td>编辑器</td><td>所有 Brush 未开抗锯齿（API 默认关闭）→ 字形/光标/手柄硬边</td><td class="num">GlyphRenderer.ets:119,194,222,248,277,302</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-12</td><td>编辑器</td><td>格式变更（粗体/标题）触发全篇 invalidate 与全篇差分</td><td class="num">CanvasTextEditor.ets:1314-1321</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-13</td><td>编辑器</td><td>每次 typeset 构建从未被调用的 utf8 索引表（O(n) 纯浪费）</td><td class="num">TextIndexMap.ets:3-15,28-29</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">E-14</td><td>编辑器</td><td>惯性滚动/光标闪烁用 setInterval(16) 而非帧回调；无脏区重绘</td><td class="num">CanvasTextEditor.ets:1967-1977,2026-2032</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-5</td><td>持久层</td><td>init 先赋值 this.store 再建表 → DDL 失败后「重试」永久跳过建表</td><td class="num">DatabaseHelper.ets:28-47</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-6</td><td>持久层</td><td>无 store.version 迁移路径；DB_VERSION 只是日志；EXPECTED_COLUMNS 覆盖不全</td><td class="num">DatabaseHelper.ets:8,11-15,139-162</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-7</td><td>持久层</td><td>resultSet.close() 不在 finally，异常路径泄漏 FD（6 处）</td><td class="num">BaseDao.ets:43-51,56-63<br>ChapterDao.ets:207,219,241</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-8</td><td>持久层</td><td>PRAGMA foreign_keys 用 executeSql 执行（未文档化）且从不校验</td><td class="num">DatabaseHelper.ets:38</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-9</td><td>持久层</td><td>三个 DAO 的 insert 用 Date.now() 覆盖模型时间戳，备份恢复丢原始时间</td><td class="num">CharacterDao.ets:51-52<br>WorldSettingDao.ets:47-48<br>RelationshipDao.ets:44-45</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-10</td><td>持久层</td><td>灵感 ON DELETE SET NULL 与全链路 book_id='' 口径冲突 → 删项目后灵感不可见</td><td class="num">DatabaseHelper.ets:109<br>InspirationDao.ets:62-67</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-11</td><td>持久层</td><td>rename / restore 读全文再回写全文</td><td class="num">ChapterRepository.ets:67-73,124-151</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-12</td><td>持久层</td><td>一次自动保存 = 3 条独立 UPDATE（3 次写事务，非原子）</td><td class="num">EditorStore.ets:356-358</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-13</td><td>持久层</td><td>错误处理抹平：丢 BusinessError.code；缺列与损坏都读成空值；无损坏重建</td><td class="num">BaseDao.ets:15-41,71-89<br>DatabaseHelper.ets:32-35</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">D-14</td><td>持久层</td><td>RdbStore 全生命周期不释放（close 未调用）</td><td class="num">DatabaseHelper.ets 全文</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-1</td><td>UI</td><td>safeBottom 算出却从未使用 → 底部内容被导航条遮挡</td><td class="num">AppShell.ets:47,61,64,205</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-2</td><td>UI</td><td>aboutToAppear 中执行路由栈操作（Navigation 尚未构建）</td><td class="num">AppShell.ets:65,127-129</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-3</td><td>UI</td><td>文件选择器用官方标注「不推荐」的无参构造 → 概率性失败</td><td class="num">ExportService.ets:192<br>ImportService.ets:35</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-4</td><td>UI/IO</td><td>导出：fd 不在 finally、无 TRUNC 覆盖写、fsyncSync 阻塞主线程</td><td class="num">ExportService.ets:197-202</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-5</td><td>UI</td><td>横屏挖孔区未避让，module.json5 缺 avoid_cutout</td><td class="num">SafeArea.ets:40-50<br>module.json5</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-6</td><td>UI</td><td>引导页用已废弃 router，且不避让安全区；setGuided 未 await</td><td class="num">GuideSwiperPage.ets:60-63,82</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-7</td><td>UI</td><td>抽屉蒙层的 overlayDim 无回收路径 → 状态栏可能永久变暗</td><td class="num">WorkspaceDest.ets:31-35</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-8</td><td>UI/性能</td><td>整本导出在主线程做 O(n×m) 标注展开 + 巨型 JSON.stringify</td><td class="num">ExportService.ets:92-132,211</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-9</td><td>UI/i18n</td><td>零 $r('app.string')：1,289 处中文硬编码，资源目录只有 base</td><td class="num">resources/base/element/string.json（仅 3 条）</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-10</td><td>UI/无障碍</td><td>桌面窗口控制按钮（最小化/最大化/关闭）无 accessibilityText</td><td class="num">PcWindowBar.ets:109-118</td></tr>
+      <tr data-lv="2"><td><span class="pill p2">P2</span></td><td class="num">U-11</td><td>UI</td><td>lg 与 md/sm 两套 Navigation 共用同一 NavPathStack</td><td class="num">AppShell.ets:283<br>MobileShell.ets:72,105</td></tr>
+
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">S-6</td><td>状态</td><td>MaterialStore 元素为普通 interface（非 @ObservedV2），靠整体 reload 规避</td><td class="num">MaterialStore.ets:15-17,78-86</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">S-7</td><td>状态</td><td>UiStore 双份真相：themeId 与派生 darkMode 同为 @Trace 且各自持久化</td><td class="num">UiStore.ets:27-29,167-191</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">S-8</td><td>状态</td><td>V2 应用中仍用 V1 AppStorage 传 mainWindow / isPcDevice</td><td class="num">EntryAbility.ets:27,35<br>AppShell.ets:56,111</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">S-9</td><td>状态</td><td>保存成功后不同步 ProjectStore.chapters → 列表摘要/字数长期滞后</td><td class="num">EditorStore.ets:356-359<br>ProjectStore.ets:122-153</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">S-10</td><td>状态</td><td>混合导入时 importBackupText 会中途切项目，后续文件落到新项目</td><td class="num">AppStores.ets:341-370,477</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">E-15</td><td>编辑器</td><td>合成期 ensureCaretLayout 会覆盖预览布局（正确性风险，待真机确认）</td><td class="num">CanvasTextEditor.ets:1400-1416</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">E-16</td><td>编辑器</td><td>IME attach 的 pending 链在 detach 后仍可能重新附着（时序风险）</td><td class="num">ImeBridge.ets:40-50,52-66</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">U-12</td><td>UI</td><td>SafeArea 模块级单例状态跨 Ability 不复位；onWindowStageDestroy 为空</td><td class="num">SafeArea.ets:18-21,71-75<br>EntryAbility.ets:100-102</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">C-1</td><td>工程</td><td>release 构建未开启混淆（obfuscation.enable=false），但规则文件已备好</td><td class="num">entry/build-profile.json5:15-25</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">C-2</td><td>工程</td><td>code-linter ruleSet 未启用 @cross-device-app-dev / @correctness，注释里引用的规则实际不跑</td><td class="num">code-linter.json5</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">C-3</td><td>工程</td><td>约 200 行不可达 UI 与死状态链（MobileTabBar / MobileSectionTabs / mobileToolBar / ui.view）</td><td class="num">MobileShell.ets:20,38-44,187-192<br>UiStore.ets:88</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">C-4</td><td>工程</td><td>Lint 47 条告警：42 条指向 diag 日志链路（当前 DIAG_ENABLED=false 未生效）</td><td class="num">CanvasTextEditor.ets:1556-1561</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">C-5</td><td>工程</td><td>全项目无 Worker / TaskPool：导出、导入、Markdown 渲染全在主线程</td><td class="num">全工程 grep 无命中</td></tr>
+      <tr data-lv="3"><td><span class="pill p3">P3</span></td><td class="num">C-6</td><td>工程</td><td>深色启动底色 #000000 与应用深色底色 #282828 不一致 → 启动闪黑</td><td class="num">dark/element/color.json<br>DesignTokens.ets:92</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ===================== 3 ===================== -->
+<section id="s3">
+  <h2>3 · 编辑器性能（FlowText） <span class="tag">HIGHEST VALUE</span></h2>
+  <p class="lead">这是全项目最重、也最该优化的一块。项目自己定了量化指标，可以直接拿来当验收标准。</p>
+
+  <div class="note">
+    <strong>项目自定指标（已核实存在于仓库）：</strong><br>
+    <code>spec/flowtext-sole-editor/spec.md:192</code> — <strong>SC-006</strong>：在 5 万字长文下，输入响应 &lt; 50ms、滚动 ≥ 50fps，无卡死/白屏。<br>
+    <code>spec/flowtext-sole-editor/plan.md:147</code> — <strong>R9</strong>：按需/增量布局；渲染仅覆盖可视视口；<strong>格式变更仅失效受影响区段</strong>；<strong>避免整篇 typeset 与全量重绘</strong>。
+  </div>
+
+  <p>下面的 E-1 / E-2 两条，正好是 R9 明文要求「避免」的两件事，而代码里都发生了。</p>
+
+  <div class="card lv0" id="f-e1">
+    <div class="hd"><span class="pill p0">P0</span><h4>E-1 · 每次按键对「全篇已排版字形」做两份 Map 差分</h4></div>
+    <p class="meta">entry/src/main/ets/editor/flowtext/CanvasTextEditor.ets:1469　·　animation/GlyphAnimator.ets:26-48, 52-91</p>
+    <p><span class="lab">证据</span></p>
+<pre><code><span class="c">// CanvasTextEditor.afterEdit()</span>
+this.anims = GlyphAnimator.createEditAnimations(this.oldLines, this.lines, ...)   <span class="c">// :1469</span>
+
+<span class="c">// GlyphAnimator.createEditAnimations()</span>
+const originalMap = GlyphAnimator.buildGlyphMapFromLines(oldLines, ...)   <span class="c">// :56  对全部行</span>
+const oldMap = new Map&lt;number, GlyphPoint&gt;()
+originalMap.forEach((point, offset) =&gt; { ... })                          <span class="c">// :66  再拷一份</span>
+const newMap = GlyphAnimator.buildGlyphMapFromLines(newLines, ...)        <span class="c">// :70  又对全部行</span>
+const offsets: number[] = []
+oldMap.forEach((v, key) =&gt; { offsets.push(key) })                        <span class="c">// :81</span>
+newMap.forEach((v, key) =&gt; { offsets.push(key) })                        <span class="c">// :84</span>
+const seen = new Set&lt;number&gt;()                                            <span class="c">// :88  去重</span></code></pre>
+    <p><span class="lab">为什么是问题</span> <code>this.lines</code> 是<strong>已排版行</strong>数组，写作时 <code>ensureCaretLayout()</code> 会一直排到光标处，而光标通常在文末 —— 也就是说这个数组实际覆盖<strong>整篇</strong>。5 万字约 2,500 行 × 20 字形 ≈ 5 万字形，于是<strong>每敲一个字</strong>就要：构建 2 份近 5 万项的 Map（约 10 万个 <code>GlyphPoint</code> 对象）、再拷一份、再建一个 10 万项的 <code>offsets</code> 数组、再塞进 <code>Set</code> 去重。而 <code>MAX_SLIDES=80</code> / <code>MAX_EXITS=24</code> 说明最终真正需要动画的字形<strong>最多 104 个</strong> —— 为了 104 个字形，处理了 10 万个。这是「越写越卡」的头号原因。</p>
+    <p>同一函数 <code>:60</code> 还有一处 <code>while (prefix &lt; oldText.length &amp;&amp; ...) oldText.charAt(prefix) === newText.charAt(prefix)</code> 的全文前缀扫描，每键一次 O(n)。</p>
+    <p><span class="lab">建议改法</span></p>
+    <ul>
+      <li>只对<strong>编辑影响区</strong>做差分：把已有的 <code>lastEditOffset</code> 向两侧各扩一个窗口（如 ±1 个视口或 ±N 行），只对窗口内的行 <code>buildGlyphMapFromLines</code>。</li>
+      <li>去掉 <code>offsets</code> 数组 + <code>Set</code>：直接遍历窗口内 <code>oldMap</code> 的键，用 <code>newMap.get(key)</code> 判断；退场字形遍历 <code>newMap</code> 的键取 <code>oldMap</code>。</li>
+      <li>前缀扫描改为只比较编辑点附近 ±K 字符。</li>
+    </ul>
+    <p><span class="lab">依据</span> 官方《应用性能优化 · 主线程耗时操作优化》：高频回调内不应执行耗时操作。本条的窗口化方案与 R9「避免整篇」一致。</p>
+  </div>
+
+  <div class="card lv0" id="f-e2">
+    <div class="hd"><span class="pill p0">P0</span><h4>E-2 · 每次编辑重建「整篇 LineTypeset」</h4></div>
+    <p class="meta">entry/src/main/ets/editor/flowtext/render/LayoutCache.ets:38-46, 76-99　·　render/TextLayoutEngine.ets:187-221</p>
+<pre><code><span class="c">// LayoutCache.applyEdit() → invalidateFrom() 把 typeset 置 null</span>
+private appendLine(): void {
+  ...
+  if (this.typeset === null) { this.typeset = this.engine.buildTypeset(this.textValue); }  <span class="c">// :83 整个 textValue</span>
+  ...
+}
+<span class="c">// TextLayoutEngine.buildTypeset()</span>
+buildTypeset(content: string) {
+  this.indexMap = new TextIndexMap(content)   <span class="c">// :188 O(n) 双数组 push</span>
+  ...
+  builder.addText(content)                    <span class="c">// :198 整篇交给原生排版</span>
+}</code></pre>
+    <p><span class="lab">为什么是问题</span> <code>applyEdit()</code> 会 <code>invalidateFrom()</code>（按段落边界裁剪行），但下一步 <code>appendLine()</code> 发现 <code>typeset === null</code> 就<strong>用全文</strong>重建 <code>ParagraphBuilder</code> 与 <code>TextIndexMap</code>。行级缓存只省下了「行对象」，没省下「整篇排版」—— 原生侧仍要为整篇文本构建字型 run。每键叠加一次 O(文档) 的 JS + 原生开销，与 E-1 相乘。</p>
+    <p><span class="lab">建议改法</span> 按段落建 typeset：以编辑段落起点为 base，用 <code>content.substring(base, base + window)</code> 建 typeset，并在 <code>lineBreak</code> / <code>createLayoutLine</code> 中加 <code>base</code> 偏移；或给 <code>TextLayoutEngine</code> 增加「段落起点 → LineTypeset」的限容 LRU 缓存。同时把 <code>ParagraphStyle</code> 的 <code>breakStrategy</code> / <code>wordBreak</code> 显式固定，避免默认值随版本漂移。</p>
+  </div>
+
+  <div class="card lv0" id="f-e3">
+    <div class="hd"><span class="pill p0">P0</span><h4>E-3 · 绘制热路径逐帧分配（Brush / TextBlob / 字形对象）</h4></div>
+    <p class="meta">entry/src/main/ets/editor/flowtext/render/GlyphRenderer.ets:135, 143, 150, 194-204, 297-301</p>
+<pre><code><span class="c">// drawText()：每个 run 每帧</span>
+const runBuffer: drawing.TextBlobRunBuffer[] = [];                       <span class="c">// :135 新数组</span>
+for (let g = 0; g &lt; run.glyphs.length; g++) {
+  runBuffer.push({ glyph: ..., positionX: ..., positionY: ... });        <span class="c">// :143 每字形一个对象</span>
+}
+const blob = drawing.TextBlob.makeFromRunBuffer(runBuffer, run.font, null);  <span class="c">// :150 每 run 一个 Blob</span>
+
+<span class="c">// drawAnimatedGlyph()：每个动画字形每帧</span>
+const brush = new drawing.Brush();                                       <span class="c">// :194</span>
+const blob = drawing.TextBlob.makeFromRunBuffer([{...}], st.font, null);  <span class="c">// :203</span>
+
+<span class="c">// drawPreview()：每帧</span>
+const font = new drawing.Font(); font.setSize(...);                      <span class="c">// :297</span>
+const brush = new drawing.Brush();                                       <span class="c">// :302</span></code></pre>
+    <p><span class="lab">为什么是问题</span> <code>drawNow()</code> 被三条路径以约 60fps 驱动：光标弹簧动画的帧回调（<code>CanvasTextEditor.ets:1497-1501</code>）、<code>setInterval(16)</code> 惯性滚动（<code>:1967-1977</code>）、光标闪烁（<code>:2026-2032</code>）。视口约 30 行 × 20 字形 → <strong>每帧约 600 个临时对象 + 30~60 个 TextBlob</strong>；再叠加最多 80 个 slide + 24 个 exit 动画字形，各来一次 <code>new Brush</code> + 一次 Blob 构建（约 1.2 万次分配/秒）。这是掉帧与 GC 抖动的直接来源。</p>
+    <p><span class="lab">建议改法</span></p>
+    <ul>
+      <li>在 <code>GlyphRunData</code> 上缓存 <code>blob: drawing.TextBlob | null</code>，布局重建时自然失效；只有含动画字形的 run 才走剔除路径，其余直接 <code>drawTextBlob(cachedBlob, x, baseline)</code>。</li>
+      <li><code>runBuffer</code> 提升为 <code>GlyphRunData</code> 上的持久数组（清空重填）。</li>
+      <li><code>Brush</code> / <code>Font</code> 提升为 renderer 字段，靠 <code>setColor</code> / <code>setSize</code> 复用；<code>GlyphAnimState</code> 缓存单字形 Blob（动画生命周期内 <code>glyph</code> + <code>font</code> 不变）。</li>
+      <li><code>drawPreview</code> 的 <code>previewFont</code> 只随主题变化更新，Blob 按 <code>preview.text</code> 变化重建。</li>
+    </ul>
+    <p><span class="lab">附加发现（同文件，一并修）</span> 全部 <code>Brush</code> 都没有调 <code>setAntiAlias(true)</code>（全工程 grep 无命中）。官方 <code>drawing.Brush</code> 文档明确「未调用此接口设置时，系统默认关闭抗锯齿」，官方字块绘制示例在绘制文字前统一开启。因为本项目走 <code>DrawingRenderingContext</code>（正确的高性能选择），<strong>无法</strong>通过 <code>RenderingContextSettings(true)</code> 开抗锯齿，只能在 Brush 上显式设置 —— 现在字形边缘、光标竖条、选区手柄都是硬边。见 <span class="pill p2">P2 · E-11</span>。</p>
+  </div>
+
+  <div class="card lv1" id="f-e4">
+    <div class="hd"><span class="pill p1">P1</span><h4>E-4 · IME 每次选区变化传「整篇正文」，且静默吞掉错误</h4></div>
+    <p class="meta">entry/src/main/ets/editor/flowtext/CanvasTextEditor.ets:1686-1695　·　ime/ImeBridge.ets:79-82</p>
+<pre><code>private reportSelection(): void {
+  if (!this.ime.attached) { return; }
+  const sel = this.selMgr.selection;
+  if (this.previewMgr.isComposing) { ... }
+  else { this.ime.changeSelection(this.doc.text, sel.startOffset, sel.endOffset); }  <span class="c">// :1694 整篇</span>
+}
+<span class="c">// ImeBridge</span>
+changeSelection(value: string, start: number, end: number): void {
+  if (this.isAttached) { this.controller.changeSelection(value, start, end).catch(() =&gt; {}); }  <span class="c">// :81 静默</span>
+}</code></pre>
+    <p><span class="lab">为什么是问题</span> 官方 <code>@ohos.inputMethod</code> 文档中 <code>changeSelection</code> 的参数说明是「<strong>整个输入文本</strong>」，错误码表里含 <code>12800003</code>（ipc failed due to the large amount of data transferred）。5 万字约 100KB UTF-16，而 <code>emitSelection()</code> 会被 <code>handleTouch</code> 的 Move 分支逐帧调用 —— 即每秒 60~120 次整篇过 IPC。长文下一旦触发 <code>12800003</code>，<code>.catch(() =&gt; {})</code> 把它吞掉，用户看到的是「软键盘删除键不删选区 / 候选框错位」这类难以归因的症状。</p>
+    <p><span class="lab">建议改法</span> ① 记录上次上报的 <code>(start, end, textVersion)</code>，未变化直接返回；② 拖动过程中不逐帧上报，改为抬手或惯性结束后上报一次；③ attach 完成后的 <code>.then</code> 不要无条件重发整篇（只在首次 attach 或文本版本变化时发）；④ 至少把失败 <code>diag</code> 出来，不要静默。</p>
+  </div>
+
+  <div class="card lv2">
+    <div class="hd"><span class="pill p2">P2</span><h4>E-5 / E-6 / E-7 / E-12 / E-14 · 长文打开与交互的次级开销</h4></div>
+    <p><span class="lab">E-5</span> <code>loadDocument()</code> → <code>relayout()</code> → <code>ensureCaretLayout()</code>（<code>CanvasTextEditor.ets:1412-1416</code>）用<strong>光标偏移</strong>驱动 <code>ensureOffset</code>，打开时若光标恢复到文末就一次性排完全篇（同步、主线程）；且 <code>LayoutCache</code> 只有 <code>invalidate*</code> 没有淘汰（<code>LayoutCache.ets:13, 25-35</code>），离屏行连同每行的 <code>nativeLine</code>、<code>indexMap</code>、4 个字形数组永久常驻。建议：载入时先用估算高度定位滚动、只排视口窗口，首帧后再校正光标可见性；给 <code>LayoutCache</code> 加视口 ±1 屏的窗口淘汰。</p>
+    <p><span class="lab">E-6</span> <code>drawNow()</code> 每帧调 <code>handlePositions()</code>（<code>:1601-1602, 1606-1616</code>）并新建 <code>CursorState</code>；<code>HitTester</code> 的 <code>hitTestRaw</code> / <code>caretPositionFor</code> / <code>lineIndexOf</code> 都是逐行线性扫描（<code>HitTester.ets:57-64, 116-126, 142-149</code>）。而 <code>lines</code> 按 <code>startIndex</code>/<code>yOffset</code> <strong>单调有序</strong>，可以直接二分。另外选区手柄位置在选区与布局不变时结果不变，可按 <code>(selStart, selEnd, linesVersion)</code> 缓存。</p>
+    <p><span class="lab">E-7</span> 拖动选择时每个 Move 事件都会走 <code>showSelectionMenu()</code>（<code>:1765, 1789, 1844</code>），连续写 <code>menuBelow/menuX/menuY/menuVisible</code> 四个 <code>@State</code>（<code>:379-382</code>），每次都重渲染含 11 个 <code>Text</code> 的两行浮层，浮层内还要再做一次全行 <code>caretPositionFor</code>。官方文档明确「状态变量的改变会引起 UI 的渲染刷新」，而 Move 属高频回调。建议拖动期间不更新浮层位置，抬手/长按/双击时定位一次；或写入前先比较新旧值。</p>
+    <p><span class="lab">E-12</span> <code>afterFormatChange()</code>（<code>:1314-1321</code>）调用 <code>cache.invalidate()</code> 清空全部行并置 <code>typeset = null</code>，再 <code>relayout()</code>。改一个段落加粗却重排整篇，正是 R9 要求「格式变更仅失效受影响区段」的反面。改为 <code>invalidateFrom(受影响段落起点)</code> 即可。</p>
+    <p><span class="lab">E-14</span> 惯性滚动用 <code>setInterval(..., 16)</code>（<code>:1967-1977</code>），未与帧同步，90/120Hz 屏易错帧；每次 <code>drawNow()</code> 都先 <code>canvas.clear(背景色)</code> 再全量重绘可视区，无脏区/增量绘制（闪烁时也全屏重绘一次）。项目已具备 <code>EditorAnimator</code>（<code>UIContext.createAnimator</code>）能力，滚动/闪烁改由它或帧回调驱动更合适。</p>
+    <p><span class="lab">E-13（小）</span> <code>TextIndexMap</code> 构造时同时 push <code>utf16</code> 与 <code>utf8</code> 两张表（<code>TextIndexMap.ets:3-15</code>），而 <code>toUtf8</code>/<code>fromUtf8</code>（<code>:28-29</code>）在全工程<strong>除定义外无任何调用</strong> —— 每次 typeset 白做一半的 O(n) 分配。删掉或改懒构建。</p>
+  </div>
+</section>
+
+<!-- ===================== 4 ===================== -->
+<section id="s4">
+  <h2>4 · 数据可靠性与持久层 <span class="tag">DATA SAFETY</span></h2>
+  <p class="lead">结构本身是干净的（<code>BaseDao</code> 收敛了 6 个 DAO 的骨架、有事务封装、幂等 ALTER），但有 6 处会真实丢数据或看似成功实则失败的地方。</p>
+
+  <div class="card lv0" id="f-s1">
+    <div class="hd"><span class="pill p0">P0</span><h4>S-1 · 自动保存「先 await 写入、后清 dirty」，保存窗口内的输入会被判为已保存</h4></div>
+    <p class="meta">entry/src/main/ets/store/EditorStore.ets:340-368（关键 :355-359）</p>
+<pre><code>async flushDoc(id: string): Promise&lt;void&gt; {
+  const doc = this.openDocs.find(d =&gt; d.id === id)
+  if (doc === undefined || !doc.dirty) { return }      <span class="c">// :342 唯一的「需要保存」判据</span>
+  ...
+  try {
+    await chapterRepo.updateContent(id, doc.draft)     <span class="c">// :356</span>
+    await chapterRepo.updateCaretOffset(id, doc.caret) <span class="c">// :357</span>
+    await chapterRepo.updateFormatRuns(id, doc.runsJson)  <span class="c">// :358</span>
+    doc.dirty = false                                  <span class="c">// :359 ← 三个 await 之后才清</span>
+    this.saveState = SaveState.IDLE
+    this.saveHint = '已保存'                            <span class="c">// :361</span>
+  } catch (e) { ... throw new Error(String(e)) }
+}</code></pre>
+    <p><span class="lab">为什么是问题</span> <code>doc.draft</code> 在第一个 <code>await</code> 前取了字符串快照，但 <code>doc.dirty = false</code> 在三个 <code>await</code> 之后执行。若用户在这个窗口里继续输入，<code>setContent()</code>（<code>:201-212</code>）会把 <code>dirty</code> 置回 <code>true</code> 并重排防抖定时器 —— 随后本函数把它清成 <code>false</code>。接下来：防抖到点后 <code>flushDoc</code> 因 <code>!doc.dirty</code> 直接 return（<code>:342</code>），30 秒安全网 <code>flushAll</code> 同样跳过，于是<strong>这批输入在本会话内再也不会落库</strong>，而界面显示「已保存」。近 1.75MB 的正文写入耗时可达数十毫秒，这个窗口并不罕见。</p>
+    <p><span class="lab">建议改法</span> 引入递增 <code>revision</code>：<code>setContent/setEditorState/setFormatRuns</code> 每次自增 <code>doc.rev</code>；<code>flushDoc</code> 落库前记录 <code>savedRev</code>，只有当 <code>doc.rev === savedRev</code> 时才 <code>dirty = false</code>，否则保留 dirty 交给防抖/安全网重试。同时避免 <code>saveState</code> 过早回到 IDLE、<code>saveHint</code> 过早显示「已保存」。</p>
+  </div>
+
+  <div class="card lv0" id="f-d1">
+    <div class="hd"><span class="pill p0">P0</span><h4>D-1 · 事务期间其它 DAO 写入会被并入同一事务，回滚时连用户刚保存的正文一起回滚</h4></div>
+    <p class="meta">entry/src/main/ets/database/DatabaseHelper.ets:199-215（配合 AppStores.ets:402, 407-475）</p>
+<pre><code>async runInTransaction(work: () =&gt; Promise&lt;void&gt;): Promise&lt;void&gt; {
+  const store = this.getStore()
+  await store.beginTransaction()          <span class="c">// :201 官方已标注「不再推荐」，且是同步 void</span>
+  try { await work(); await store.commit() }
+  catch (e) { try { await store.rollBack() } ... }
+}</code></pre>
+    <p><span class="lab">为什么是问题</span> 两点叠加：</p>
+    <ul>
+      <li><code>beginTransaction()</code> / <code>commit()</code> / <code>rollBack()</code> 是<strong>同步 void</strong> 接口（这也是 lint 在 <code>DatabaseHelper.ets:201/204/207</code> 报 3 条 <code>@typescript-eslint/await-thenable</code> 的原因），<code>await</code> 不产生任何时序保证。</li>
+      <li>更实质的风险：<code>work()</code> 内部逐行 <code>await</code> 写入，事件循环在 await 之间会跑其它任务。此时 <code>EditorStore</code> 的防抖保存与 30 秒安全网（<code>EditorStore.ets:320-322</code>）完全可能发出 <code>UPDATE chapters ...</code>。官方文档说明关系型数据库「同一时间仅支持一个写事务」、写事务通过连接复用，这条 UPDATE 会落到持有事务的同一条写连接上，从而<strong>被并入事务</strong>。一旦恢复失败回滚，用户刚保存的正文被一起回滚，而 <code>EditorStore.flushDoc</code> 已经把 <code>dirty = false</code>（见 S-1）—— 界面显示「已保存」，内容实际丢失。<code>AppStores.importBackupText</code> 会在事务里连续写五张表，命中概率不低。</li>
+    </ul>
+    <p><span class="lab">建议改法</span> 改用 <code>createTransaction()</code>（API 12+）：官方文档明确「事务对象是通过 createTransaction 接口创建的，不同事务对象之间的操作是隔离的」「优先使用 createTransaction，不再推荐使用 beginTransaction」。签名改为 <code>runInTransaction(work: (tx: relationalStore.Transaction) =&gt; Promise&lt;void&gt;)</code>，让 <code>work</code> 内的写入走 <code>tx</code>；同时加一个 <code>inTransaction</code> 守卫禁止嵌套。若短期不便改造，至少在恢复期间暂停自动保存（暂停防抖 + 安全网）。</p>
+    <p><span class="lab">依据</span> <code>arkts-apis-data-relationalstore-transaction</code>、<code>arkts-apis-data-relationalstore-rdbstore</code>、<code>data-persistence-by-rdb-store</code>。</p>
+  </div>
+
+  <div class="card lv0" id="f-d2">
+    <div class="hd"><span class="pill p0">P0</span><h4>D-2 · 列表查询 <code>SELECT *</code>：把每一篇正文都读进主线程</h4></div>
+    <p class="meta">entry/src/main/ets/database/ChapterDao.ets:176-194　·　BaseDao.ets:43-51（<code>query(predicates)</code> 无列参数）</p>
+    <p><span class="lab">为什么是问题</span> <code>rowToModel</code> 会读 <code>content</code> 列（<code>ChapterDao.ets:55</code>），而列表真正需要的只有 72 字摘要与字数（<code>ProjectStore.ets:136-138</code>），<code>word_count</code> 本就在库里。单篇正文上限 1.75MB，于是「切项目 / 切换文库 / 点收藏 / 移入废纸篓 / 重命名 / 改格式」每一次都会把<strong>当前项目全部文稿的全文</strong>读进 <code>ProjectStore.chapters</code>（<code>@Trace</code> 数组、常驻内存），与数据库、与 <code>OpenDoc.draft</code> 形成三份副本。20 篇长文即可带来数十 MB 主线程字符串与大量 IO。</p>
+    <p><span class="lab">建议改法</span> 给 <code>BaseDao</code> 增加列裁剪能力并拆出「列表模型」：<code>query(predicates, COLUMNS)</code>，其中 <code>COLUMNS = ['id','book_id','title','format','sort_order','word_count','updated_at','is_fav','is_inspiration','is_trash']</code>；正文只在 <code>openChapter</code> 时按 id 取（<code>queryById</code> 本来就只取一行）。摘要可新增 <code>summary</code> 列，在写入时与 <code>word_count</code> 一起维护，从而列表查询彻底不碰 <code>content</code> / <code>format_runs</code>。</p>
+    <p><span class="lab">依据</span> <code>arkts-apis-data-relationalstore-rdbstore</code>（query 的 columns 重载、共享内存 2MB 限制）；<code>data-persistence-by-rdb-store</code>（单次查询数据量、大数据量查询放 TaskPool）。</p>
+  </div>
+
+  <div class="card lv1" id="f-d3">
+    <div class="hd"><span class="pill p1">P1</span><h4>D-3 · 备份恢复：逐行 insert、项目行建在事务之外、失败被静默降级为「跳过」</h4></div>
+    <p class="meta">entry/src/main/ets/store/AppStores.ets:402, 407-475, 482-485</p>
+<pre><code>const book = await bookRepo.createBook(baseName + '（导入）', mode)   <span class="c">// :402 在事务之外</span>
+<span class="c">// 注释 :406 承诺「中途失败整组回滚，不留半成品项目」，但上面这行不在事务里</span>
+await dbHelper.runInTransaction(async () =&gt; {
+  for (const c of characters) { ... await materialRepo.insertCharacter(model) }   <span class="c">// :408-418 逐行</span>
+  for (const w of worldSettings) { ... await materialRepo.insertWorld(model) }    <span class="c">// :419-426 逐行</span>
+  for (const ins of inspirations) { ... await materialRepo.insertInspiration(model) } <span class="c">// :427-433</span>
+  for (const ch of chapters) { ... await chapterRepo.insertChapter(model) }       <span class="c">// :435-461</span>
+  for (const r of relationships) { ... await relationRepo.insert(model) }         <span class="c">// :462-474</span>
+})
+} catch (e) { Logger.error('Backup restore failed: ' + String(e)); return '' }    <span class="c">// :482-485 静默</span></code></pre>
+    <ul>
+      <li>每行一次 <code>insert</code>，N 行 = N 次数据库操作。官方 FAQ 明确「批量插入只需一次批量操作……其内部已包含事务处理机制」。</li>
+      <li><code>createBook</code> 在事务外：回滚后那本书仍然存在，用户会看到一个空的「xxx（导入）」项目，与注释的保证不符。</li>
+      <li><code>catch</code> 只返回 <code>''</code>，调用方 <code>importFiles</code>（<code>:341-349</code>）把它计入 <code>skipped++</code>，用户看到「跳过 1 个」，无法区分「不是备份文件」与「恢复失败已回滚」。</li>
+    </ul>
+    <p><span class="lab">建议改法</span> 把 <code>createBook</code> 纳入事务；五张表改用 <code>batchInsert</code>（按表攒 <code>ValuesBucket[]</code> 后一次提交）；<code>catch</code> 返回可区分的失败信息并在 UI 明示「恢复失败，已回滚」。</p>
+  </div>
+
+  <div class="card lv1" id="f-d4">
+    <div class="hd"><span class="pill p1">P1</span><h4>D-4 · 全库零索引：所有列表与计数查询都是全表扫描</h4></div>
+    <p class="meta">entry/src/main/ets/database/DatabaseHelper.ets:49-134（全篇无 <code>CREATE INDEX</code>，已 grep 确认）</p>
+    <p><span class="lab">被扫的查询</span></p>
+    <ul>
+      <li><code>chapters</code>：<code>ChapterDao.ets:176-194</code>（<code>book_id</code> + <code>is_trash</code> + <code>ORDER BY sort_order/updated_at</code>）、<code>:203-215</code>（<code>MAX(sort_order)</code>）、<code>:218-227</code>（<code>GROUP BY book_id</code>，全表）、<code>:233-251</code>（聚合）</li>
+      <li><code>characters</code> / <code>world_settings</code>：<code>CharacterDao.ets:84-95</code>、<code>WorldSettingDao.ets:88-99</code>（<code>book_id</code> + <code>ORDER BY name</code>）</li>
+      <li><code>inspirations</code>：<code>InspirationDao.ets:54-73</code>；<code>relationships</code>：<code>RelationshipDao.ets:72-80</code></li>
+      <li>级联删除的外键列也没有索引（SQLite 不为外键自动建索引）：<code>DatabaseHelper.ets:73/88/101/109/121-123</code></li>
+    </ul>
+    <p><span class="lab">为什么更要紧</span> 叠加 <a href="#f-s5">S-5</a>：点一次收藏 = 1 次全表扫描聚合 + 1 次全表 <code>GROUP BY</code> + 1 次含全部正文的列表查询。</p>
+    <p><span class="lab">建议改法</span> 建表后补索引，并纳入版本迁移流程：</p>
+<pre><code>CREATE INDEX IF NOT EXISTS idx_chapters_book_trash  ON chapters(book_id, is_trash, sort_order);
+CREATE INDEX IF NOT EXISTS idx_chapters_book_upt    ON chapters(book_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_characters_book      ON characters(book_id, name);
+CREATE INDEX IF NOT EXISTS idx_world_book           ON world_settings(book_id, name);
+CREATE INDEX IF NOT EXISTS idx_insp_book            ON inspirations(book_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_rel_book             ON relationships(book_id);</code></pre>
+  </div>
+
+  <div class="card lv2">
+    <div class="hd"><span class="pill p2">P2</span><h4>D-5 — D-14 · 持久层其余 10 项</h4></div>
+    <p><span class="lab">D-5</span> <code>init()</code> 在第 37 行就把 <code>this.store</code> 赋了值，之后才 <code>createTables()</code> / <code>ensureColumns()</code>（<code>DatabaseHelper.ets:28-47</code>）。DDL 任一句失败时 store 已非空，UI 上「重试」按钮（<code>AppShell.ets:238-247</code>）再调 <code>init()</code> 会在第 29 行直接返回<strong>未建完表</strong>的 store —— 重试永远不会真的修好。修法：用局部变量拿到 store，DDL 全部成功后再赋值给 <code>this.store</code>；或在 catch 里置 <code>this.store = null</code>。</p>
+    <p><span class="lab">D-6</span> 没有任何地方读写 <code>RdbStore.version</code>；<code>DB_VERSION</code>（<code>:8</code>）只出现在一句日志里（<code>:41</code>），所以<strong>版本号是假的</strong> —— 未来结构变更没有「vN → vN+1」的顺序保障。而 <code>EXPECTED_COLUMNS</code>（<code>:11-15</code>）只覆盖 <code>chapters</code> 的 3 列，<code>characters.character_type</code>、<code>world_settings.content</code>、<code>chapters.is_fav</code> 等旧库缺列不会被补 —— 写侧会因 <code>no such column</code> 失败，读侧被 <code>safeGetString/safeGetLong</code> 静默成 <code>''/0</code>。建议按官方范式改为版本驱动迁移（读 <code>store.version</code>，逐版本 ALTER + 建索引，整体放一个事务）。</p>
+    <p><span class="lab">D-7</span> <code>resultSet.close()</code> 未放在 <code>finally</code>，共 6 处：<code>BaseDao.ets:43-51, 53-64</code>、<code>ChapterDao.ets:207-213, 219-225, 241-249</code>、<code>DatabaseHelper.ets:168-176</code>。官方 <code>ResultSet</code> 文档明确「不关闭可能会引起 FD 泄漏和内存泄漏」，且官方示例本身就把 <code>close()</code> 放在 <code>finally</code> 里。改为 <code>try { ... } finally { rs.close() }</code> 即可。</p>
+    <p><span class="lab">D-8</span> <code>PRAGMA foreign_keys = ON</code> 用的是 <code>executeSql</code>（<code>:38</code>）。官方把「支持执行 PRAGMA 语法」写在 <code>execute()</code>（API 12+）的说明里，<code>executeSql</code> 的说明只写了「不支持执行查询、附加数据库和事务操作」。属<strong>未文档化用法</strong>（该 PRAGMA 是否生效我无法在本机证实，标 <em>未验证</em>）。若未生效，<code>ON DELETE CASCADE</code> 不触发，<code>deleteBook</code> 会留下永不显示也永不清理的孤儿行。建议改用 <code>await store.execute('PRAGMA foreign_keys = ON')</code> 并随后 <code>querySql('PRAGMA foreign_keys')</code> 断言为 1；更稳妥的是 <code>deleteBook</code> 在事务里显式按 <code>book_id</code> 删五张表，不依赖级联。</p>
+    <p><span class="lab">D-9</span> <code>CharacterDao.ets:51-52</code>、<code>WorldSettingDao.ets:47-48</code>、<code>RelationshipDao.ets:44-45</code> 的 insert 用 <code>Date.now()</code> 覆盖传入的 <code>createdAt/updatedAt</code>。而 <code>AppStores.importBackupText</code> 明确传了备份里的原始时间（<code>:415, 423, 471</code>），结果全部变成「刚创建」—— 与 <code>ChapterDao.insert</code>（<code>:85-86</code>）、<code>InspirationDao.insert</code>（<code>:27-28</code>）尊重模型值的口径不一致。建议与后两者对齐。</p>
+    <p><span class="lab">D-10</span> <code>inspirations.book_id</code> 的外键是 <code>ON DELETE SET NULL</code>（<code>DatabaseHelper.ets:109</code>），但写入侧用空串表示「未归类」（<code>InspirationDao.ets:25, 37</code>），读取侧只有 <code>loadInspirationsByBook(bookId)</code>（<code>MaterialRepository.ets:56-58</code>）—— 而 <code>queryUncategorized()</code> / <code>queryAll()</code>（<code>InspirationDao.ets:62-73</code>）全工程无调用。删掉项目后 <code>book_id</code> 变 NULL，这些灵感数据还在库里但任何界面都取不到，用户视角是「删项目顺手删掉了灵感」。建议口径统一（保持空串语义或在读侧同时匹配 NULL）并让 <code>queryUncategorized()</code> 真正接进 UI，否则删除该死代码。</p>
+    <p><span class="lab">D-11</span> <code>ChapterRepository.rename</code>（<code>:67-73</code>）先 <code>queryById</code> 读出整篇正文（可达 1.75MB），再 <code>updateTitleAndContent</code> 把整篇原样写回；<code>restore</code>（<code>:124-151</code>）为算一个不冲突的标题，先取全文再查该书全部文稿（含全文）逐个比对。改名是最常用的操作之一。建议加 <code>updateTitle(id, title)</code>，<code>restore</code> 用列裁剪只取标题。</p>
+    <p><span class="lab">D-12</span> 一次自动保存 = 3 条独立 UPDATE（<code>EditorStore.ets:356-358</code>），3 次写事务/提交，中途失败会留下「正文已更新但格式边车是旧的」半更新状态，且重试会重复前两条。建议在 <code>ChapterDao</code> 加 <code>updateAll(id, {...})</code>，用一个 <code>ValuesBucket</code> 一次 <code>update</code>。</p>
+    <p><span class="lab">D-13</span> 错误处理被抹平：<code>BaseDao.ets:15-41</code> 三处 <code>throw new Error(String(e))</code> 丢掉了 <code>BusinessError.code</code>（14800011 库损坏 / 14800024 写事务冲突 / 14800029 …），上层无法区分故障类型；<code>safeGetString/safeGetLong</code>（<code>:71-89</code>）把「列不存在（结构漂移）」与「取值抛错（数据损坏）」都变成 <code>''/0</code>，<code>is_fav</code> 读失败会被当成 <code>false</code>（收藏静默丢失）；<code>StoreConfig</code> 未配 <code>allowRebuild</code>，也没读 <code>store.rebuilt</code>，库一旦损坏则重试永远失败，而项目其实已有 JSON 备份导出能力。另：<code>PreferenceHelper.init</code> 吞掉异常（<code>:30-32</code>），此后所有 <code>put*</code> 在无 prefs 时静默 return —— 首启标记 / 主题 / 深色设置全部丢失且无人告知。</p>
+    <p><span class="lab">D-14</span> <code>RdbStore</code> 全生命周期不释放，<code>close()</code>（API 12+）从未调用。建议 <code>DatabaseHelper</code> 增加 <code>async close()</code>，在 <code>onDestroy</code> 里调用。</p>
+  </div>
+</section>
+
+<!-- ===================== 5 ===================== -->
+<section id="s5">
+  <h2>5 · 状态管理与列表渲染 <span class="tag">STATE &amp; RENDERING</span></h2>
+  <p class="lead">V2 的落地质量很好，问题主要在「该用 V2 新能力的地方还在用老办法」，以及 <code>build()</code> 里做重活。</p>
+
+  <div class="note good">
+    <strong>先说做对的部分（已核对，勿改）：</strong>
+    <ul style="margin-bottom:0">
+      <li>V1/V2 混用是<strong>受控</strong>的：V1 装饰器只出现在 <code>TextEditorHost.ets</code>（<code>@Prop/@Watch</code>）与 <code>CanvasTextEditor.ets</code>（<code>@State/@Prop</code>），且 V2 父组件只向它们传基本类型与函数 —— 符合官方混用规范，未发现把 V2 状态变量塞进 V1 组件的违规。</li>
+      <li><code>DocItem</code> 是 <code>@ObservedV2 + @Trace</code>，<code>DocRow</code> 用 <code>@Param item: DocItem</code>，<code>ForEach</code> 的 key 用 <code>item.id</code> —— 键值用法<strong>正确</strong>，改名/收藏可以行级就地刷新。</li>
+      <li>时间字段全是 <code>number</code>（<code>Date.now()</code>），备份 JSON 不存在 <code>Date</code> 序列化丢原型的问题。</li>
+      <li>store 与消费层全部是显式接口类型，没有 <code>any</code>、没有对象字面量当类型、没有动态属性访问。</li>
+    </ul>
+  </div>
+
+  <div class="card lv1" id="f-s2">
+    <div class="hd"><span class="pill p1">P1</span><h4>S-2 · undo/redo 栈未加 <code>@Trace</code>：撤销/重做的可用态不会刷新</h4></div>
+    <p class="meta">entry/src/main/ets/store/EditorStore.ets:44-45, 93-99　·　消费点 AppShell.ets:356-358、EditorPane.ets:360-361,371</p>
+<pre><code><span class="c">// EditorStore</span>
+private undoStack: HistoryEntry[] = []     <span class="c">// :44 无装饰器</span>
+private redoStack: HistoryEntry[] = []     <span class="c">// :45 无装饰器</span>
+get canUndo(): boolean { return this.undoStack.length &gt; 0 }   <span class="c">// :93</span>
+get canRedo(): boolean { return this.redoStack.length &gt; 0 }   <span class="c">// :97</span>
+<span class="c">// AppShell.build() 里被读取以决定按钮启用态</span>
+return kind === ToolbarAction.UNDO ? app.editor.canUndo : app.editor.canRedo  <span class="c">// :357</span></code></pre>
+    <p><span class="lab">为什么是问题</span> V2 只对 <code>@Trace</code> 属性建立依赖。<code>canUndo/canRedo</code> 在 build 中被读取，但它们只依赖未被 <code>@Trace</code> 的字段，栈变化不会把读它们的节点标脏 —— 「撤销/重做」按钮会一直停在初始的禁用配色，直到其它原因导致该节点重渲染。官方文档原文：「未被 @Trace 装饰的属性用在 UI 中无法感知到变化，也无法触发 UI 刷新」。</p>
+    <p><span class="lab">建议改法</span> 给两个栈加 <code>@Trace</code>，或在 push/splice 后同步一个 <code>@Trace canUndoFlag / canRedoFlag</code>。<span class="pill ok">一行修复，收益明确</span></p>
+  </div>
+
+  <div class="card lv1" id="f-s3">
+    <div class="hd"><span class="pill p1">P1</span><h4>S-3 · 大量 async 动作未接 catch：未处理的 Promise 拒绝</h4></div>
+    <p class="meta">DocListPane.ets:157,159,175-179　·　ProjectSidebar.ets:51,87,118　·　EditorPane.ets:333　·　WorkspaceDest.ets:66,183,186,262　·　EditorStore.ets:310-313</p>
+<pre><code><span class="c">// DocListPane.showRowMenu() 的长按菜单回调</span>
+} else if (data.index === 1) { stores.toggleFav(item.id) }         <span class="c">// :175 返回 Promise，无人接</span>
+else if (data.index === 2) { stores.toggleInspiration(item.id) }   <span class="c">// :177</span>
+else { stores.moveToTrash(item.id) }                               <span class="c">// :179</span>
+
+<span class="c">// EditorStore.scheduleFlush()</span>
+this.debounceTimer = setTimeout(() =&gt; {
+  this.debounceTimer = -1
+  this.flushActive()          <span class="c">// :312 失败时会 throw，形成未处理拒绝</span>
+}, SAVE_DEBOUNCE_MS)</code></pre>
+    <p><span class="lab">为什么是问题</span> 这些调用链末端都会走 DAO 的 <code>throw new Error(...)</code>（<code>BaseDao.ets:15-41</code>）。项目自己在 <code>AppShell.ets:75-77</code> 的注释里写明了这条风险：「不能把异常抛成未处理的 Promise 拒绝（会被系统按 JS 错误杀进程）」—— 但这条纪律只在 <code>app.init()</code> 等少数位置执行了。注意 <code>flushAll()</code>（<code>EditorStore.ets:378-387</code>）内部逐篇 <code>try/catch</code> 是稳的，而 <code>flushActive()</code> 路径是不稳的，两者处理不一致。</p>
+    <p><span class="lab">建议改法</span> 统一封装为 <code>void act().catch(e =&gt; { Logger.error(...); toast(失败提示) })</code>；或让 store 的写动作内部吞掉异常并置 <code>saveState = FAILED</code>，由 UI 呈现「保存失败，点击重试」。</p>
+  </div>
+
+  <div class="card lv1" id="f-s4">
+    <div class="hd"><span class="pill p1">P1</span><h4>S-4 · 退出/销毁时的最后一次落库是「即发即忘」</h4></div>
+    <p class="meta">EntryAbility.ets:15-20, 122-126　·　AppShell.ets:99-106　·　AppStores.ets:512-519</p>
+<pre><code><span class="c">// EntryAbility</span>
+onDestroy(): void { app.flushAll(); app.destroy(); ... }        <span class="c">// :17-18 未 await</span>
+onBackground(): void { app.flushAll(); ... }                    <span class="c">// :124 未 await 也未接 catch</span>
+<span class="c">// AppShell</span>
+aboutToDisappear(): void { ...; app.flushAll() }                <span class="c">// :105 同上</span></code></pre>
+    <p><span class="lab">为什么是问题</span> <code>flushAll</code> / <code>flushDoc</code> 都是异步的（<code>EditorStore.ets:340-387</code>），Ability 生命周期返回后进程可能被冻结/回收，最后一次编辑可能没到 SQLite。并且 <code>flushDoc</code> 内部失败时是 <code>throw</code>（<code>:366</code>）—— 这里同时构成未处理拒绝。</p>
+    <p><span class="lab">建议改法</span> <code>onBackground</code> 至少接 <code>.catch()</code>；把「退后台先等待落库完成」做成一条明确路径（例如先暂停自动保存、等待一次 <code>flushAll</code> 完成、再置状态）。<em>该修复的最终效果取决于系统调度，标为待真机验证。</em></p>
+  </div>
+
+  <div class="card lv1" id="f-s5">
+    <div class="hd"><span class="pill p1">P1</span><h4>S-5 · 单列变更触发整表 reload + 两个全表聚合</h4></div>
+    <p class="meta">entry/src/main/ets/store/AppStores.ets:223-243, 246-253　·　ProjectStore.ets:85-100</p>
+<pre><code>async toggleFav(chapterId: string): Promise&lt;void&gt; {
+  ...
+  await chapterRepo.setFav(chapterId, !ch.isFav)   <span class="c">// :228 就改一个布尔位</span>
+  await this.project.reloadChapters()              <span class="c">// :229 全量列表查询（含全部正文，见 D-2）</span>
+  await this.project.refreshCounts()               <span class="c">// :230 counts() + countActivePerBook() 两个全表聚合</span>
+}</code></pre>
+    <p><span class="lab">为什么是问题</span> 一次「点个心形收藏」产生 3 次数据库往返（其中一次拉全库正文）+ 两次无索引全表聚合 + <code>docItems</code> 全量重建 + 每章一次 <code>summaryOf</code> 正则扫描（见 L-3）。<code>DocItem</code> 已经是 <code>@ObservedV2</code>，完全支持就地改 <code>isFav</code>。同样模式出现在 <code>toggleInspiration</code>、<code>moveToTrash</code>、<code>restoreChapter</code>、<code>setChapterFormat</code>、<code>renameChapter</code>（<code>:195, 203, 212, 219, 229, 240, 252</code>）。</p>
+    <p><span class="lab">建议改法</span> 就地更新内存模型（<code>ProjectStore.chapters</code> 里的对象 + 对应 <code>DocItem</code>），计数改为增量 <code>±1</code>；确实需要校准时再节流重算。</p>
+  </div>
+
+  <div class="card lv1" id="f-l1">
+    <div class="hd"><span class="pill p1">P1</span><h4>L-1 · <code>List</code> + <code>ForEach</code>：一次性创建全部子组件，无虚拟化</h4></div>
+    <p class="meta">DocListPane.ets:226-240　·　ProjectSidebar.ets:64,98　·　SettingsPanel.ets:21　·　pages/dest/SettingsDest.ets:31</p>
+<pre><code>List() {
+  ForEach(this.visibleItems(), (item: DocItem) =&gt; {
+    ListItem() { DocRow({ item: item, themeId: ..., compact: ..., ... }) }
+      .swipeAction({ end: this.swipeDelete(item) })
+  }, (item: DocItem) =&gt; item.id)     <span class="c">// :239 键值正确</span>
+}.layoutWeight(1).width('100%')</code></pre>
+    <p><span class="lab">为什么是问题</span> 官方 <code>List</code> 文档原文：「当 List 和 ForEach 结合，会<strong>一次性创建所有的子组件</strong>，在需要的时候布局和渲染屏幕范围内的节点」——即只省了渲染，没省创建。章节目录上百条时首帧成本线性增长。迁移文档也明确：「状态管理 V2 <strong>推荐使用 Repeat 替代 ForEach</strong>」「ForEach → Repeat，LazyForEach → Repeat」。</p>
+    <p><span class="lab">有意思的一点</span> <code>StoreModels.ets:10</code> 的注释写着「文稿列表项（就绪于 LazyForEach/Repeat 的稳定身份，改动就地更新）」—— 说明<strong>设计意图本来就是要用 Repeat/LazyForEach</strong>，只是最后落在了 <code>ForEach</code> 上（全工程 grep：<code>Repeat(</code> 0 处，<code>LazyForEach</code> 0 处）。</p>
+    <p><span class="lab">建议改法</span> 用 <code>Repeat(...).virtualScroll({ totalCount: ... })</code>（V2 推荐）或 <code>LazyForEach</code> + <code>IDataSource</code>，键值继续用 <code>item.id</code>；顺带给 <code>List</code> 配 <code>.cachedCount(n)</code>。注意 <code>Stack</code>/<code>List</code> 内的 <code>@Builder</code>（<code>swipeDelete</code>）在 <code>Repeat</code> 下同样可用。</p>
+  </div>
+
+  <div class="card lv1" id="f-l2">
+    <div class="hd"><span class="pill p1">P1</span><h4>L-2 · 派生值写在 <code>build()</code> 内的方法里：每次重渲染重复全量计算</h4></div>
+    <p class="meta">DocListPane.ets:201, 215, 227　·　EditorPane.ets:140, 343, 553-571　·　EditorStore.ets:88-91</p>
+<pre><code><span class="c">// DocListPane.build()：同一个过滤在三个地方各算一遍</span>
+Text(this.visibleCount() + ' 篇')          <span class="c">// :201 第 1 遍全量扫描</span>
+if (this.visibleCount() === 0) { ... }      <span class="c">// :215 第 2 遍全量扫描</span>
+List() { ForEach(this.visibleItems(), ...) } <span class="c">// :227 第 3 遍 + 构建数组</span>
+
+<span class="c">// 源码注释自己也提到了这个困扰（:120-122）</span>
+<span class="c">// "ArkTS 的 build() 内不允许声明语句…只能通过方法调用取值"</span>
+
+<span class="c">// EditorStore：整篇 O(n) 扫描</span>
+get wordCount(): number { return countChars(this.content) }   <span class="c">// :90，在 EditorPane :140 与 :343 各算一次</span></code></pre>
+    <p><span class="lab">为什么是问题</span> <code>Search.onChange</code> 每敲一个字符就写 <code>keyword</code>（<code>:206</code>），触发重渲染，进而触发上面三遍全量扫描 —— 每次键入约 3×O(章数×摘要长度)。字数是对整篇正文的 O(n) 扫描，在浮标与工具条各算一遍。<code>isFav/isInspiration</code> 还在 build 路径上用 <code>docItems.find(...)</code> 做 O(n) 线性查找（<code>:553-571</code>）。</p>
+    <p><span class="lab">建议改法</span> 用 V2 的 <code>@Computed</code>（全工程目前 0 处使用）——官方文档：「计算属性中依赖的状态变量变化时，只会计算一次。这解决了 UI 多次重用该属性导致的重复计算和性能问题。」把 <code>visibleItems</code> / <code>visibleCount</code> 做成 <code>@Computed get</code>，<code>wordCount</code> 缓存到 <code>OpenDoc</code> 上或在 <code>setContent</code> 时增量维护。这一步正好绕过源码注释里说的「build 内不能声明语句」限制，比现在的方法调用方案既清晰又快。</p>
+  </div>
+
+  <div class="card lv1" id="f-l3">
+    <div class="hd"><span class="pill p1">P1</span><h4>L-3 · <code>summaryOf</code> 每章 <code>new RegExp</code>，且对整篇正文做正则替换</h4></div>
+    <p class="meta">entry/src/main/ets/store/ProjectStore.ets:136-138, 177-183</p>
+<pre><code><span class="c">// syncDocItems()：对每一章都调用</span>
+item.subTitle = ProjectStore.summaryOf(ch.content)              <span class="c">// :138</span>
+const wc: number = ch.wordCount &gt; 0 ? ch.wordCount : countChars(ch.content)  <span class="c">// :136 全篇扫描</span>
+
+static summaryOf(content: string): string {
+  const flat: string = content.replace(new RegExp('\\s+', 'g'), ' ').trim()   <span class="c">// :178</span>
+  if (flat === '') { return '空白文稿，点击开始写作…' }
+  return flat.length &gt; SUMMARY_MAX ? flat.substring(0, SUMMARY_MAX) + '…' : flat   <span class="c">// :182 只要前 72 字</span>
+}</code></pre>
+    <p><span class="lab">为什么是问题</span> 只为拿前 72 个字符，却先对整篇（可达 1.75MB）做一次正则替换，而且<strong>每次调用都新建一个 RegExp 对象</strong>。在 <code>syncDocItems</code> 的 for 循环里对每一章执行一次，而 <code>reloadChapters</code> 在每次收藏/灵感/废纸篓/重命名/改格式/切筛选后都会被调用（<code>AppStores.ets:195,203,212,219,229,240,252</code>）。</p>
+    <p><span class="lab">建议改法</span> ① 把 RegExp 提为模块级常量；② 只对已截断片段处理（<code>content.substring(0, 400)</code> 后再替换，摘要口径不变）；③ 若采纳 <a href="#f-d2">D-2</a> 的列表模型方案，摘要直接在库里维护，这里彻底不用算。同样的问题也出现在 <code>utils/HtmlText.ets</code>（20 余处 <code>new RegExp</code>）与 <code>ExportService.ets:168</code>，但那些在导入/导出时调用一次，优先级低得多。</p>
+  </div>
+</section>
+
+<!-- ===================== 6 ===================== -->
+<section id="s6">
+  <h2>6 · UI 外壳 / 安全区 / 可访问性 <span class="tag">SHELL &amp; A11Y</span></h2>
+  <p class="lead">外壳设计（SideBarContainer + Navigation 三栏、断点来源、沉浸式两步法）都有官方依据注释且方向正确，问题在落地细节。</p>
+
+  <div class="card lv2" id="f-u1">
+    <div class="hd"><span class="pill p2">P2</span><h4>U-1 · <code>safeBottom</code> 算了却从未使用 → 底部内容被导航条遮挡</h4></div>
+    <p class="meta">entry/src/main/ets/shell/AppShell.ets:47, 61, 64, 205, 207（配合 utils/SafeArea.ets:40-50）</p>
+<pre><code>@Local safeBottom: number = 0                                    <span class="c">// :47</span>
+this.safeDisposer = watchSafeArea(() =&gt; {
+  this.safeTop = safeTopVp()
+  this.safeBottom = safeBottomVp()                               <span class="c">// :61 赋值后全文件再无读取</span>
+})
+...
+.padding({ top: this.safeTop })                                  <span class="c">// :205 只避让了顶部</span>
+.expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])  <span class="c">// :207</span></code></pre>
+    <p><span class="lab">为什么是问题</span> <code>EntryAbility</code> 对所有设备都开了 <code>setWindowLayoutFullScreen(true)</code>（<code>:51</code>），页面布局因此不避让导航条。官方 FAQ 给出的标准写法是 <code>padding({ top: px2vp(topRectHeight), bottom: px2vp(bottomRectHeight) })</code>，并明确 <code>SafeAreaType.SYSTEM</code> <strong>不含</strong>底部导航栏（需要 <code>TYPE_NAVIGATION_INDICATOR</code>，而 <code>SafeArea.ets</code> 正是这么取的）。结果是列表最后一行、编辑器末行会伸到手势条下方，且手势条区域的点击优先被系统拦截 —— 刘海/手势条机型上「最后一行点不到」。</p>
+    <p><span class="lab">附带</span> <code>safeBottom</code> 每次 <code>avoidAreaChange</code>（旋转、折叠、分屏会连续触发）都会写 <code>@Local</code>，导致 AppShell 整棵子树无意义重渲染。</p>
+    <p><span class="lab">建议改法</span> <code>.padding({ top: this.safeTop, bottom: this.safeBottom })</code>；若担心编辑区被压缩，可把底部 padding 下放到 <code>WorkspaceDest</code> / <code>MobileShell</code> 的滚动容器。同时把「只在值变化时赋值」作为通用纪律（见 U-7）。</p>
+  </div>
+
+  <div class="card lv2">
+    <div class="hd"><span class="pill p2">P2</span><h4>U-2 — U-11 · 其余 10 项</h4></div>
+    <p><span class="lab">U-2</span> <code>aboutToAppear()</code>（<code>AppShell.ets:52-82</code>）里第 65 行调 <code>syncBreakPoint()</code>，它在 lg 分支调 <code>ensureWorkspace()</code>（<code>:127-129</code>）对模块级单例 <code>nav</code> 做 <code>pushPath</code> —— 而此刻 <code>Navigation(nav)</code>（<code>:283</code>）尚未被创建。官方 <code>Navigation</code> 文档说明项原文：「<strong>不建议在 aboutToAppear 中使用栈操作</strong>，此时的页面还未构建完成，会导致白屏或跳转失败等问题。」建议把 <code>ensureWorkspace()</code> 移到首帧之后（<code>app.init().then(...)</code> 内是现成的挂载点），或用声明式 <code>pathInfos</code> 注入初始栈。</p>
+    <p><span class="lab">U-3</span> <code>new picker.DocumentViewPicker()</code> 用了无参构造（<code>ExportService.ets:192</code>、<code>ImportService.ets:35</code>）。官方 <code>@ohos.file.picker</code> 文档：「不推荐使用该构造函数，会出现<strong>概率性失败</strong>问题」，推荐 <code>constructor(context: Context)</code>（API 12+）。导出/导入是核心出口，概率失败 = 用户数据出不去/进不来。改法：把 <code>Context</code> 由调用方传入（<code>AppShell.doExport/runImport</code> 已有 <code>getUIContext()</code>）。</p>
+    <p><span class="lab">U-4</span> <code>ExportService.saveText</code>（<code>:186-207</code>）三处问题：① <code>await fileIo.close(file)</code> 不在 <code>finally</code> 里，<code>write</code> 抛错时 fd 不回收（对比 <code>ImportService.readText</code> 是规范的 <code>try/finally</code>，口径不一致）；② 以 <code>READ_WRITE</code> 从 0 写入，若用户选中了已存在的更长文件，尾部旧内容不被截断 → 导出文件内容错误，应加 <code>OpenMode.TRUNC</code>；③ <code>fileIo.fsyncSync(file.fd)</code> 是<strong>同步</strong>接口，整本导出（MB 级）会阻塞 UI 线程，应用异步版 <code>await fileIo.fsync(fd)</code>。<em>TRUNC 的具体行为未经真机验证。</em></p>
+    <p><span class="lab">U-5</span> <code>SafeArea.ets</code> 只读 <code>TYPE_SYSTEM.topRect</code> 与 <code>TYPE_NAVIGATION_INDICATOR.bottomRect</code>，且 <code>module.json5</code> 无 <code>metadata</code>。官方说明「摄像头挖孔区域<strong>不属于</strong>避让区，页面默认不避让挖孔」，需在 <code>module.json5</code> 加 <code>{"name": "avoid_cutout", "value": "true"}</code>；横屏时挖孔位于左/右侧（属安全区内），需按 <code>leftRect/rightRect</code> 处理 —— 否则 <code>ProjectSidebar</code> 首列文字会被切掉。</p>
+    <p><span class="lab">U-6</span> <code>GuideSwiperPage.ets:61</code> 用 <code>router.replaceUrl</code>，而 <code>@ohos.router</code> 已被官方标注「不推荐」，推荐 <code>Navigation</code>。同时引导页是独立 page、没有 AppShell 的 <code>safeTop</code> padding、也不读避让区，底部 <code>padding({ bottom: 44 })</code>（<code>:82</code>）是硬编码 —— 导航条较高的机型/横屏下「开始使用 Weaver」会被遮挡。另 <code>prefs.setGuided()</code>（<code>:60</code>）未 <code>await</code> 就紧接着跳转，属写入/跳转竞态。</p>
+    <p><span class="lab">U-7</span> <code>WorkspaceDest</code> 用 <code>@Monitor('listOpen')</code>（<code>:32</code>）写全局一次性布尔 <code>app.ui.setOverlayDim(...)</code>（<code>:31-35</code>），但该文件<strong>没有 <code>aboutToDisappear</code></strong>（已 grep 确认）。组件在 <code>listOpen === true</code> 时被销毁（断点切换、<code>nav.pop()</code>、被上层 NavDestination 覆盖）就没有任何代码复位 <code>overlayDim</code> —— 之后所有页面的状态栏底色一直停在「底色×蒙层」的暗色，观感像坏了，要重启或再触发一次抽屉才恢复。建议加 <code>aboutToDisappear() { app.ui.setOverlayDim(false) }</code>，或把布尔改成引用计数。<em>具体触发路径未逐条复现。</em></p>
+    <p><span class="lab">U-8</span> 整本导出在主线程做重活：<code>applyInlineMarkdown</code>（<code>ExportService.ets:92-132</code>）对每个字符再遍历全部 runs → <strong>O(行数 × 标注数)</strong> 平方级；<code>exportBackupJson</code>（<code>:211</code>）对含全部正文的载荷做 <code>JSON.stringify(payload, null, 2)</code>。用户点「整本导出」会看到界面冻结数秒到十几秒。建议标注展开改为按 run 区间单次切片（线性），备份 JSON 去掉 <code>null, 2</code> 缩进，大导出走 <code>@ohos.taskpool</code>（见 C-5）。</p>
+    <p><span class="lab">U-9 · i18n</span> <code>grep -rn "$r("</code> 在 <code>ets/</code> 下返回 <strong>0 条</strong>；<code>base/element/string.json</code> 只有 3 条（<code>module_desc / EntryAbility_desc / EntryAbility_label</code>）；<code>resources/</code> 下无 <code>zh_CN</code>、<code>en_US</code> 等限定词目录；而代码中带中文的字面量约 <strong>1,289 处</strong>。三重代价：无法多语言、文案与组件强耦合、同一文案（「设置」「更多」「撤销」「重做」）在 5—6 个文件里各写一份且口径已经开始漂移（<code>MobileShell</code> 用「更多」，<code>WorkspaceDest</code> 用「⋮」）。建议抽到 <code>base/element/string.json</code>（并建 <code>zh_CN</code> 作为基准语言目录），需要拼接的用 <code>%s/%d</code> 占位符。</p>
+    <p><span class="lab">U-10 · 无障碍</span> <code>PcWindowBar.winButton</code>（<code>:109-118</code>）的最小化/最大化/关闭是纯图标控件（<code>─ □ ✕</code>），<strong>没有 <code>accessibilityText</code></strong> —— 屏幕朗读会念出符号或念空。同文件的其它按钮、以及 <code>MobileTabBar</code>、<code>WorkspaceDest</code> 的 <code>☰/⋮</code> 都补了，只有这里漏了。官方 Code Linter 规则 <code>@correctness/accessibility-label-check</code> 正是检查这一项（但该规则集未启用，见 C-2）。</p>
+    <p><span class="lab">U-11</span> <code>AppShell</code> 按断点在「wideBody 的 <code>Navigation(nav)</code>」（<code>:283</code>）与 <code>MobileShell</code> 的 <code>Navigation(nav)</code>（<code>MobileShell.ets:72,105</code>）之间切换，两者绑定的是<strong>同一个模块级单例 <code>nav</code></strong>（<code>Navigator.ets:23</code>）。跨 840vp 断点拖动窗口时新旧 Navigation 可能在同一帧内存活/交接，公共路由栈上的 NavDestination（WORKSPACE）可能被重建 —— 编辑器实例、滚动位置、光标态重置。官方文档未定义「同名栈被两个 Navigation 同时消费」的语义，故标<em>未验证</em>；建议为 lg 与 mobile 各持一个栈并在切换时同步。</p>
+  </div>
+</section>
+
+<!-- ===================== 7 ===================== -->
+<section id="s7">
+  <h2>7 · 工程配置与代码整洁 <span class="tag">BUILD &amp; HOUSEKEEPING</span></h2>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>C-1 · Release 构建未开启混淆</h4></div>
+    <p class="meta">entry/build-profile.json5:14-26　·　entry/obfuscation-rules.txt</p>
+    <p>规则文件已经写好了 <code>-enable-property-obfuscation / -enable-toplevel-obfuscation / -enable-filename-obfuscation / -enable-export-obfuscation</code>，但 <code>buildOptionSet[release].arkOptions.obfuscation.ruleOptions.enable</code> 是 <code>false</code> —— 规则形同虚设，发布包体积与符号暴露都未被优化。建议在 release 打开（注意 <code>-enable-filename-obfuscation</code> 与动态导入/反射的兼容性，需回归一次），并配套 <code>keep</code> 规则。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>C-2 · code-linter 未启用一多与正确性规则集</h4></div>
+    <p class="meta">code-linter.json5</p>
+    <p>当前 <code>ruleSet</code> 只有 <code>plugin:@performance/recommended</code> 与 <code>plugin:@typescript-eslint/recommended</code>。但代码注释里多处把合规性建立在 Code Linter 规则上 —— <code>AppShell.ets:10</code> 与 <code>BreakPoint.ets:3-5</code> 引用 <code>one-multi-breakpoint-check</code>（禁止 deviceType 判断点）、<code>SafeArea.ets</code> / <code>EntryAbility.ets</code> 依赖 <code>immersive-effect-check</code> 与 <code>window-size-change-listener-check</code>。这些都属于 <code>@cross-device-app-dev</code> 规则集，<strong>没在 ruleSet 里，因此根本不会执行</strong>。而 <code>@correctness/recommended</code> 恰好能自动抓出 U-10 那类无障碍缺失。</p>
+    <p>建议：<code>ruleSet</code> 增加 <code>"plugin:@cross-device-app-dev/recommended"</code> 与 <code>"plugin:@correctness/recommended"</code>。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>C-3 · 约 200 行不可达 UI 与死状态链</h4></div>
+    <p class="meta">MobileShell.ets:20,38-44,187-192　·　MobileTabBar.ets（全文）　·　MobileSectionTabs.ets（全文）　·　EditorPane.ets:388-407　·　UiStore.ets:88　·　Navigator.ets:49-58</p>
+    <p>手机端底部页签在改版中已被移除（<code>MobileShell.ets:84-96</code> 注释「取消项目页与底部页签」），但组件、方法、import 全部保留：<code>MobileShell</code> 仍 <code>import { MobileTabBar, MobileTabItem }</code> 却全文未用，<code>tabItems()</code> / <code>onTabSelect()</code> 只被自己引用，<code>EditorPane.mobileToolBar()</code> 仅定义无调用，其逻辑与 <code>openMoreMenu()</code>（<code>:410</code>）重复。</p>
+    <p>更值得注意的是 <code>app.ui.view</code>（<code>UiStore.ets:88</code>）—— 它被 <code>AppStores.showMaterials/showGraph</code>（<code>:306-314</code>）和 setLibFilter 写入（<code>EDITOR/MATERIAL/GRAPH/EMPTY</code>），但<strong>没有任何组件在 build 中读取它</strong>（已 grep 确认）。它的唯一触发者 <code>Navigator.openSection()</code>（<code>:49-58</code>）也零调用点。也就是说「素材 / 关系图」整条状态链（含 <code>MaterialStore</code>、<code>RelationStore</code>）当前无 UI 消费者。这在 ArkTS 里不存在运行时反射的可能，结论可靠。</p>
+    <p>建议：删除，或明确标注「保留待接入」以免后来者误判功能已生效。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>C-4 · Lint 47 条告警的真实构成</h4></div>
+    <p class="meta">build/lint-report.json（由 <code>devecocli check lint --format json</code> 生成）</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>规则</th><th style="width:80px">条数</th><th>文件</th></tr></thead>
+        <tbody>
+          <tr><td><code>@performance/high-frequency-log-check</code></td><td class="num">42</td><td><code>CanvasTextEditor.ets</code>（调用链 <code>handleTouch → animateCaretMove → … → diag()</code>）</td></tr>
+          <tr><td><code>@typescript-eslint/await-thenable</code></td><td class="num">3</td><td><code>DatabaseHelper.ets:201,204,207</code>（见 D-1）</td></tr>
+          <tr><td><code>@performance/avoid-overusing-custom-component-check</code></td><td class="num">2</td><td><code>GuideSwiperPage.ets:53</code>、<code>SettingsPanel.ets:6</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>关于那 42 条：<code>diag()</code>（<code>CanvasTextEditor.ets:1556-1561</code>）有 <code>DIAG_ENABLED</code> 运行期开关，当前值为 <code>false</code>（<code>:37</code>），所以<strong>现在不会真的打印</strong> —— 但 35 个 <code>diag()</code> 调用点仍留在高频路径上，且开关一旦为 true 就会在 60fps 路径上打日志。建议改为构建期条件（或把 <code>diag</code> 调用点从帧循环里摘出去），这样 lint 也能回到干净基线。</p>
+    <p>另外两条 <code>avoid-overusing-custom-component-check</code> <strong>不建议照改</strong>：<code>GuideSwiperPage.ets:6-11</code> 有明确的反向理由（<code>@Builder</code> 按值传参 + 嵌在 <code>Swiper</code>/<code>ForEach</code> 里会丢内容）。建议在该处加规则豁免，或把这条规则设为 <code>off</code>，避免后续被自动修复改坏。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>C-5 · 全项目无 Worker / TaskPool</h4></div>
+    <p class="meta">全工程 grep <code>worker</code> / <code>taskpool</code> 无命中</p>
+    <p>整本导出（U-8）、批量导入（<code>ImportService</code>，最多 20 个文件 × 16MB）、备份恢复（D-3）、<code>MarkdownRenderer</code> 全部在主线程跑。官方并发能力文档建议把耗时的数据操作移出主线程。注意：官方 FAQ 明确 <code>relationalStore</code> 的实例<strong>不支持在 Worker 中跨线程共享</strong>（进程隔离），所以数据库相关的工作应走 <strong>TaskPool</strong>（或让子线程自己开库）。把它列为「择机」是因为当前数据量下尚可接受，但它是导出体验的根治方案。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>C-6 · 深色启动闪黑</h4></div>
+    <p class="meta">entry/src/main/resources/dark/element/color.json　·　constants/DesignTokens.ets:92　·　EntryAbility.ets:51,66</p>
+    <p>启动窗口底色在 dark 限定词下是 <code>#000000</code>，而应用深色主题的页面底色是 <code>#282828</code>；并且 <code>SystemBars.applySystemBars</code> 是在 <code>loadContent</code> 的回调之后才设窗口底色（<code>EntryAbility.ets:66</code>）。深色模式下启动会先见黑屏再跳到 <code>#282828</code>。建议把 dark 的 <code>start_window_background</code> 改成 <code>#282828</code>，并在 <code>onWindowStageCreate</code> 里 <code>loadContent</code> <strong>之前</strong>先设一次窗口底色。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>S-6 — S-10 · 状态层 5 项</h4></div>
+    <p><span class="lab">S-6</span> <code>MaterialStore</code> 的 <code>characters/worldSettings/inspirations</code> 是普通 interface 数组（<code>MaterialStore.ets:15-17</code>），元素类未 <code>@ObservedV2</code>，靠「改完整体 reload」规避（<code>:78-86</code>）。当前可用，但一旦将来改成就地修改某个人物字段就会<strong>静默不刷新</strong>。建议按 <code>StoreModels.ets</code> 已有的 <code>DocItem</code> 范式做成 <code>@ObservedV2 + @Trace</code> 类。</p>
+    <p><span class="lab">S-7</span> <code>UiStore</code> 同时有 <code>@Trace themeId</code> 与 <code>@Trace darkMode</code>（<code>:27-29</code>），而后者只是 <code>themeById(themeId).dark</code> 的派生值，却被独立存储并单独持久化，<code>applySystemDarkMode</code>（<code>:186-191</code>）还拿它当「是否已同步」的判据。任何一处漏同步都会造成明暗与配色不符。建议删掉 <code>darkMode</code> 字段，改为 <code>@Computed get darkMode()</code>，只持久化 <code>themeId</code>。</p>
+    <p><span class="lab">S-8</span> 全项目已迁移到状态管理 V2，但 <code>EntryAbility.ets:27,35</code> 仍用 V1 的 <code>AppStorage.setOrCreate</code> 传 <code>mainWindow</code> / <code>isPcDevice</code>，<code>AppShell.ets:56,111</code> 再读回。可用，但 V2 应用建议改用 <code>AppStorageV2</code> / <code>PersistentStorageV2</code>，避免两套全局状态并存。</p>
+    <p><span class="lab">S-9</span> 自动保存只写 DB（<code>EditorStore.flushDoc → chapterRepo.updateContent</code>），<strong>从不回写</strong> <code>ProjectStore.chapters</code> 里的 <code>ChapterModel</code>，也不刷新 <code>docItems</code>（<code>syncDocItems</code> 只在 <code>reloadChapters</code> 内调用）。宽屏下列表与编辑器同屏可见，用户打完字后行上的摘要/字数/时间永远是旧值。更值得警惕的是 <code>openChapter</code>（<code>:113-124</code>）用内存中可能过期的 <code>ch.content</code> 作为草稿初值 —— 目前 <code>AppStores.closeTab</code>（<code>:180</code>）零调用点，所以「关掉再打开载入旧正文」尚不可达，但补上标签关闭 UI 之后就会变成丢稿路径。<em>列表滞后部分确定可见；后半段标为潜在风险。</em></p>
+    <p><span class="lab">S-10</span> <code>importFiles</code>（<code>AppStores.ets:341-370</code>）在同一批次里混选 JSON 备份与 TXT/MD/HTML 时，<code>importBackupText</code> 尾部的 <code>selectBook(book.id)</code>（<code>:477</code>）会<strong>中途把当前项目切走</strong>，此后同批次的普通文件会被 <code>createChapter(this.project.currentBookId, ...)</code>（<code>:367</code>）建到新项目里。建议循环前先分类，或让 <code>importBackupText</code> 只返回 id、由调用方在末尾统一选择。</p>
+  </div>
+
+  <div class="card lv3">
+    <div class="hd"><span class="pill p3">P3</span><h4>E-15 / E-16 · 两处待真机确认的时序风险</h4></div>
+    <p><span class="lab">E-15</span> 合成期 <code>relayout()</code> 先走 <code>ensureVisibleLayout()</code>（预览分支会设置 <code>this.lines</code>），紧接着 <code>ensureCaretLayout()</code>（<code>CanvasTextEditor.ets:1412-1416</code>）却<strong>无条件</strong>用非预览的 <code>this.cache</code> 覆盖 <code>this.lines</code>，该帧的光标/滚动位置会按旧文本计算，可能看到光标跳一下（随后被 <code>drawNow</code> 里的 <code>ensureVisibleLayout</code> 纠正）。修法：<code>ensureCaretLayout</code> 增加预览感知分支，或合成期不调用它。</p>
+    <p><span class="lab">E-16</span> <code>ImeBridge.attach</code>（<code>:40-50</code>）在 <code>pending</code> 未完成时返回 <code>this.pending.then(() =&gt; this.attach(...))</code>，没有复查存活/generation；若在飞期间页面销毁（已 <code>detach</code>），这个 then 链会以<strong>新 token</strong> 重新 attach 并注册监听 → 输入法客户端在组件销毁后仍被附着（软键盘可能在已退出页面弹出）。另外 <code>attachClient</code> 的 <code>finally { this.pending = null }</code>（<code>:66</code>）会覆盖更新的 pending 记录。修法：加 <code>disposed</code> 标志并在 <code>attach</code> 与 then 链中提前返回；<code>finally</code> 里只在自己仍是当前 pending 时才置 null。作者已经引入 generation 机制，说明意识到该竞态，只是链路不完整。</p>
+  </div>
+</section>
+
+<!-- ===================== 8 ===================== -->
+<section id="s8">
+  <h2>8 · 已核对：确认不是问题 <span class="tag">FALSE-POSITIVE GUARD</span></h2>
+  <p class="lead">以下几条看起来可疑，但逐行核对后确认<strong>不应改</strong>，列出来避免后续返工或误改。</p>
+
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th style="width:230px">可疑点</th><th>核对结论</th></tr></thead>
+    <tbody>
+      <tr><td><code>AppStores.ets:434-475</code> 关系循环疑似嵌在章节循环里（缩进多出 2 格）</td><td><strong>不是 bug。</strong> 花括号配对为：435 开 → 461 闭（章节循环），462 开 → 474 闭（关系循环），475 闭事务回调。关系只插入一次。属缩进误导，建议顺手修缩进。</td></tr>
+      <tr><td>V1 与 V2 装饰器混用</td><td><strong>受控且合规。</strong> V1 仅出现在编辑器两组件（<code>TextEditorHost</code> / <code>CanvasTextEditor</code>，纯 V1 组件），V2 父组件只向它们传基本类型与函数。未发现把 V2 状态变量传入 V1 组件的违规。</td></tr>
+      <tr><td><code>ForEach</code> 缺 keyGenerator 会全量重建</td><td><strong>键值写法正确。</strong> <code>DocListPane.ets:239</code> 用 <code>(item) =&gt; item.id</code>，稳定且唯一，配合 <code>@ObservedV2</code> 的 <code>DocItem</code> 实现行级就地刷新。问题只在于外层组件该换成 <code>Repeat</code>/<code>LazyForEach</code>（L-1），键值本身不用动。</td></tr>
+      <tr><td><code>UnicodeGraphemeData.ets</code> 1,595 行，疑似巨型内存字面量</td><td><strong>不是陷阱。</strong> 文件仅 36KB、约 1,600 个数字（3 个区间表），<code>GraphemeUtil</code> 用二分查找（<code>GraphemeUtil.ets:4-14</code>）。启动与内存成本可忽略。</td></tr>
+      <tr><td><code>FontCollection</code> 疑似被逐帧重建</td><td><strong>没有。</strong> <code>FontCollection.getGlobalInstance()</code> 只在 <code>TextLayoutEngine</code> 构造与 <code>wordRangeAt</code> 中使用（<code>:124, 139-146</code>），且段落对象按文本缓存。</td></tr>
+      <tr><td>定时器 / 动画器泄漏</td><td><strong>清理是完整的。</strong> <code>aboutToDisappear</code>（<code>CanvasTextEditor.ets:598-610</code>）覆盖 <code>longPressTimer / blinkTimer / flingTimer / caretAnimator / glyphAnimator</code>；<code>AppShell.ets:99-106</code> 解绑 <code>windowSizeChange</code> 与避让区监听并有 <code>try/catch</code>。</td></tr>
+      <tr><td><code>DrawingRenderingContext</code> vs <code>CanvasRenderingContext2D</code></td><td><strong>选择正确。</strong> 走 Native Drawing 路径性能更优，<code>ctx.invalidate()</code> 语义与官方一致。代价是无法用 <code>RenderingContextSettings(true)</code> 开抗锯齿 —— 需在 Brush 上补（见 E-11），而不是换回 Canvas2D。</td></tr>
+      <tr><td><code>setWindowSystemBarProperties</code> 疑似已废弃</td><td><strong>未废弃。</strong> 只有 callback 版从 API 12 起废弃，项目用的是 Promise 版。</td></tr>
+      <tr><td><code>expandSafeArea</code> 与固定宽高冲突</td><td><strong>不违规。</strong> 生效条件是「组件尺寸不要设置固定宽高（百分比除外）」，<code>AppShell</code> 用的是 <code>'100%'</code>。与 <code>setWindowLayoutFullScreen(true)</code> 同时使用属冗余但无害，可保留。</td></tr>
+      <tr><td><code>securityLevel</code> / WAL 配置缺失</td><td><strong>已正确/无需改。</strong> <code>securityLevel: S1</code> 已配置（<code>DatabaseHelper.ets:34</code>）；WAL 是系统默认日志方式。</td></tr>
+      <tr><td>ArkTS 规范违规（<code>any</code> / 对象字面量当类型 / 动态属性访问）</td><td><strong>未发现。</strong> store、持久层、消费层均为显式接口类型；<code>ValuesBucket</code> 字面量与 <code>catch (e)</code> 无类型标注均符合 ArkTS 约束。<em>注意：本机 <code>arkts_check</code> 不可用，此结论仅基于人工阅读与 lint，非工具保证。</em></td></tr>
+      <tr><td>备份 JSON 恢复 <code>Date</code> 序列化丢原型</td><td><strong>不存在。</strong> 模型时间字段全为 <code>number</code>（<code>Date.now()</code>），<code>BackupPayloadLoose</code> + <code>as</code> 的宽松导入是合理设计。</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ===================== 9 ===================== -->
+<section id="s9">
+  <h2>9 · 官方文档依据索引 <span class="tag">SOURCES</span></h2>
+  <p class="lead">以下文档均通过 <code>devecocli docs search / read</code> 读取本地 HarmonyOS 文档库原文，用于判定各条「最佳实践」结论。</p>
+
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th style="width:300px">文档</th><th>用于支撑</th></tr></thead>
+    <tbody>
+      <tr><td><code>ts-container-list</code>（List）</td><td>L-1：「当 List 和 ForEach 结合，会一次性创建所有的子组件」</td></tr>
+      <tr><td><code>arkts-v1-v2-migration-rendering-control-repeat</code>（循环渲染迁移）</td><td>L-1：「状态管理 V2 推荐使用 Repeat 替代 ForEach」，ForEach/LazyForEach → Repeat</td></tr>
+      <tr><td><code>ts-rendering-control-lazyforeach</code></td><td>L-1：LazyForEach 与缓存列表项、动态预加载、组件复用配合</td></tr>
+      <tr><td><code>arkts-new-computed</code>（@Computed 计算属性）</td><td>L-2：解决 UI 多次重用同一计算结果导致的重复计算与性能问题</td></tr>
+      <tr><td><code>arkts-new-observedv2-and-trace</code></td><td>S-2 / S-6：「未被 @Trace 装饰的属性用在 UI 中无法感知到变化，也无法触发 UI 刷新」</td></tr>
+      <tr><td><code>arkts-v1-v2-update-difference</code>（V1/V2 更新机制差异）</td><td>S-2 / L-2 / S-7：节点标脏、属性级精准更新、@Computed 派生状态</td></tr>
+      <tr><td><code>arkts-v1-v2-mixusage</code>（V1/V2 混用指导）</td><td>第 8 节：V1/V2 混用边界合规判定</td></tr>
+      <tr><td><code>ts-rendering-control-foreach</code></td><td>第 8 节：本项目 keyGenerator 用法正确</td></tr>
+      <tr><td><code>arkts-apis-data-relationalstore-transaction</code>（Transaction）</td><td>D-1：「事务对象是通过 createTransaction 接口创建的，不同事务对象之间的操作是隔离的」「同一时刻仅支持一个写事务」</td></tr>
+      <tr><td><code>arkts-apis-data-relationalstore-rdbstore</code></td><td>D-1 / D-2 / D-6 / D-7 / D-12 / D-14：<code>createTransaction</code>「优先使用…不再推荐使用 beginTransaction」、<code>query(predicates, columns)</code>、<code>version</code>、<code>batchInsert</code>、<code>close12+</code>、<code>rebuilt</code>/<code>RebuildType</code>；<code>executeSql</code> 与 <code>execute</code> 对 PRAGMA 的支持差异</td></tr>
+      <tr><td><code>arkts-apis-data-relationalstore-resultset</code></td><td>D-7：<code>close()</code>「若不关闭可能会引起 FD 泄漏和内存泄漏」，官方示例放在 <code>finally</code></td></tr>
+      <tr><td><code>data-persistence-by-rdb-store</code></td><td>D-1 / D-4 / D-6 / D-13：写连接模型、索引支持、版本迁移事务、14800011 库损坏需重建</td></tr>
+      <tr><td><code>faqs-local-database-management-18</code></td><td>D-3：batchInsert vs 逐行 insert（「批量插入只需一次批量操作」）</td></tr>
+      <tr><td><code>faqs-local-database-management-23</code> / <code>-14</code></td><td>D-4：<code>CREATE INDEX</code> 用法</td></tr>
+      <tr><td><code>faqs-local-database-management-42</code></td><td>C-5：relationalStore 线程安全但不支持 Worker 跨线程共享</td></tr>
+      <tr><td><code>faqs-local-database-management-51</code></td><td>D-7 / D-12：句柄过载的两大成因（资源未释放、事务未及时提交/回滚）</td></tr>
+      <tr><td><code>ts-basic-components-navigation</code></td><td>U-2：「不建议在 aboutToAppear 中使用栈操作…会导致白屏或跳转失败等问题」</td></tr>
+      <tr><td><code>js-apis-file-picker</code>（@ohos.file.picker）</td><td>U-3：无参构造「不推荐使用…会出现概率性失败问题」；<code>constructor(context)</code> 为推荐用法</td></tr>
+      <tr><td><code>js-apis-router</code> / <code>arkts-routing</code></td><td>U-6：<code>@ohos.router</code> 标注「不推荐」，推荐 Navigation</td></tr>
+      <tr><td><code>ts-universal-attributes-expand-safe-area</code></td><td>U-1 / U-5：<code>avoid_cutout</code> 配置项、<code>expandSafeArea</code> 生效条件</td></tr>
+      <tr><td><code>faqs-arkui-824</code> / <code>-1114</code> / <code>-1103</code></td><td>U-1 / U-5：<code>SafeAreaType.SYSTEM</code> 不含底部导航栏，需 <code>TYPE_NAVIGATION_INDICATOR</code>；官方避让写法；横屏挖孔属安全区</td></tr>
+      <tr><td><code>js-apis-inputmethod</code> / 在自绘编辑框中使用输入法</td><td>E-4：<code>changeSelection</code> 的 <code>text</code> 为「整个输入文本」；错误码 12800003</td></tr>
+      <tr><td>Drawing：<code>class-Brush</code> / TextBlob 绘制示例</td><td>E-3 / E-11：<code>setAntiAlias</code>「未调用此接口设置时，系统默认关闭抗锯齿」；<code>TextBlob</code> 不可变、位置外置于 <code>drawTextBlob</code>（缓存语义成立）</td></tr>
+      <tr><td>最佳实践：主线程耗时操作优化 / Drawing 自绘制性能提升 / 并发能力</td><td>E-1 / E-3 / U-8 / C-5：高频回调内避免耗时操作；增量绘制；耗时操作移出主线程</td></tr>
+      <tr><td>Code Linter：<code>ide-code-linter</code> / <code>ime-coderlinter-recommended-rules</code> / <code>accessibility-label-check</code></td><td>C-2 / U-10：可用规则集清单；无障碍文本检查规则</td></tr>
+      <tr><td><code>faqs-arkui-1550</code></td><td>补充：<code>getContext</code> 自 API 18 起弃用，建议 <code>getHostContext</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note warn">
+    <strong>另需说明：</strong> <code>parseInt</code>-style 的通用 JS 语义、以及所有「性能」「内存」判定，均<strong>不来自</strong>文档条款，而是从代码路径（循环嵌套、string 不可变性、await 时序）推导的静态分析结论。本报告未做任何真机 trace 或 Profiler 采集。
+  </div>
+</section>
+
+<!-- ===================== 10 ===================== -->
+<section id="s10">
+  <h2>10 · 未验证项与后续建议 <span class="tag">OPEN ITEMS</span></h2>
+
+  <h3>明确未验证的结论</h3>
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th style="width:74px">ID</th><th>结论</th><th>为何未验证 / 如何验证</th></tr></thead>
+    <tbody>
+      <tr><td class="num">D-8</td><td><code>PRAGMA foreign_keys = ON</code> 经 <code>executeSql</code> 是否真的生效</td><td>官方把 PRAGMA 支持写在 <code>execute()</code> 说明里，<code>executeSql</code> 未提及。无真机。验证方法：真机执行 <code>querySql('PRAGMA foreign_keys')</code> 看是否返回 1，再删除一个项目看子表行是否被级联删除。</td></tr>
+      <tr><td class="num">U-4</td><td><code>OpenMode.TRUNC</code> 对导出覆盖写的具体行为</td><td>需真机选一个已存在的长文件做导出，验证尾部是否残留。</td></tr>
+      <tr><td class="num">U-7</td><td>抽屉蒙层导致状态栏永久变暗的具体触发路径</td><td>「组件在 <code>listOpen === true</code> 时被销毁且无复位」这一事实是确定的（已确认无 <code>aboutToDisappear</code>），但复现路径未逐步走通。</td></tr>
+      <tr><td class="num">S-4</td><td>销毁前落库能否完成</td><td>取决于系统调度，需真机在「编辑后立即划掉应用」场景下核对库内容。</td></tr>
+      <tr><td class="num">S-9</td><td><code>openChapter</code> 用过期 <code>ch.content</code> 是否会重开丢稿</td><td>当前 <code>AppStores.closeTab</code> 零调用点，路径不可达；补上标签关闭 UI 后会变为现实风险。属潜在项。</td></tr>
+      <tr><td class="num">U-11</td><td>两套 Navigation 共用同一 NavPathStack 的跨断点重建</td><td>官方文档未定义该语义。验证方法：真机在 840vp 附近反复拖动窗口，观察编辑区是否闪白/回顶。</td></tr>
+      <tr><td class="num">E-15<br>E-16</td><td>预览布局覆盖、IME attach 竞态</td><td>官方文档未覆盖该时序。验证方法：开 <code>DIAG_ENABLED = true</code>，真机拼音输入观察 <code>FlowTextDiag</code> 日志。</td></tr>
+      <tr><td class="num">D-6</td><td>旧库具体缺哪些列</td><td>无法从当前快照还原历史 schema。属风险提示而非已确认故障。</td></tr>
+      <tr><td class="num">全部性能项</td><td>帧率、延迟、内存的具体数值</td><td>本机无设备。建议按项目自定的 SC-006（5 万字输入 &lt;50ms、滚动 ≥50fps）做真机 Profile 基线，再对照本报告验证优化收益。</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>建议补充的工具能力</h3>
+  <ul>
+    <li><strong>安装 DevEco Studio（≥6.0.0）并设置 <code>DEVECO_HOME</code></strong>，以启用 <code>arkts_check</code> 的 ArkTS 严格静态检查 —— 本次这一环缺失，是报告置信度最大的一处缺口。</li>
+    <li><strong>启用 <code>@cross-device-app-dev</code> 与 <code>@correctness</code> 规则集</strong>（C-2）。代码注释已经把这些规则当成了合规依据，但实际没跑。</li>
+    <li><strong>接入 <code>devecocli check compat</code></strong>：项目是 SDK23 → SDK26 的迁移产物（工作区旁有 SDK23 副本），可以扫描两版之间破坏性 API 变更，比人工比对可靠。</li>
+    <li><strong>建立真机性能基线</strong>：<code>devecocli log --keyword FlowTextDiag</code> + Profiler，用 SC-006 做量化验收。</li>
+  </ul>
+
+  <div class="note">
+    <strong>关于 SDK23 → SDK26 的旁证：</strong>本次审查仅针对 <code>SDK26Target/Weaver</code>。工作区上下文里另有一份 SDK23 版本（<code>DevEcoStudioProjects/Weaver</code>），<code>DatabaseHelper.ets</code> 在两份中内容一致 —— 这意味着持久层的 D-1 ~ D-14 很可能在两个版本上同时存在。若需要，可以再做一次双版本差异比对。
+  </div>
+</section>
+
+<footer>
+  Weaver 代码优化审查报告 · 生成于 2026-10-13 · 静态代码审查 + HarmonyOS 官方文档核对<br>
+  所有 P0/P1 条目均已回读源码逐行确认（文件路径与行号可直接跳转核对）
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var q = document.getElementById('q');
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.fbtn'));
+  var rows = Array.prototype.slice.call(document.querySelectorAll('#all tbody tr'));
+  var cnt = document.getElementById('cnt');
+  var lv = 'all';
+
+  function apply() {
+    var kw = (q.value || '').trim().toLowerCase();
+    var shown = 0;
+    rows.forEach(function (r) {
+      var okLv = (lv === 'all') || (r.getAttribute('data-lv') === lv);
+      var okKw = kw === '' || r.textContent.toLowerCase().indexOf(kw) !== -1;
+      var show = okLv && okKw;
+      r.classList.toggle('hide', !show);
+      if (show) shown++;
+    });
+    cnt.textContent = '显示 ' + shown + ' / ' + rows.length + ' 条';
+  }
+
+  if (q) q.addEventListener('input', apply);
+
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      lv = b.getAttribute('data-lv');
+      btns.forEach(function (o) { o.setAttribute('aria-pressed', String(o === b)); });
+      apply();
+    });
+  });
+
+  apply();
+})();
+</script>
+
+</body>
+</html>

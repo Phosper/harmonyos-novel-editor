@@ -9,6 +9,7 @@
 import { promptAction } from '@kit.ArkUI'
 import { tokensFor, WeaverColorSet, WeaverRadii, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
+import { fireAndLog } from '../store/AppStores'
 import { DocItem } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
 
@@ -153,10 +154,11 @@ export struct DocListPane {
         if (err) {
           return
         }
+        // 这些动作末端都会走 DAO 的 throw，而这里无法 await → 必须接住拒绝
         if (data.index === 0) {
-          stores.restoreChapter(item.id)
+          fireAndLog(stores.restoreChapter(item.id), 'restoreChapter')
         } else {
-          stores.hardDeleteChapter(item.id)
+          fireAndLog(stores.hardDeleteChapter(item.id), 'hardDeleteChapter')
         }
       })
       return
@@ -172,11 +174,11 @@ export struct DocListPane {
       if (data.index === 0) {
         this.onRenameDoc(item.id, item.title)
       } else if (data.index === 1) {
-        stores.toggleFav(item.id)
+        fireAndLog(stores.toggleFav(item.id), 'toggleFav')
       } else if (data.index === 2) {
-        stores.toggleInspiration(item.id)
+        fireAndLog(stores.toggleInspiration(item.id), 'toggleInspiration')
       } else {
-        stores.moveToTrash(item.id)
+        fireAndLog(stores.moveToTrash(item.id), 'moveToTrash')
       }
     })
   }

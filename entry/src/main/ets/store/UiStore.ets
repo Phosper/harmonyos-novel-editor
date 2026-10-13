@@ -3,7 +3,7 @@ import { BookMode } from '../model/Book'
 import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { BreakPoint } from '../utils/BreakPoint'
-import { applySystemBars } from '../utils/SystemBars'
+import { applySystemBars, applySystemBarsDimmed } from '../utils/SystemBars'
 import { EditorViewMode, MobileTab, PAPER_THEMES, PaperTheme, DEFAULT_THEME_ID, themeById, WeaverTheme } from '../constants/DesignTokens'
 
 /**
@@ -140,10 +140,27 @@ export class UiStore {
     return themeById(this.themeId)
   }
 
-  /** 按**实际主题**明暗同步系统栏（底色=页面底色，前景随明暗；勿用 darkMode） */
+  /** 按**实际主题**明暗同步系统栏（底色=页面底色，前景随明暗；勿用 darkMode）。
+   *  蒙层展示期间（overlayDim）状态栏底色切为"底色×蒙层"压暗色，保持与页面一致。 */
   syncSystemBars(): void {
     const t: WeaverTheme = themeById(this.themeId)
-    applySystemBars(t.dark, t.colors.bgPrimary)
+    if (this.overlayDim) {
+      applySystemBarsDimmed(t.dark, t.colors.bgPrimary)
+    } else {
+      applySystemBars(t.dark, t.colors.bgPrimary)
+    }
+  }
+
+  /** 是否有"盖不到状态栏条的蒙层"在展示（抽屉）：状态栏需同步压暗/还原。
+   *  bindSheet / InputDialog 的蒙层覆盖全窗，透明状态栏下自然同步压暗，无需此开关。 */
+  overlayDim: boolean = false
+
+  setOverlayDim(on: boolean): void {
+    if (this.overlayDim === on) {
+      return
+    }
+    this.overlayDim = on
+    this.syncSystemBars()
   }
 
   /** 选择全局主题（持久化）；同时派生 darkMode（编辑器稿纸随之联动） */

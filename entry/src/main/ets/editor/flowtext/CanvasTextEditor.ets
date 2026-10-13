@@ -22,7 +22,7 @@ import { EditorTheme } from './theme/EditorTheme';
 import { TextLayoutEngine, LayoutLine } from './render/TextLayoutEngine';
 import { LayoutCache } from './render/LayoutCache';
 import { GlyphRenderer, RenderTheme, GlyphAnimRegistry, GlyphAnimState } from './render/GlyphRenderer';
-import { GlyphAnimator } from './animation/GlyphAnimator';
+import { GlyphAnimator, GlyphDiffOptions } from './animation/GlyphAnimator';
 import { HitTester } from './interaction/HitTester';
 import { CursorState } from './interaction/CursorState';
 import { SelectionManager } from './interaction/SelectionManager';
@@ -1466,8 +1466,16 @@ export struct CanvasTextEditor {
     this.ensureVisibleLayout();
     this.ensureCaretLayout();
     // 字符级动画：对比编辑前后字形（入场/消退/换行滑动），再驱动播放（T010/T011）
-    this.anims = GlyphAnimator.createEditAnimations(this.oldLines, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.lineHeight * 0.5, previousText, this.doc.text);
+    // 差分只在 lastEditOffset 附近的窗口内进行：整篇建两份字形 Map 是"越写越卡"的主因，
+    // 而真正需要过渡的字形上限只有 80 + 24 个。
+    const diff: GlyphDiffOptions = new GlyphDiffOptions();
+    diff.paddingLeftPx = this.padLeftVp();
+    diff.paddingTopPx = this.padTopVp();
+    diff.rowThresholdVp = this.theme.lineHeight * 0.5;
+    diff.oldText = previousText;
+    diff.newText = this.doc.text;
+    diff.hintOffset = this.lastEditOffset;
+    this.anims = GlyphAnimator.createEditAnimations(this.oldLines, this.lines, diff);
     this.lastText = this.doc.text;
     this.caret = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize);

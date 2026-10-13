@@ -1,5 +1,7 @@
 {
-  files: ["**/*.ets"],
+  files: [
+    "**/*.ets",
+  ],
   ignore: [
     "**/src/ohosTest/**/*",
     "**/src/test/**/*",
@@ -12,6 +14,11 @@
   ruleSet: [
     "plugin:@performance/recommended",
     "plugin:@typescript-eslint/recommended",
+    // 代码注释多处把这两套规则当成合规依据引用（AppShell 的断点判断禁止项、
+    // BreakPoint 的 deviceType 禁用、SafeArea 的沉浸式监听、PcWindowBar 的无障碍文本），
+    // 但此前未在此声明 → 根本不会执行。开启后这些约束才真正生效。
+    "plugin:@cross-device-app-dev/recommended",
+    "plugin:@correctness/recommended",
   ],
   rules: {
     "@security/no-unsafe-aes": "error",
@@ -26,5 +33,5 @@
     "@security/no-unsafe-dsa-key": "error",
     "@security/no-unsafe-dh-key": "error",
     "@security/no-unsafe-3des": "error",
-  },
+  }
 }

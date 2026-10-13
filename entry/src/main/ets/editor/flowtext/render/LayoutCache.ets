@@ -1,8 +1,24 @@
-/** Versioned, lazy paragraph layout. Coordinates are vp. */
+/**
+ * Versioned, lazy paragraph layout. Coordinates are vp.
+ *
+ * typeset 以**段落对齐的窗口**构建，而不是整篇：
+ * 旧实现每次 invalidateFrom 之后都用整篇文本重建 LineTypeset，等于每敲一个字
+ * 都做一次 O(文档) 的 JS + 原生排版（TextIndexMap 整篇重建 + 原生为整篇建字型 run），
+ * 与项目自定规范 R9「避免整篇 typeset」直接冲突。
+ * 窗口化的正确性前提：窗口起止都取段落边界，因此一行永远不会跨窗口边界，
+ * 窗口内的断行结果与整篇排版完全一致。
+ */
 import { text } from '@kit.ArkGraphics2D';
 import { TextLayoutEngine, LayoutLine } from './TextLayoutEngine';
 import { FormatRun } from '../model/EditorTypes';
 import { GraphemeUtil } from '../model/GraphemeUtil';
+
+/**
+ * typeset 窗口的最小跨度（码元），并向外取整到段落边界。
+ * 越大 → 重建次数越少但单次越贵。4000 码元约十几个段落、两三千字形，
+ * 相对 5 万字文稿把单次重建成本压到约 1/12。
+ */
+const WINDOW_MIN_CHARS: number = 4000;
 
 export class LayoutCache {
   private engine: TextLayoutEngine;
@@ -10,6 +26,9 @@ export class LayoutCache {
   private versionValue: number = -1;
   private formatVersionValue: number = -1;
   private typeset: text.LineTypeset | null = null;
+  /** 当前 typeset 覆盖的文档区间 [windowBase, windowEnd)，两端都在段落边界上 */
+  private windowBase: number = -1;
+  private windowEnd: number = -1;
   private lines: LayoutLine[] = [];
   private nextStart: number = 0;
   private nextY: number = 0;
@@ -52,16 +71,22 @@ export class LayoutCache {
     const last: LayoutLine | null = cut > 0 ? this.lines[cut - 1] : null;
     this.nextStart = last === null ? 0 : last.consumedEnd;
     this.nextY = last === null ? 0 : last.yOffset + last.step;
-    this.typeset = null;
+    this.dropWindow();
     this.complete = false;
   }
 
   invalidate(): void {
-    this.typeset = null;
+    this.dropWindow();
     this.lines = [];
     this.nextStart = 0;
     this.nextY = 0;
     this.complete = false;
+  }
+
+  private dropWindow(): void {
+    this.typeset = null;
+    this.windowBase = -1;
+    this.windowEnd = -1;
   }
 
   private synchronize(content: string, version: number, formatVersion: number): void {
@@ -73,6 +98,40 @@ export class LayoutCache {
     }
   }
 
+  /**
+   * 确保当前 typeset 覆盖 nextStart 所在的段落。
+   * 起点取 nextStart 所在段落的开头（一定是码元边界：'\n' 是 ASCII），
+   * 终点取 nextStart + WINDOW_MIN_CHARS 之后的第一个段落边界 —— 于是窗口
+   * 永远是若干**完整段落**，窗口内断行与整篇排版等价。
+   */
+  private ensureWindow(): void {
+    if (this.typeset !== null && this.nextStart >= this.windowBase && this.nextStart < this.windowEnd) {
+      return;
+    }
+    const len: number = this.textValue.length;
+    const base: number = LayoutCache.paragraphStartOf(this.textValue, this.nextStart);
+    let end: number = Math.min(len, this.nextStart + WINDOW_MIN_CHARS);
+    if (end < len) {
+      const nl: number = this.textValue.indexOf('\n', end);
+      end = nl < 0 ? len : nl + 1;
+    }
+    if (end <= base) {
+      end = len;
+    }
+    this.typeset = this.engine.buildTypesetWindow(this.textValue, base, end);
+    this.windowBase = base;
+    this.windowEnd = end;
+  }
+
+  /** offset 所在段落的起点（段落以 '\n' 分隔） */
+  private static paragraphStartOf(value: string, offset: number): number {
+    if (offset <= 0) {
+      return 0;
+    }
+    const nl: number = value.lastIndexOf('\n', offset - 1);
+    return nl < 0 ? 0 : nl + 1;
+  }
+
   private appendLine(): void {
     const start: number = this.nextStart;
     let line: LayoutLine;
@@ -80,19 +139,26 @@ export class LayoutCache {
       line = this.engine.emptyLine(start, this.nextY);
       this.complete = true;
     } else {
-      if (this.typeset === null) { this.typeset = this.engine.buildTypeset(this.textValue); }
-      const newline: number = this.textValue.indexOf('\n', start);
-      const paragraphEnd: number = newline < 0 ? this.textValue.length :
-        (newline > start && this.textValue.charAt(newline - 1) === '\r' ? newline - 1 : newline);
-      let count: number = Math.min(this.engine.lineBreak(this.typeset, start), paragraphEnd - start);
-      count = GraphemeUtil.snapToBoundary(this.textValue, start + count) - start;
-      if (count <= 0 && paragraphEnd > start) { count = GraphemeUtil.moveRight(this.textValue, start) - start; }
-      const end: number = start + count;
-      line = count === 0 ? this.engine.emptyLine(start, this.nextY) :
-        this.engine.createLayoutLine(this.typeset, start, count, this.nextY);
-      line.consumedEnd = end === paragraphEnd && newline >= 0 ? newline + 1 : end;
-      this.nextStart = line.consumedEnd;
-      this.complete = this.nextStart >= this.textValue.length && newline < 0;
+      this.ensureWindow();
+      const typeset: text.LineTypeset | null = this.typeset;
+      if (typeset === null) {
+        // 理论上不可达：ensureWindow 必然建出 typeset。留此分支只为避免死循环。
+        line = this.engine.emptyLine(start, this.nextY);
+        this.complete = true;
+      } else {
+        const newline: number = this.textValue.indexOf('\n', start);
+        const paragraphEnd: number = newline < 0 ? this.textValue.length :
+          (newline > start && this.textValue.charAt(newline - 1) === '\r' ? newline - 1 : newline);
+        let count: number = Math.min(this.engine.lineBreak(typeset, start), paragraphEnd - start);
+        count = GraphemeUtil.snapToBoundary(this.textValue, start + count) - start;
+        if (count <= 0 && paragraphEnd > start) { count = GraphemeUtil.moveRight(this.textValue, start) - start; }
+        const end: number = start + count;
+        line = count === 0 ? this.engine.emptyLine(start, this.nextY) :
+          this.engine.createLayoutLine(typeset, start, count, this.nextY);
+        line.consumedEnd = end === paragraphEnd && newline >= 0 ? newline + 1 : end;
+        this.nextStart = line.consumedEnd;
+        this.complete = this.nextStart >= this.textValue.length && newline < 0;
+      }
     }
     this.lines.push(line);
     this.nextY += line.step;

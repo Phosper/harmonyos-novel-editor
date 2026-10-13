@@ -1,4 +1,5 @@
 // 人物关系仓储
+import { relationalStore } from '@kit.ArkData'
 import { RelationshipDao } from '../database/RelationshipDao'
 import { IdGenerator } from '../utils/IdGenerator'
 import type { RelationshipModel } from '../model/Relationship'
@@ -6,6 +7,11 @@ import { RelationshipType } from '../model/Relationship'
 
 export class RelationshipRepository {
   private dao: RelationshipDao = new RelationshipDao()
+
+  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
+  setTransaction(tx: relationalStore.Transaction | null): void {
+    this.dao.setTransaction(tx)
+  }
 
   async loadRelationships(bookId: string): Promise<RelationshipModel[]> {
     return this.dao.queryByBook(bookId)

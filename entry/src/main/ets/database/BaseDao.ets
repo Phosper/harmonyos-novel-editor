@@ -8,13 +8,48 @@ export abstract class BaseDao<T> {
   protected abstract getTableName(): string
   protected abstract rowToModel(rs: relationalStore.ResultSet): T
 
+  /**
+   * 事务内写入的重定向目标，由 Repos.runInTransaction 设置。
+   *
+   * 非 null 时 insert / update / delete 一律走该事务对象：官方文档说明
+   * createTransaction 返回的「不同事务对象之间的操作是隔离的」，这样备份恢复的写入
+   * 就不会与编辑器的自动保存落在同一条写连接上、被一起回滚。
+   *
+   * 只重定向**写**；读仍走 store（当前唯一的事务调用方不在事务内读）。
+   */
+  private txTarget: relationalStore.Transaction | null = null
+
+  setTransaction(tx: relationalStore.Transaction | null): void {
+    this.txTarget = tx
+  }
+
   protected getStore(): relationalStore.RdbStore {
     return dbHelper.getStore()
   }
 
-  protected async insertRow(valueBucket: relationalStore.ValuesBucket): Promise<void> {
+  /**
+   * 关闭结果集。close 自身也可能抛（例如事务已提交，其创建的结果集随之关闭），
+   * 而在 finally 里抛出会**掩盖真正的异常**，且失败本身已无可挽回 —— 故吞掉并记日志。
+   */
+  protected closeQuietly(rs: relationalStore.ResultSet | null): void {
+    if (rs === null) {
+      return
+    }
     try {
-      await this.getStore().insert(this.getTableName(), valueBucket)
+      rs.close()
+    } catch (e) {
+      Logger.warn('[' + this.getTableName() + '] resultSet close failed: ' + String(e))
+    }
+  }
+
+  protected async insertRow(valueBucket: relationalStore.ValuesBucket): Promise<void> {
+    const tx: relationalStore.Transaction | null = this.txTarget
+    try {
+      if (tx !== null) {
+        await tx.insert(this.getTableName(), valueBucket)
+      } else {
+        await this.getStore().insert(this.getTableName(), valueBucket)
+      }
     } catch (e) {
       Logger.error('[' + this.getTableName() + '] insert failed: ' + String(e))
       throw new Error(String(e))
@@ -23,8 +58,13 @@ export abstract class BaseDao<T> {
 
   protected async updateRow(valueBucket: relationalStore.ValuesBucket,
     predicates: relationalStore.RdbPredicates): Promise<void> {
+    const tx: relationalStore.Transaction | null = this.txTarget
     try {
-      await this.getStore().update(valueBucket, predicates)
+      if (tx !== null) {
+        await tx.update(valueBucket, predicates)
+      } else {
+        await this.getStore().update(valueBucket, predicates)
+      }
     } catch (e) {
       Logger.error('[' + this.getTableName() + '] update failed: ' + String(e))
       throw new Error(String(e))
@@ -32,35 +72,76 @@ export abstract class BaseDao<T> {
   }
 
   protected async deleteRow(predicates: relationalStore.RdbPredicates): Promise<void> {
+    const tx: relationalStore.Transaction | null = this.txTarget
     try {
-      await this.getStore().delete(predicates)
+      if (tx !== null) {
+        await tx.delete(predicates)
+      } else {
+        await this.getStore().delete(predicates)
+      }
     } catch (e) {
       Logger.error('[' + this.getTableName() + '] delete failed: ' + String(e))
       throw new Error(String(e))
     }
   }
 
+  /** 全列查询。列表类查询请改用 queryRowsWithColumns / querySqlRows 做列裁剪。 */
   protected async queryRows(predicates: relationalStore.RdbPredicates): Promise<T[]> {
-    const rs: relationalStore.ResultSet = await this.getStore().query(predicates)
-    const list: T[] = []
-    while (rs.goToNextRow()) {
-      list.push(this.rowToModel(rs))
+    return this.queryRowsWithColumns(predicates, null)
+  }
+
+  /**
+   * 列裁剪查询：只取 columns 指定的列（null = 全部列）。
+   *
+   * resultSet.close() 放在 finally：官方 ResultSet 文档明确「不关闭可能会引起
+   * FD 泄漏和内存泄漏」，而 rowToModel 内部仍可能在缺列/异常结果集上抛出，
+   * 只写在末尾会让异常路径永远执行不到 close。
+   */
+  protected async queryRowsWithColumns(predicates: relationalStore.RdbPredicates,
+    columns: string[] | null): Promise<T[]> {
+    const rs: relationalStore.ResultSet = columns === null
+      ? await this.getStore().query(predicates)
+      : await this.getStore().query(predicates, columns)
+    try {
+      const list: T[] = []
+      while (rs.goToNextRow()) {
+        list.push(this.rowToModel(rs))
+      }
+      return list
+    } finally {
+      this.closeQuietly(rs)
     }
-    rs.close()
-    return list
+  }
+
+  /**
+   * 参数化 SQL 查询（值一律走 bindArgs，不拼字符串），用于聚合、裁剪（substr）等
+   * RdbPredicates 表达不了的查询。返回行同样交给 rowToModel 映射。
+   */
+  protected async querySqlRows(sql: string, args: relationalStore.ValueType[]): Promise<T[]> {
+    const rs: relationalStore.ResultSet = await this.getStore().querySql(sql, args)
+    try {
+      const list: T[] = []
+      while (rs.goToNextRow()) {
+        list.push(this.rowToModel(rs))
+      }
+      return list
+    } finally {
+      this.closeQuietly(rs)
+    }
   }
 
   protected async queryByIdRow(id: string): Promise<T | null> {
     const predicates: relationalStore.RdbPredicates = this.newPredicates()
     predicates.equalTo('id', id)
     const rs: relationalStore.ResultSet = await this.getStore().query(predicates)
-    if (rs.goToFirstRow()) {
-      const model: T = this.rowToModel(rs)
-      rs.close()
-      return model
+    try {
+      if (rs.goToFirstRow()) {
+        return this.rowToModel(rs)
+      }
+      return null
+    } finally {
+      this.closeQuietly(rs)
     }
-    rs.close()
-    return null
   }
 
   protected newPredicates(): relationalStore.RdbPredicates {

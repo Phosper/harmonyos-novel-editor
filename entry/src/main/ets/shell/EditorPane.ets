@@ -3,6 +3,7 @@ import { promptAction } from '@kit.ArkUI'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
+import { fireAndLog } from '../store/AppStores'
 import type { OpenDoc, DocItem } from '../store/StoreModels'
 import { SaveState } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
@@ -330,7 +331,8 @@ export struct EditorPane {
         .borderRadius(WeaverRadii.SM)
         .onClick(() => {
           if (this.app !== null) {
-            this.app.createChapter()
+            // 建文稿要读聚合、写库，onClick 无法 await → 接住拒绝，避免未处理拒绝杀进程
+            fireAndLog(this.app.createChapter(), 'createChapter')
           }
         })
     }
