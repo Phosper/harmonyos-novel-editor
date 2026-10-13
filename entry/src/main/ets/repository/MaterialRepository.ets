@@ -11,15 +11,14 @@ import { WorldCategory } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 
 export class MaterialRepository {
-  private charDao: CharacterDao = new CharacterDao()
-  private worldDao: WorldSettingDao = new WorldSettingDao()
-  private inspDao: InspirationDao = new InspirationDao()
+  private charDao: CharacterDao
+  private worldDao: WorldSettingDao
+  private inspDao: InspirationDao
 
-  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
-  setTransaction(tx: relationalStore.Transaction | null): void {
-    this.charDao.setTransaction(tx)
-    this.worldDao.setTransaction(tx)
-    this.inspDao.setTransaction(tx)
+  constructor(tx: relationalStore.Transaction | null = null) {
+    this.charDao = new CharacterDao(tx)
+    this.worldDao = new WorldSettingDao(tx)
+    this.inspDao = new InspirationDao(tx)
   }
 
   // ===== 人物 =====

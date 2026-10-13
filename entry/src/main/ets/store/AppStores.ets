@@ -22,11 +22,14 @@ import type { WorldSettingModel } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 import type { RelationshipModel } from '../model/Relationship'
 import { RelationshipType } from '../model/Relationship'
-import { bookRepo, chapterRepo, materialRepo, relationRepo, runInTransaction } from './Repos'
+import { bookRepo, chapterRepo, runInTransaction } from './Repos'
+import type { TransactionRepos } from './Repos'
 import { BookBackupSnapshot, BackupPayload, BackupPayloadLoose } from './BackupTypes'
 import { UiStore } from './UiStore'
 import { ProjectStore } from './ProjectStore'
 import { EditorStore } from './EditorStore'
+import type { EditorDraftSnapshot } from './EditorStore'
+import { ProjectItem } from './StoreModels'
 import { MaterialStore } from './MaterialStore'
 import { RelationStore } from './RelationStore'
 
@@ -38,6 +41,7 @@ export class AppStores {
   readonly relation: RelationStore = new RelationStore()
 
   private inited: boolean = false
+  private openRequestRev: number = 0
 
   // ===== 启动 =====
 
@@ -89,7 +93,8 @@ export class AppStores {
     if (this.project.currentBookId === bookId) {
       return
     }
-    await this.flushAll()
+    await this.editor.flushAllStrict()
+    this.openRequestRev++
     this.project.currentBookId = bookId
     this.project.libFilter = LibId.ALL
     this.editor.reset()
@@ -98,16 +103,34 @@ export class AppStores {
   }
 
   async createBook(name: string): Promise<boolean> {
-    const created: BookModel | null = await this.project.createBook(name, this.ui.mode)
-    if (created === null) {
+    const trimmed: string = name.trim()
+    if (trimmed === '') {
       return false
     }
-    await this.selectBook(created.id)
+    // 保存失败必须在 INSERT 前返回，保留对话框重试才不会创建重复项目。
+    await this.editor.flushAllStrict()
+    const created: BookModel = await bookRepo.createBook(trimmed, this.ui.mode)
+    // 已入库就已创建成功。先保留可见项，后续列表查询失败也不能诱导再次创建。
+    if (!this.project.books.some((b: BookModel) => b.id === created.id)) {
+      this.project.books.push(created)
+    }
+    if (!this.project.projects.some((p: ProjectItem) => p.id === created.id)) {
+      const item: ProjectItem = new ProjectItem(created.id)
+      item.name = created.name
+      this.project.projects.push(item)
+    }
+    try {
+      await this.project.loadBooks()
+      await this.selectBook(created.id)
+    } catch (switchError) {
+      Logger.warn('Book created, switching failed: ' + String(switchError))
+    }
     return true
   }
 
   async deleteBook(bookId: string): Promise<void> {
-    await this.flushAll()
+    await this.editor.flushAllStrict()
+    this.openRequestRev++
     await bookRepo.deleteBook(bookId)
     await this.project.loadBooks()
     this.editor.reset()
@@ -142,21 +165,32 @@ export class AppStores {
 
   /** 打开文稿（进入编辑） */
   async openChapter(chapterId: string): Promise<void> {
+    const request: number = ++this.openRequestRev
+    this.editor.cancelPendingActivation()
+    const bookId: string = this.project.currentBookId
     // 必须按 id 取**完整**正文：ProjectStore.chapters 是列表投影（正文只有前缀），
     // 而且内存里的那行可能已经被编辑过 —— 直接拿它当草稿初值，会在
     // 「关掉标签再打开」时把旧正文写回去，覆盖掉此前已保存的内容。
     const ch: ChapterModel | null = await chapterRepo.loadOne(chapterId)
-    if (ch === null) {
+    if (ch === null || request !== this.openRequestRev || bookId !== this.project.currentBookId) {
       return
     }
     await this.editor.openChapter(ch)
+    if (request !== this.openRequestRev || bookId !== this.project.currentBookId) {
+      return
+    }
     this.ui.view = EditorViewMode.EDITOR
     this.syncSelection()
   }
 
   /** 只切换标签，不改变中部视图（标签栏点击用） */
   async activateChapter(chapterId: string): Promise<void> {
+    const request: number = ++this.openRequestRev
+    const bookId: string = this.project.currentBookId
     await this.editor.activate(chapterId)
+    if (request !== this.openRequestRev || bookId !== this.project.currentBookId) {
+      return
+    }
     this.ui.view = EditorViewMode.EDITOR
     this.syncSelection()
   }
@@ -200,8 +234,9 @@ export class AppStores {
   }
 
   async moveToTrash(chapterId: string): Promise<void> {
-    await chapterRepo.trash(chapterId)
+    this.openRequestRev++
     await this.editor.closeIfOpen(chapterId)
+    await chapterRepo.trash(chapterId)
     this.editor.discard(chapterId)
     await this.project.reloadChapters()
     await this.project.refreshCounts()
@@ -209,8 +244,9 @@ export class AppStores {
   }
 
   async hardDeleteChapter(chapterId: string): Promise<void> {
-    await chapterRepo.hardDelete(chapterId)
+    this.openRequestRev++
     await this.editor.closeIfOpen(chapterId)
+    await chapterRepo.hardDelete(chapterId)
     this.editor.discard(chapterId)
     await this.project.reloadChapters()
     await this.project.refreshCounts()
@@ -252,6 +288,7 @@ export class AppStores {
       return
     }
     await chapterRepo.setFormat(doc.id, format)
+    doc.format = format
     await this.project.reloadChapters()
   }
 
@@ -404,12 +441,9 @@ export class AppStores {
       const mode: BookMode = snapshot !== null && snapshot !== undefined ? snapshot.mode : this.ui.mode
 
       let skippedChapters: number = 0
-      // 整组写入（**含项目行本身**）放进一个独立事务：中途失败整组回滚，
-      // 既不留「项目名在、文稿缺一半」的半成品，也不会把编辑器自动保存的正文
-      // 卷进这次回滚（见 Repos.runInTransaction 的说明）。
-      // 旧实现把 createBook 留在事务之外，回滚后仍会留下一个空的「xxx（导入）」项目。
-      const book: BookModel = await runInTransaction(async (): Promise<BookModel> => {
-        const created: BookModel = await bookRepo.createBook(baseName + '（导入）', mode)
+      // 恢复只使用回调专属仓储，普通自动保存不会被并入恢复事务。
+      const book: BookModel = await runInTransaction(async (repos: TransactionRepos): Promise<BookModel> => {
+        const created: BookModel = await repos.bookRepo.createBook(baseName + '（导入）', mode)
         const charIdMap: Map<string, string> = new Map<string, string>()
         for (const c of characters) {
           const newId: string = IdGenerator.generate()
@@ -420,7 +454,7 @@ export class AppStores {
             notes: c.notes, characterType: c.characterType,
             createdAt: c.createdAt, updatedAt: c.updatedAt
           }
-          await materialRepo.insertCharacter(model)
+          await repos.materialRepo.insertCharacter(model)
         }
         for (const w of worldSettings) {
           const model: WorldSettingModel = {
@@ -428,14 +462,14 @@ export class AppStores {
             region: w.region, description: w.description, notes: w.notes, content: w.content,
             createdAt: w.createdAt, updatedAt: w.updatedAt
           }
-          await materialRepo.insertWorld(model)
+          await repos.materialRepo.insertWorld(model)
         }
         for (const ins of inspirations) {
           const model: InspirationModel = {
             id: IdGenerator.generate(), bookId: created.id, content: ins.content,
             createdAt: ins.createdAt, updatedAt: ins.updatedAt
           }
-          await materialRepo.insertInspiration(model)
+          await repos.materialRepo.insertInspiration(model)
         }
         let order: number = 0
         for (const ch of chapters) {
@@ -460,10 +494,11 @@ export class AppStores {
             updatedAt: ch.updatedAt,
             isFav: ch.isFav === true,
             isInspiration: ch.isInspiration === true,
-            isTrash: ch.isTrash === true
+            isTrash: ch.isTrash === true,
+            formatRuns: typeof ch.formatRuns === 'string' ? ch.formatRuns : ''
           }
           order++
-          await chapterRepo.insertChapter(model)
+          await repos.chapterRepo.insertChapter(model)
         }
         for (const r of relationships) {
           const a: string | undefined = charIdMap.get(r.characterIdA)
@@ -476,12 +511,19 @@ export class AppStores {
             type: r.type, label: r.label, notes: r.notes,
             createdAt: r.createdAt, updatedAt: r.updatedAt
           }
-          await relationRepo.insert(model)
+          await repos.relationRepo.insert(model)
         }
         return created
       })
 
-      await this.selectBook(book.id)
+      await this.project.loadBooks()
+      try {
+        await this.selectBook(book.id)
+      } catch (switchError) {
+        // 事务已经提交：当前草稿保存失败只阻止切项目，不能把成功恢复报告成失败。
+        Logger.warn('Backup restored, current drafts prevented switching: ' + String(switchError))
+        return book.name + '（已恢复，请先保存当前草稿再切换项目）'
+      }
       if (skippedChapters > 0) {
         return book.name + '（' + skippedChapters + ' 篇因超长未导入）'
       }
@@ -493,32 +535,52 @@ export class AppStores {
   }
 
   /**
-   * 整本导出用：当前项目的**完整**文稿（含正文与格式边车）。
+   * 整本导出用：完整文稿叠加调用时的内存草稿，包含未触发防抖保存的内容。
    * 注意不能用 project.chapters —— 那是列表投影，正文只有前缀。
    */
   async loadFullChapters(): Promise<ChapterModel[]> {
-    return chapterRepo.loadChaptersFull(this.project.currentBookId)
+    const bookId: string = this.project.currentBookId
+    const drafts: Map<string, EditorDraftSnapshot> = new Map<string, EditorDraftSnapshot>()
+    for (const draft of this.editor.snapshotDrafts()) {
+      drafts.set(draft.id, draft)
+    }
+    const chapters: ChapterModel[] = await chapterRepo.loadChaptersFull(bookId)
+    for (const ch of chapters) {
+      const draft: EditorDraftSnapshot | undefined = drafts.get(ch.id)
+      if (draft !== undefined) {
+        ch.title = draft.title
+        ch.content = draft.content
+        ch.format = draft.format
+        ch.caretOffset = draft.caretOffset
+        ch.formatRuns = draft.formatRuns
+        ch.wordCount = countChars(draft.content)
+      }
+    }
+    return chapters
   }
 
   /** 汇总当前项目的全部数据为备份载荷 */
   async exportBackupData(): Promise<BackupPayload> {
-    const bookId: string = this.project.currentBookId
-    // 备份必须是整篇正文：列表投影（loadChapters）只有前缀，用它导出会丢内容
-    const chapters: ChapterModel[] = await chapterRepo.loadChaptersFull(bookId)
+    // 在查询等待前捕获项目、素材与草稿，切项目不能混入另一项目的数据。
     const book: BookModel | undefined = this.project.currentBook
     const snapshot: BookBackupSnapshot | null = book !== undefined
       ? { id: book.id, name: book.name, mode: book.mode }
       : null
+    const characters: CharacterModel[] = this.material.characters.slice()
+    const worldSettings: WorldSettingModel[] = this.material.worldSettings.slice()
+    const inspirations: InspirationModel[] = this.material.inspirations.slice()
+    const relationships: RelationshipModel[] = this.relation.relationships.slice()
+    const chapters: ChapterModel[] = await this.loadFullChapters()
     const payload: BackupPayload = {
       app: 'Weaver',
       version: 1,
       exportedAt: Date.now(),
       book: snapshot,
       chapters: chapters,
-      characters: this.material.characters,
-      worldSettings: this.material.worldSettings,
-      inspirations: this.material.inspirations,
-      relationships: this.relation.relationships
+      characters: characters,
+      worldSettings: worldSettings,
+      inspirations: inspirations,
+      relationships: relationships
     }
     return payload
   }

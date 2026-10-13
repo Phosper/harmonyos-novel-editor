@@ -34,7 +34,7 @@ export class DocItem {
 @ObservedV2
 export class OpenDoc {
   readonly id: string = ''
-  readonly format: ChapterFormat = ChapterFormat.TXT
+  @Trace format: ChapterFormat = ChapterFormat.TXT
   @Trace title: string = ''
   @Trace color: string = '#007DFF'
   @Trace active: boolean = false

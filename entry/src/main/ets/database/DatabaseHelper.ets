@@ -212,8 +212,8 @@ export class DatabaseHelper {
    * 那些 UPDATE 会落到同一条写连接并**被并入本事务** —— 恢复一旦失败回滚，
    * 用户刚保存的正文会被一起回滚，而界面已经显示「已保存」，属静默数据丢失。
    *
-   * 事务内的写入需经 BaseDao.setTransaction 重定向到返回的事务对象；
-   * 统一的编排入口是 Repos.runInTransaction。
+   * Repos.runInTransaction 为回调创建独立仓储，DAO 在构造时绑定返回的事务对象；
+   * 普通仓储始终使用 store，不修改全应用共享的写入目标。
    */
   beginTransaction(): Promise<relationalStore.Transaction> {
     return this.getStore().createTransaction()

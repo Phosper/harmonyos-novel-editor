@@ -6,11 +6,10 @@ import type { RelationshipModel } from '../model/Relationship'
 import { RelationshipType } from '../model/Relationship'
 
 export class RelationshipRepository {
-  private dao: RelationshipDao = new RelationshipDao()
+  private dao: RelationshipDao
 
-  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
-  setTransaction(tx: relationalStore.Transaction | null): void {
-    this.dao.setTransaction(tx)
+  constructor(tx: relationalStore.Transaction | null = null) {
+    this.dao = new RelationshipDao(tx)
   }
 
   async loadRelationships(bookId: string): Promise<RelationshipModel[]> {

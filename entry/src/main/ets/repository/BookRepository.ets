@@ -6,11 +6,10 @@ import type { BookModel } from '../model/Book'
 import { BookMode } from '../model/Book'
 
 export class BookRepository {
-  private dao: BookDao = new BookDao()
+  private dao: BookDao
 
-  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
-  setTransaction(tx: relationalStore.Transaction | null): void {
-    this.dao.setTransaction(tx)
+  constructor(tx: relationalStore.Transaction | null = null) {
+    this.dao = new BookDao(tx)
   }
 
   async createBook(name: string, mode: BookMode = BookMode.PROFESSIONAL): Promise<BookModel> {

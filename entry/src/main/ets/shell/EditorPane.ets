@@ -432,13 +432,13 @@ export struct EditorPane {
       }
       const i: number = data.index
       if (i === 0) {
-        stores.setChapterFormat(ChapterFormat.TXT).catch(() => {})
+        fireAndLog(stores.setChapterFormat(ChapterFormat.TXT), 'setChapterFormat')
       } else if (i === 1) {
-        stores.setChapterFormat(ChapterFormat.MD).catch(() => {})
+        fireAndLog(stores.setChapterFormat(ChapterFormat.MD), 'setChapterFormat')
       } else if (i === 2) {
-        stores.toggleFav(stores.editor.activeId)
+        fireAndLog(stores.toggleFav(stores.editor.activeId), 'toggleFav')
       } else if (i === 3) {
-        stores.toggleInspiration(stores.editor.activeId)
+        fireAndLog(stores.toggleInspiration(stores.editor.activeId), 'toggleInspiration')
       } else if (i === 4) {
         this.runFormat()
       } else if (i === 5) {
@@ -459,7 +459,7 @@ export struct EditorPane {
       .margin({ right: 8 })
       .onClick(() => {
         if (this.app !== null) {
-          this.app.setChapterFormat(format)
+          fireAndLog(this.app.setChapterFormat(format), 'setChapterFormat')
         }
       })
   }
@@ -494,9 +494,9 @@ export struct EditorPane {
       return
     }
     if (kind === DocFlag.FAV) {
-      stores.toggleFav(stores.editor.activeId)
+      fireAndLog(stores.toggleFav(stores.editor.activeId), 'toggleFav')
     } else {
-      stores.toggleInspiration(stores.editor.activeId)
+      fireAndLog(stores.toggleInspiration(stores.editor.activeId), 'toggleInspiration')
     }
   }
 

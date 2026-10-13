@@ -27,6 +27,16 @@ const SAVE_SAFETY_MS: number = 30000
 const HISTORY_MERGE_MS: number = 600
 const MAX_HISTORY: number = 120
 
+/** 导出时复制正文和格式，避免查询等待期间的编辑改变同一次快照。 */
+export interface EditorDraftSnapshot {
+  id: string
+  title: string
+  format: ChapterFormat
+  content: string
+  caretOffset: number
+  formatRuns: string
+}
+
 @ObservedV2
 export class EditorStore {
   @Trace openDocs: OpenDoc[] = []
@@ -61,6 +71,9 @@ export class EditorStore {
    * 而此时 dirty 已被清 → 静默丢稿。
    */
   private flushChain: Promise<void> = Promise.resolve()
+  /** reset 后，尚未结束的标签操作不得重新激活旧项目的文稿。 */
+  private sessionRev: number = 0
+  private activationRev: number = 0
 
   // ===== 派生 =====
 
@@ -138,22 +151,44 @@ export class EditorStore {
 
   /** 切换当前文稿：先落库上一篇，避免切走丢稿 */
   async activate(id: string): Promise<void> {
+    // 即使目标已激活，也要取消较早、仍在等保存的切换请求。
+    const request: number = ++this.activationRev
     if (this.activeId === id) {
       return
     }
-    await this.flushActive()
+    const session: number = this.sessionRev
+    const current: OpenDoc | undefined = this.activeDoc
+    if (current !== undefined) {
+      await this.flushDocStrict(current.id)
+    }
+    if (request !== this.activationRev || session !== this.sessionRev ||
+      !this.openDocs.some((d: OpenDoc) => d.id === id)) {
+      return
+    }
     this.activeId = id
     for (const d of this.openDocs) {
       d.active = d.id === id
     }
   }
 
+  cancelPendingActivation(): void {
+    this.activationRev++
+  }
+
   async close(id: string): Promise<void> {
+    if (!this.openDocs.some((d: OpenDoc) => d.id === id)) {
+      return
+    }
+    const session: number = this.sessionRev
+    await this.flushDocStrict(id)
+    if (session !== this.sessionRev) {
+      return
+    }
+    // 保存等待期间标签可能被重新排序或另一操作关闭，不能复用旧下标。
     const idx: number = this.openDocs.findIndex((d: OpenDoc) => d.id === id)
     if (idx < 0) {
       return
     }
-    await this.flushDoc(id)
     const wasActive: boolean = this.openDocs[idx].active
     const wasId: string = this.activeId
     this.openDocs.splice(idx, 1)
@@ -372,6 +407,10 @@ export class EditorStore {
    * （database is locked）也走这条路 —— 是可重试的显式失败，而不是静默丢数据。
    */
   async flushDoc(id: string): Promise<void> {
+    await this.enqueue((): Promise<void> => this.persistDoc(id))
+  }
+
+  private async persistDoc(id: string): Promise<void> {
     const doc: OpenDoc | undefined = this.openDocs.find((d: OpenDoc) => d.id === id)
     if (doc === undefined || !doc.dirty) {
       return
@@ -383,7 +422,7 @@ export class EditorStore {
       Logger.error('Save aborted, content too large [' + id + ']: ' + bytes + ' bytes')
       this.saveState = SaveState.TOO_LARGE
       this.saveHint = contentLimitMessage()
-      return
+      throw new Error(this.saveHint)
     }
     // 取本次落库的快照与修订号。await 期间事件循环会跑用户输入，
     // 结束时 rev 若已变化，说明这批快照之后又有新输入，不能清 dirty。
@@ -425,7 +464,7 @@ export class EditorStore {
       return
     }
     try {
-      await this.enqueue((): Promise<void> => this.flushDoc(doc.id))
+      await this.flushDoc(doc.id)
     } catch (e) {
       Logger.error('flushActive failed: ' + String(e))
     }
@@ -439,11 +478,37 @@ export class EditorStore {
     const ids: string[] = this.openDocs.map((d: OpenDoc) => d.id)
     for (const id of ids) {
       try {
-        await this.enqueue((): Promise<void> => this.flushDoc(id))
+        await this.flushDoc(id)
       } catch (e) {
         Logger.error('flushAll: chapter ' + id + ' failed, continue')
       }
     }
+  }
+
+  /** 关闭/切项目必须检查保存结果；后台安全网仍使用容错的 flushAll。 */
+  private async flushDocStrict(id: string): Promise<void> {
+    await this.flushDoc(id)
+    const doc: OpenDoc | undefined = this.openDocs.find((d: OpenDoc) => d.id === id)
+    if (doc !== undefined && doc.dirty) {
+      throw new Error('仍有未保存的改动，请稍后重试')
+    }
+  }
+
+  async flushAllStrict(): Promise<void> {
+    const ids: string[] = this.openDocs.map((d: OpenDoc) => d.id)
+    for (const id of ids) {
+      await this.flushDocStrict(id)
+    }
+    if (this.dirtyCount > 0) {
+      throw new Error('仍有未保存的改动，请稍后重试')
+    }
+  }
+
+  snapshotDrafts(): EditorDraftSnapshot[] {
+    return this.openDocs.map((d: OpenDoc): EditorDraftSnapshot => ({
+      id: d.id, title: d.title, format: d.format, content: d.draft,
+      caretOffset: d.caret, formatRuns: d.runsJson
+    }))
   }
 
   retrySave(): void {
@@ -465,6 +530,7 @@ export class EditorStore {
   }
 
   reset(): void {
+    this.sessionRev++
     this.openDocs = []
     this.activeId = ''
     this.undoStack = []

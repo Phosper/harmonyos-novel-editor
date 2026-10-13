@@ -28,6 +28,110 @@ export default function flowTextTest(): void {
       expect(native.getOffsetForStringIndex(2) > native.getOffsetForStringIndex(1)).assertTrue();
       expect(native.getGlyphRuns()[2].getStringRange().start).assertEqual(2);
     });
+    it('nativeCreatedLineUsesItsOwnIndexOrigin', 0, () => {
+      const engine: TextLayoutEngine = new TextLayoutEngine(240, 16, 24, 4, 1);
+      const typeset = engine.buildTypeset('XX😀A😀B');
+      const native = typeset.createLine(3, 3);
+      const range = native.getTextRange();
+      const runRange = native.getGlyphRuns()[0].getStringRange();
+      const x0: number = native.getOffsetForStringIndex(0);
+      const x1: number = native.getOffsetForStringIndex(1);
+      const hit: number = native.getStringIndexForPosition({ x: x1 + 0.1, y: 0 });
+      if (range.start !== 0 || runRange.start !== 0 || x0 !== 0 || x1 <= x0 || hit !== 1) {
+        throw new Error('Created line index contract: textRange=' + range.start + '+' + range.end +
+          ' runRange=' + runRange.start + '+' + runRange.end + ' x0=' + x0 + ' x1=' + x1 + ' hit=' + hit);
+      }
+      expect(range.start).assertEqual(0);
+      expect(runRange.start).assertEqual(0);
+      expect(x1 > x0).assertTrue();
+      expect(hit).assertEqual(1);
+    });
+    it('nativeWindowExcludesLaterFormatting', 0, () => {
+      const engine: TextLayoutEngine = new TextLayoutEngine(10000, 16, 24, 4, 1);
+      engine.setRuns([new FormatRun(5, 7, true)]);
+      const typeset = engine.buildTypesetWindow('ABCDEFGH', 0, 3);
+      // A run beyond the window must not append the window text a second time.
+      expect(typeset.getLineBreak(0, 10000)).assertEqual(3);
+    });
+    it('nativeWindowRestoresDocumentOffsetsAfterEmoji', 0, () => {
+      const value: string = '😀prefix\nA😀B\nsuffix';
+      const base: number = value.indexOf('A');
+      const end: number = value.indexOf('\n', base);
+      const engine: TextLayoutEngine = new TextLayoutEngine(10000, 16, 24, 4, 1);
+      engine.setRuns([new FormatRun(0, base, true), new FormatRun(base + 1, value.length, false, true)]);
+      const typeset = engine.buildTypesetWindow(value, base, end);
+      expect(typeset.getLineBreak(0, 10000)).assertEqual(3);
+      expect(engine.lineBreak(typeset, base)).assertEqual(4);
+      const line: LayoutLine = engine.createLayoutLine(typeset, base, 4, 0);
+      expect(line.startIndex).assertEqual(base);
+      expect(line.endIndex).assertEqual(end);
+      let offsets: number[] = [];
+      for (const run of line.runs) {
+        for (const offset of run.glyphOffsets) {
+          offsets.push(run.textStart + offset);
+        }
+      }
+      expect(offsets.includes(base)).assertTrue();
+      expect(offsets.includes(base + 1)).assertTrue();
+      expect(offsets.includes(base + 3)).assertTrue();
+      expect(offsets.includes(base + 2)).assertFalse();
+    });
+    it('nativeLayoutCrossesMultipleParagraphWindows', 0, () => {
+      const paragraph: string = '中文 A😀B '.repeat(40) + '\n';
+      const value: string = paragraph.repeat(15) + '尾段😀';
+      const lines: LayoutLine[] = layout(value, 240, 1,
+        [new FormatRun(value.length - 4, value.length, true)]);
+      expect(lines[lines.length - 1].endIndex).assertEqual(value.length);
+      const nextWindowStart: number = value.indexOf('\n', 4000) + 1;
+      let sampledWrap: boolean = false;
+      let sampledNextWindow: boolean = false;
+      for (let i: number = 0; i < lines.length; i++) {
+        const line: LayoutLine = lines[i];
+        expect(line.startIndex <= line.endIndex).assertTrue();
+        expect(GraphemeUtil.isBoundary(value, line.startIndex)).assertTrue();
+        expect(GraphemeUtil.isBoundary(value, line.endIndex)).assertTrue();
+        const sampleCaret: boolean = i === 1 || (!sampledNextWindow && line.startIndex >= nextWindowStart);
+        if (sampleCaret && line.nativeLine !== null && line.startIndex < line.endIndex) {
+          const at: number = GraphemeUtil.moveRight(value, line.startIndex);
+          const x: number = HitTester.offsetToX(line, at, 0);
+          const nativeIndex: number = line.nativeStartIndex + line.indexMap.toScalar(at - line.startIndex);
+          expect(Math.abs(x - line.nativeLine.getOffsetForStringIndex(nativeIndex))).assertLess(0.01);
+          const hit: number = HitTester.hitTest(x, line.yOffset + line.height / 2, [line], 0, 0, value);
+          if (hit !== at) {
+            throw new Error('Caret round-trip: line=[' + line.startIndex + ',' + line.endIndex +
+              ') at=' + at + ' x=' + x + ' nativeIndex=' + nativeIndex + ' hit=' + hit);
+          }
+          expect(hit).assertEqual(at);
+          sampledWrap = sampledWrap || i === 1;
+          sampledNextWindow = sampledNextWindow || line.startIndex >= nextWindowStart;
+        }
+        for (let r: number = 0; r < line.runs.length; r++) {
+          const run = line.runs[r];
+          for (const offset of run.glyphOffsets) {
+            const absolute: number = run.textStart + offset;
+            if (absolute < line.startIndex || absolute >= line.endIndex) {
+              let nativeDetails: string = '';
+              if (line.nativeLine !== null) {
+                const nativeRun = line.nativeLine.getGlyphRuns()[r];
+                const nativeRange = nativeRun.getStringRange();
+                nativeDetails = ' nativeRange=' + nativeRange.start + '+' + nativeRange.end +
+                  ' nativeIndices=' + nativeRun.getStringIndices().join(',') +
+                  ' textRange=' + line.nativeLine.getTextRange().start + '+' + line.nativeLine.getTextRange().end +
+                  ' x0=' + line.nativeLine.getOffsetForStringIndex(0) +
+                  ' x1=' + line.nativeLine.getOffsetForStringIndex(1) +
+                  ' hit0=' + line.nativeLine.getStringIndexForPosition({ x: 0, y: 0 });
+              }
+              throw new Error('Glyph outside line: absolute=' + absolute + ' line=[' + line.startIndex +
+                ',' + line.endIndex + ') nativeStart=' + line.nativeStartIndex + ' run=[' + run.textStart +
+                ',' + run.textEnd + ') offsets=' + run.glyphOffsets.join(',') + nativeDetails);
+            }
+            expect(absolute >= line.startIndex && absolute < line.endIndex).assertTrue();
+          }
+        }
+      }
+      expect(sampledWrap).assertTrue();
+      expect(sampledNextWindow).assertTrue();
+    });
     it('graphemeDeletionPreservesPrefix', 0, () => {
       const samples: string[] = ['A😀', '甲𠮷', 'a👨‍👩‍👧', 'A👍🏽', 'A🇨🇳', 'Ae\u0301'];
       for (let i: number = 0; i < samples.length; i++) {

@@ -101,7 +101,9 @@ export class LayoutLine {
   runs: GlyphRunData[] = [];
   consumedEnd: number = 0;
   nativeLine: text.TextLine | null = null;
+  /** 本行的 UTF-16 偏移与 Unicode scalar 下标转换，不保留窗口或全文映射。 */
   indexMap: TextIndexMap = new TextIndexMap();
+  /** 原生 TextLine 自己的 scalar 原点（createLine 通常为 0），不是文档/窗口偏移。 */
   nativeStartIndex: number = 0;
   pxPerVp: number = 1;
   ascent: number = 0;
@@ -124,9 +126,9 @@ export class TextLayoutEngine {
    *
    * 对外接口一律收发文档绝对偏移，窗口化的换算全部收敛在本类内部：
    * native 的 LineTypeset / Run 只认窗口内这一小段文本的下标。
-   * 窗口起点由 LayoutCache 保证落在码元边界（段落起点），因此
-   * `indexMap.toScalar(localStart)` 仍然等于文档级的 scalar 下标，
-   * LayoutLine.nativeStartIndex 与逐行 indexMap 的语义不受窗口影响。
+   * 窗口起点由 LayoutCache 保证落在码元边界（段落起点）。
+   * createLine 返回的 Run 和光标接口使用该原生行自己的下标，
+   * 不能继续套用窗口的 indexMap；逐行转换在 buildLayoutLine 内完成。
    */
   private typesetBase: number = 0;
   /** 分词用段落对象（懒建、按文本缓存），用于双击/长按选词 */
@@ -243,8 +245,14 @@ export class TextLayoutEngine {
     let cursor: number = 0;
     for (let i = 0; i < this.runsValue.length; i++) {
       const r: FormatRun = this.runsValue[i];
-      const s: number = Math.max(cursor, Math.min(r.startOffset - lo, windowText.length));
-      const e: number = Math.max(s, Math.min(r.endOffset - lo, windowText.length));
+      const clippedStart: number = Math.max(lo, r.startOffset);
+      const clippedEnd: number = Math.min(hi, r.endOffset);
+      // 窗口外的标注不能触发 addText，否则会反复追加尚未消费的窗口尾部。
+      if (clippedEnd <= clippedStart) {
+        continue;
+      }
+      const s: number = Math.max(cursor, clippedStart - lo);
+      const e: number = Math.max(s, clippedEnd - lo);
       if (s > cursor) {
         builder.addText(windowText.substring(cursor, s));
       }
@@ -317,10 +325,10 @@ export class TextLayoutEngine {
     layoutLine.endIndex = textStart + count;
     layoutLine.consumedEnd = layoutLine.endIndex;
     layoutLine.nativeLine = line;
-    // 逐行索引表存**行本地**偏移（slice 会减去 localStart），因此与窗口无关，
-    // HitTester 拿到的 nativeStartIndex + indexMap.toScalar(行内偏移) 仍是文档级 scalar 下标
+    // createLine 的原生 Run/光标下标从本行开始，getTextRange 给出原生行的起点。
+    // 使用逐行索引表，避免第二条软折行被错误映射回 typeset 窗口开头。
     layoutLine.indexMap = this.indexMap.slice(localStart, localStart + count);
-    layoutLine.nativeStartIndex = this.indexMap.toScalar(localStart);
+    layoutLine.nativeStartIndex = line.getTextRange().start;
     layoutLine.pxPerVp = this.pxPerVp;
     layoutLine.yOffset = yOffsetVp;
     layoutLine.ascent = Math.abs(bounds.ascent) / this.pxPerVp;
@@ -340,12 +348,13 @@ export class TextLayoutEngine {
       const data: GlyphRunData = new GlyphRunData();
       data.glyphs = run.getGlyphs();
       data.font = run.getFont();
-      // run 的起止同样要加回 typesetBase，才能得到文档级偏移
-      const localRunStart: number = this.indexMap.fromScalar(range.start);
-      data.textStart = this.typesetBase + localRunStart;
+      // 原生下标先减去本行原点，再经本行 UTF-16 映射加回文档起点。
+      const localRunStart: number = layoutLine.indexMap.fromScalar(range.start - layoutLine.nativeStartIndex);
+      data.textStart = textStart + localRunStart;
       // Run APIs use end as LENGTH, unlike the document's end-exclusive ranges.
-      data.textEnd = this.typesetBase + this.indexMap.fromScalar(range.start + range.end);
-      data.glyphOffsets = indices.map((index: number): number => this.indexMap.fromScalar(index) - localRunStart);
+      data.textEnd = textStart + layoutLine.indexMap.fromScalar(range.start + range.end - layoutLine.nativeStartIndex);
+      data.glyphOffsets = indices.map((index: number): number =>
+        layoutLine.indexMap.fromScalar(index - layoutLine.nativeStartIndex) - localRunStart);
       data.runOffsetX = 0; // Native positions are relative to the line, including bidi placement.
       const advances: common2D.Point[] = run.getAdvances({ start: 0, end: data.glyphs.length });
       for (let g: number = 0; g < data.glyphs.length; g++) {

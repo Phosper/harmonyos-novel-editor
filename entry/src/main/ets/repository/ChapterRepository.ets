@@ -13,11 +13,10 @@ import { ChapterFormat, TRASH_RETENTION_DAYS } from '../model/Chapter'
 import { LibId, LibCounts } from '../constants/DesignTokens'
 
 export class ChapterRepository {
-  private dao: ChapterDao = new ChapterDao()
+  private dao: ChapterDao
 
-  /** 由 Repos.runInTransaction 调用：把写操作重定向到独立事务对象 */
-  setTransaction(tx: relationalStore.Transaction | null): void {
-    this.dao.setTransaction(tx)
+  constructor(tx: relationalStore.Transaction | null = null) {
+    this.dao = new ChapterDao(tx)
   }
 
   // 按当前书籍与文库分类加载章节。

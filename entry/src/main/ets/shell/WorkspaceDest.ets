@@ -11,7 +11,7 @@
 import { inputMethod } from '@kit.IMEKit'
 import { tokensFor, WeaverColorSet, WeaverRadii } from '../constants/DesignTokens'
 import { app, fireAndLog } from '../store/AppStores'
-import { ShellDialog } from '../store/UiStore'
+import { ShellDialog, UiStore } from '../store/UiStore'
 import { nav } from './Navigator'
 import { EditorPane } from './EditorPane'
 import { DocListPane } from './DocListPane'
@@ -21,17 +21,48 @@ import { SettingsPanel } from './SettingsPanel'
 export struct WorkspaceDest {
   /** 保留参数以兼容调用方（当前仅用于语义） */
   @Param showBack: boolean = false
+  /** 可观察的共享状态引用，供 Monitor 同时监听断点变化 */
+  @Local ui: UiStore = app.ui
   /** 原生抽屉（文稿目录）是否展开 */
   @Local listOpen: boolean = false
   /** 「更多」底部弹层（bindSheet）显隐 */
   @Local moreOpen: boolean = false
   /** 弹层内的层级：0=更多动作，1=设置（在弹层内二级跳转，非独立页面） */
   @Local sheetPage: number = 0
+  private workspaceVisible: boolean = false
 
   /** 抽屉蒙层在 padding 内容区内、盖不到状态栏条：开关抽屉时同步压暗/还原状态栏 */
-  @Monitor('listOpen')
+  @Monitor('listOpen', 'ui.breakPoint')
   onListOpenChange(): void {
-    app.ui.setOverlayDim(app.ui.isNarrow && this.listOpen)
+    this.syncOverlayDim()
+  }
+
+  private syncOverlayDim(): void {
+    this.ui.setOverlayDim(this.workspaceVisible && this.ui.isNarrow && this.listOpen)
+  }
+
+  private showWorkspace(): void {
+    this.workspaceVisible = true
+    this.syncOverlayDim()
+  }
+
+  private releaseDrawer(): void {
+    this.workspaceVisible = false
+    this.listOpen = false
+    this.ui.setOverlayDim(false)
+  }
+
+  aboutToDisappear(): void {
+    this.releaseDrawer()
+  }
+
+  private closeDrawerForBack(): boolean {
+    if (this.ui.isNarrow && this.listOpen) {
+      this.listOpen = false
+      this.syncOverlayDim()
+      return true
+    }
+    return false
   }
 
   private colors(): WeaverColorSet {
@@ -137,6 +168,9 @@ export struct WorkspaceDest {
       }
     }
     .hideTitleBar(true)
+    .onShown(() => this.showWorkspace())
+    .onHidden(() => this.releaseDrawer())
+    .onBackPressed(() => this.closeDrawerForBack())
     .width('100%').height('100%')
     // 「更多」：原生底部弹层（设置作为二级页从中进入）
     .bindSheet(this.moreOpen, this.moreSheet(), {

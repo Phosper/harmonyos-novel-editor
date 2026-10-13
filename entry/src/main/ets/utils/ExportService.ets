@@ -195,14 +195,29 @@ export class ExportService {
         return false
       }
       const uri: string = saveResult[0]
-      const file: fileIo.File = await fileIo.open(uri, fileIo.OpenMode.READ_WRITE)
-      await fileIo.write(file.fd, text)
-      fileIo.fsyncSync(file.fd)
-      await fileIo.close(file)
+      const file: fileIo.File = await fileIo.open(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC)
+      let writeFailed: boolean = false
+      try {
+        await fileIo.write(file.fd, text)
+        await fileIo.fsync(file.fd)
+      } catch (e) {
+        writeFailed = true
+        throw e as Error
+      } finally {
+        try {
+          await fileIo.close(file)
+        } catch (e) {
+          if (!writeFailed) {
+            throw e as Error
+          }
+          // 关闭也失败时保留原始写入错误，便于调用方报告真正的失败原因。
+          Logger.error('Export close after failure: ' + String(e))
+        }
+      }
       return true
     } catch (e) {
       Logger.error('Export failed: ' + String(e))
-      return false
+      throw e as Error
     }
   }
 

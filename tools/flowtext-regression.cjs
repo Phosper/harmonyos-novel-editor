@@ -16,10 +16,42 @@ const controller = {
   updateCursor() { return Promise.resolve(); }, changeSelection() { return Promise.resolve(); }
 };
 class Font { setSize(size) { this.size = size; } }
-class Brush { setColor(color) { this.color = color; } }
+class Brush { setColor(color) { this.color = color; } setAntiAlias(enabled) { this.antiAlias = enabled; } }
+// Capture native builder input exactly; scalar indices model the LineTypeset contract.
+class ParagraphBuilder {
+  constructor(style) { this.spans = []; this.styles = [style.textStyle]; }
+  addText(value) { this.spans.push({text:value,style:this.styles.at(-1)}); }
+  pushStyle(style) { this.styles.push(style); }
+  popStyle() { this.styles.pop(); }
+  buildLineTypeset() {
+    const value = this.spans.map(span=>span.text).join('');
+    const scalars = Array.from(value);
+    return {value,spans:this.spans,
+      getLineBreak(start) { return Math.min(5,scalars.length-start); },
+      createLine(start,count) {
+        const glyphs=scalars.slice(start,start+count).map(s=>s.codePointAt(0));
+        const font=new Font();
+        return {
+          getTextRange() { return {start:0,end:count}; },
+          getTypographicBounds() { return {ascent:14,descent:4,leading:0,width:count*10}; },
+          getGlyphRuns() { return [{
+            getStringRange() { return {start:0,end:count}; },
+            getStringIndices() { return glyphs.map((_,i)=>i); },
+            getGlyphs() { return glyphs; }, getFont() { return font; },
+            getAdvances() { return glyphs.map(()=>({x:10,y:0})); },
+            getPositions() { return glyphs.map((_,i)=>({x:i*10,y:0})); }
+          }]; },
+          getOffsetForStringIndex(index) { return index*10; },
+          getStringIndexForPosition(point) { return Math.max(0,Math.min(count,Math.round(point.x/10))); }
+        };
+      }
+    };
+  }
+}
 const draws = [];
 const context = vm.createContext({console, setTimeout() {return 1;}, clearTimeout() {},
-  text: { FontCollection: { getGlobalInstance() { return {}; } } },
+  text: { FontCollection: { getGlobalInstance() { return {}; } }, ParagraphBuilder,
+    FontWeight:{W700:700}, FontStyle:{ITALIC:1} },
   drawing: {Font, Brush, TextBlob: {makeFromRunBuffer(buffer, font) {return {buffer,font};}}},
   KeyCode: { KEYCODE_DPAD_LEFT:2012 }, KeyType:{Down:0}, ChapterFormat:{TXT:0},
   Logger:{info(){}}, inputMethod:{getController(){return controller;}}
@@ -47,11 +79,11 @@ vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','g
   'handleKeyPreIme','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
 vm.runInContext(compile('class HostProbe {\n'+method(read('editor/TextEditorHost.ets'),'onContentRevChanged')+'\n}'),context);
 const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionManager,FormatRun,StyleKind,LayoutLine,GlyphRunData,'+
-  'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,'+
+  'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
   'PreviewTextManager,KeyAction,KeyboardEvent,KeyboardHandler,ImeBridge,CanvasTextEditorController,EditorProbe,HostProbe,EditorStore,OpenDoc})',context);
 let count=0;
 function check(name, fn) {fn(); count++; console.log('PASS '+name);}
-check('native scalar and UTF-8 offsets convert to UTF-16',()=>{const map=new api.TextIndexMap('A😀中B');assert.equal(map.fromScalar(2),3);assert.equal(map.toScalar(3),2);assert.equal(map.toUtf8(4),8);assert.equal(map.fromUtf8(8),4);});
+check('native scalar offsets convert to UTF-16',()=>{const map=new api.TextIndexMap('A😀中B');assert.equal(map.fromScalar(2),3);assert.equal(map.toScalar(3),2);assert.equal(map.toScalar(2),1);assert.equal(map.fromScalar(4),5);});
 const json=value=>JSON.parse(JSON.stringify(value));
 const doc=value=>{const d=new api.TextDocument();d.setText(value);return d;};
 check('Unicode 17 official grapheme fixture, both directions and every UTF-16 boundary',()=>{
@@ -108,13 +140,73 @@ function line(start,value,y=0) {
   const r=new api.GlyphRunData();Object.assign(r,{textStart:start,textEnd:l.endIndex,font:new Font(),glyphs:Array.from(value).map(c=>c.charCodeAt(0)),glyphOffsets:Array.from(value).map((_,i)=>i),positions:Array.from(value).map((_,i)=>({x:i*10,y:0})),advances:Array.from(value).map(()=>({x:10,y:16}))});l.runs=[r];return l;
 }
 check('soft wrap picks following line and column zero stays zero',()=>{const lines=[line(0,'ABC'),line(3,'DEF',28)];assert.equal(api.HitTester.lineIndexOf(3,lines),1);assert.equal(api.HitTester.columnOf(0,lines),0);});
-check('native mapping and positions are kept verbatim',()=>{const engine=new api.TextLayoutEngine(400,16,24,4,2);engine.indexMap=new api.TextIndexMap('A😀B');const native={getGlyphRuns(){return [{getStringRange(){return {start:0,end:3};},getStringIndices(){return [0,1,2];},getGlyphs(){return [65,999,66];},getFont(){return new Font();},getAdvances(){return [{x:20,y:0},{x:40,y:0},{x:20,y:0}];},getPositions(){return [{x:0,y:0},{x:20,y:0},{x:60,y:0}];}}];},getTypographicBounds(){return {ascent:40,descent:10,leading:0,width:80};},getOffsetForStringIndex(n){return [0,20,60,80][n];}};const l=engine.buildLayoutLineFrom(native,0,4,0);assert.deepEqual(json(l.runs[0].glyphOffsets),[0,1,3]);assert.equal(l.height,25);assert.equal(api.HitTester.offsetToX(l,1,0),10);});
-function cacheEngine() {let builds=0;return {get builds(){return builds;},setRuns(){},lineStepVp(){return 28;},contentMaxWidthPx(){return 50;},lineBreak(typeset,start){return typeset.getLineBreak(start);},createLayoutLine(typeset,start,count,y){return this.buildLayoutLineFrom(typeset.createLine(start,count),start,count,y);},emptyLine(offset,y){return line(offset,'',y);},buildTypeset(value){builds++;return {getLineBreak(start){return Math.min(5,value.length-start);},createLine(start,n){return {value:value.substring(start,start+n)};}};},buildLayoutLineFrom(native,start,count,y){return line(start,native.value,y);}};}
+check('native mapping and positions are kept verbatim',()=>{const engine=new api.TextLayoutEngine(400,16,24,4,2);engine.indexMap=new api.TextIndexMap('A😀B');const native={getTextRange(){return {start:0,end:3};},getGlyphRuns(){return [{getStringRange(){return {start:0,end:3};},getStringIndices(){return [0,1,2];},getGlyphs(){return [65,999,66];},getFont(){return new Font();},getAdvances(){return [{x:20,y:0},{x:40,y:0},{x:20,y:0}];},getPositions(){return [{x:0,y:0},{x:20,y:0},{x:60,y:0}];}}];},getTypographicBounds(){return {ascent:40,descent:10,leading:0,width:80};},getOffsetForStringIndex(n){return [0,20,60,80][n];}};const l=engine.buildLayoutLineFrom(native,0,4,0);assert.deepEqual(json(l.runs[0].glyphOffsets),[0,1,3]);assert.equal(l.height,25);assert.equal(api.HitTester.offsetToX(l,1,0),10);});
+check('typeset window excludes earlier, later and boundary-only format runs',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,1);
+  engine.setRuns([new api.FormatRun(0,4,true),new api.FormatRun(8,9,false,true),new api.FormatRun(9,11,true)]);
+  const typeset=engine.buildTypesetWindow('ABC\nDEF\nGHI\n',4,8);
+  assert.equal(typeset.value,'DEF\n');
+  assert.equal(typeset.spans.length,1);
+  assert.equal(typeset.spans[0].style.fontWeight,undefined);
+  assert.equal(typeset.spans[0].style.fontStyle,undefined);
+});
+check('typeset window clips crossing formats without repeating default gaps',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,1);
+  engine.setRuns([new api.FormatRun(2,6,true),new api.FormatRun(7,11,false,true)]);
+  const typeset=engine.buildTypesetWindow('AAA\nBBCC\nDDD',4,9);
+  assert.equal(typeset.value,'BBCC\n');
+  assert.deepEqual(typeset.spans.map(span=>[span.text,span.style.fontWeight===700,span.style.fontStyle===1]),
+    [['BB',true,false],['C',false,false],['C\n',false,true]]);
+  engine.setRuns([new api.FormatRun(2,11,true,true)]);
+  const across=engine.buildTypesetWindow('AAA\nBBCC\nDDD',4,9);
+  assert.equal(across.value,'BBCC\n');
+  assert.equal(across.spans.length,1);
+  assert.equal(across.spans[0].style.fontWeight,700);
+  assert.equal(across.spans[0].style.fontStyle,1);
+});
+check('astral offsets and saved line mappings survive typeset window changes',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,1);
+  const value='😀\nA😀B\nZZ';
+  const firstTypeset=engine.buildTypesetWindow(value,0,3);
+  const first=engine.createLayoutLine(firstTypeset,0,2,0);
+  const secondTypeset=engine.buildTypesetWindow(value,3,8);
+  assert.equal(engine.lineBreak(secondTypeset,3),5);
+  assert.equal(engine.lineBreak(secondTypeset,6),2);
+  const second=engine.createLayoutLine(secondTypeset,3,4,28);
+  const within=engine.createLayoutLine(secondTypeset,6,1,56);
+  assert.equal(second.startIndex,3);assert.equal(second.endIndex,7);
+  assert.equal(second.runs[0].textStart,3);assert.equal(second.runs[0].textEnd,7);
+  assert.deepEqual(json(second.runs[0].glyphOffsets),[0,1,3]);
+  assert.equal(within.nativeStartIndex,0);assert.equal(within.runs[0].textStart,6);
+  assert.deepEqual(json(within.runs[0].glyphOffsets),[0]);
+  const thirdTypeset=engine.buildTypesetWindow(value,8,value.length);
+  const third=engine.createLayoutLine(thirdTypeset,8,2,84);
+  assert.equal(third.runs[0].textStart,8);assert.equal(third.runs[0].textEnd,10);
+  assert.equal(api.HitTester.offsetToX(first,2,0),10);
+  assert.equal(api.HitTester.offsetToX(second,6,0),20);
+  assert.equal(api.HitTester.hitTest(20,29,[second],0,0,value),6);
+});
+check('soft-wrapped native lines map their own glyphs and caret back into the document',()=>{
+  const engine=new api.TextLayoutEngine(50,16,24,4,1);
+  const value='XX😀A😀B中文';
+  const typeset=engine.buildTypeset(value);
+  const first=engine.createLayoutLine(typeset,0,4,0);
+  const second=engine.createLayoutLine(typeset,4,4,28);
+  assert.equal(second.runs[0].textStart,4);assert.equal(second.runs[0].textEnd,8);
+  assert.deepEqual(json(second.runs[0].glyphOffsets),[0,1,3]);
+  assert.equal(api.HitTester.offsetToX(second,4,0),0);
+  assert.equal(api.HitTester.offsetToX(second,5,0),10);
+  assert.equal(api.HitTester.offsetToX(second,7,0),20);
+  assert.equal(api.HitTester.hitTest(0,29,[first,second],0,0,value),4);
+  assert.equal(api.HitTester.hitTest(20,29,[first,second],0,0,value),7);
+});
+function cacheEngine() {let builds=0;return {get builds(){return builds;},setRuns(){},lineStepVp(){return 28;},contentMaxWidthPx(){return 50;},lineBreak(typeset,start){return typeset.getLineBreak(start-typeset.base);},createLayoutLine(typeset,start,count,y){return this.buildLayoutLineFrom(typeset.createLine(start-typeset.base,count),start,count,y);},emptyLine(offset,y){return line(offset,'',y);},buildTypesetWindow(content,base,end){builds++;const value=content.substring(base,end);return {base,getLineBreak(start){return Math.min(5,value.length-start);},createLine(start,n){return {value:value.substring(start,start+n)};}};},buildLayoutLineFrom(native,start,count,y){return line(start,native.value,y);}};}
 check('empty document and trailing newline create real caret lines',()=>{for(const value of ['','A\n','\n\n']){const c=new api.LayoutCache(cacheEngine());const lines=c.ensureLayout(value,1,1,999);assert.ok(c.isComplete());assert.equal(lines.length,value==='\n\n'?3:value===''?1:2);assert.equal(lines.at(-1).startIndex,value.length);}});
 check('lazy layout can reach an offscreen caret',()=>{const c=new api.LayoutCache(cacheEngine());c.ensureLayout('x'.repeat(200),1,1,28);const lines=c.ensureOffset('x'.repeat(200),1,1,200);assert.equal(lines.at(-1).endIndex,200);});
 check('editing retains preceding paragraphs',()=>{const engine=cacheEngine();const c=new api.LayoutCache(engine);const lines=c.ensureLayout('aaa\nbbb',1,1,999);const first=lines[0];c.applyEdit('aaa\nbXbb',2,2,[],5);const updated=c.ensureLayout('aaa\nbXbb',2,2,999);assert.equal(updated[0],first);assert.equal(updated.at(-1).endIndex,8);});
-check('insert animation belongs to inserted glyph',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'XAB')],0,0,0,'AB','XAB');assert.deepEqual(Array.from(a.map.keys()),[0]);assert.equal(a.map.get(0).glyph,88);});
-check('removed glyph has independent exit animation',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'B')],0,0,0,'AB','B');assert.equal(a.exits.length,1);assert.equal(a.exits[0].glyph,65);assert.equal(a.map.size,0);});
+function animationOptions(oldText,newText,hintOffset=0) {const options=new api.GlyphDiffOptions();Object.assign(options,{oldText,newText,hintOffset});return options;}
+check('insert animation belongs to inserted glyph',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'XAB')],animationOptions('AB','XAB'));assert.deepEqual(Array.from(a.map.keys()),[0]);assert.equal(a.map.get(0).glyph,88);});
+check('removed glyph has independent exit animation',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'B')],animationOptions('AB','B'));assert.equal(a.exits.length,1);assert.equal(a.exits[0].glyph,65);assert.equal(a.map.size,0);});
 check('scrolled caret and handles stay visible',()=>{const theme=new api.RenderTheme();const renderer=new api.GlyphRenderer(theme);const canvas={attachBrush(){},detachBrush(){},drawRect(r){draws.push(r);},drawCircle(...v){draws.push(v);}};const caret=new api.CursorState();Object.assign(caret,{x:12,y:1000,height:16});renderer.drawCaret(canvas,caret,new api.ViewportInfo(1000,200));renderer.drawHandles(canvas,[caret],new api.ViewportInfo(1000,200));assert.equal(draws.length,3);});
 (async()=>{
   const bridge=new api.ImeBridge();const other=()=>{};listeners.set('insertText',new Set([other]));

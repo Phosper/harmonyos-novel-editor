@@ -37,10 +37,20 @@ enum ToolbarAction {
   REDO = 1
 }
 
+enum ExportAction {
+  CHAPTER_TXT = 0,
+  CHAPTER_MD = 1,
+  CHAPTER_HTML = 2,
+  BOOK_TXT = 3,
+  BOOK_MD = 4,
+  BACKUP_JSON = 5
+}
+
 @ComponentV2
 export struct AppShell {
   @Local loading: boolean = true
   @Local loadError: string = ''
+  @Local dialogPending: boolean = false
   @Local breakPoint: BreakPoint = BreakPoint.LG
   /** 系统避让区（沉浸式全屏）：顶部状态栏 / 底部导航条高度（vp） */
   @Local safeTop: number = 0
@@ -392,9 +402,14 @@ export struct AppShell {
   }
 
   private async openDoc(chapterId: string): Promise<void> {
-    await app.openChapter(chapterId)
-    if (!nav.getAllPathName().includes(Routes.WORKSPACE)) {
-      nav.pushPath({ name: Routes.WORKSPACE })
+    try {
+      await app.openChapter(chapterId)
+      if (!nav.getAllPathName().includes(Routes.WORKSPACE)) {
+        nav.pushPath({ name: Routes.WORKSPACE })
+      }
+    } catch (e) {
+      Logger.error('AppShell: openDoc failed: ' + String(e))
+      this.toast('打开文稿失败，请重试')
     }
   }
 
@@ -420,6 +435,7 @@ export struct AppShell {
       onConfirm: (value: string) => this.handleDialogConfirm(value),
       onCancel: () => app.ui.closeDialog()
     })
+      .enabled(!this.dialogPending)
   }
 
   private dialogTitle(): string {
@@ -459,28 +475,35 @@ export struct AppShell {
   }
 
   private async handleDialogConfirm(value: string): Promise<void> {
+    if (this.dialogPending) {
+      return
+    }
     const kind: ShellDialog = app.ui.dialog
     const target: string = app.ui.dialogTarget
-    app.ui.closeDialog()
     const trimmed: string = value.trim()
+    if ((kind === ShellDialog.NEW_PROJECT || kind === ShellDialog.RENAME_DOC) && trimmed === '') {
+      this.toast('请输入名称')
+      return
+    }
 
-    if (kind === ShellDialog.NEW_PROJECT) {
-      if (trimmed === '') return
-      await app.createBook(trimmed)
-      return
-    }
-    if (kind === ShellDialog.RENAME_DOC) {
-      if (trimmed === '') return
-      await app.renameChapter(target, trimmed)
-      return
-    }
-    if (kind === ShellDialog.DELETE_PROJECT) {
-      await app.deleteBook(target)
-      return
-    }
-    if (kind === ShellDialog.DELETE_DOC) {
-      await app.hardDeleteChapter(target)
-      this.toast('已删除')
+    this.dialogPending = true
+    try {
+      if (kind === ShellDialog.NEW_PROJECT) {
+        await app.createBook(trimmed)
+      } else if (kind === ShellDialog.RENAME_DOC) {
+        await app.renameChapter(target, trimmed)
+      } else if (kind === ShellDialog.DELETE_PROJECT) {
+        await app.deleteBook(target)
+      } else if (kind === ShellDialog.DELETE_DOC) {
+        await app.hardDeleteChapter(target)
+        this.toast('已删除')
+      }
+      app.ui.closeDialog()
+    } catch (e) {
+      Logger.error('AppShell: dialog action failed: ' + String(e))
+      this.toast('操作失败，请重试')
+    } finally {
+      this.dialogPending = false
     }
   }
 
@@ -512,19 +535,30 @@ export struct AppShell {
     })
   }
 
-  private async doExport(index: number): Promise<void> {
-    const wholeBook: boolean = index >= 3
-    const pick: number = wholeBook ? index - 3 : index
+  private async doExport(action: ExportAction): Promise<void> {
     const bookName: string = app.project.bookName === '' ? 'Weaver' : app.project.bookName
 
-    if (pick === 3) {
+    if (action === ExportAction.BACKUP_JSON) {
       const payload = await app.exportBackupData()
       await ExportService.exportBackupJson(bookName, payload)
       return
     }
-    const target: ExportFormat = pick === 1
-      ? ExportFormat.MD
-      : (pick === 2 ? ExportFormat.HTML : ExportFormat.TXT)
+    let target: ExportFormat = ExportFormat.TXT
+    switch (action) {
+      case ExportAction.CHAPTER_MD:
+      case ExportAction.BOOK_MD:
+        target = ExportFormat.MD
+        break
+      case ExportAction.CHAPTER_HTML:
+        target = ExportFormat.HTML
+        break
+      case ExportAction.CHAPTER_TXT:
+      case ExportAction.BOOK_TXT:
+        break
+      default:
+        return
+    }
+    const wholeBook: boolean = action === ExportAction.BOOK_TXT || action === ExportAction.BOOK_MD
 
     if (!wholeBook) {
       if (!app.editor.hasDoc) {

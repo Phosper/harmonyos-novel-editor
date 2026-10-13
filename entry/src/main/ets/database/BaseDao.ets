@@ -8,18 +8,10 @@ export abstract class BaseDao<T> {
   protected abstract getTableName(): string
   protected abstract rowToModel(rs: relationalStore.ResultSet): T
 
-  /**
-   * 事务内写入的重定向目标，由 Repos.runInTransaction 设置。
-   *
-   * 非 null 时 insert / update / delete 一律走该事务对象：官方文档说明
-   * createTransaction 返回的「不同事务对象之间的操作是隔离的」，这样备份恢复的写入
-   * 就不会与编辑器的自动保存落在同一条写连接上、被一起回滚。
-   *
-   * 只重定向**写**；读仍走 store（当前唯一的事务调用方不在事务内读）。
-   */
-  private txTarget: relationalStore.Transaction | null = null
+  /** 事务只属于本 DAO 实例，不能重定向全应用单例的写入。 */
+  private readonly txTarget: relationalStore.Transaction | null
 
-  setTransaction(tx: relationalStore.Transaction | null): void {
+  constructor(tx: relationalStore.Transaction | null = null) {
     this.txTarget = tx
   }
 
