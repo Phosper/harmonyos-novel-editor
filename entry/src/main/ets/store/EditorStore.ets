@@ -63,6 +63,8 @@ export class EditorStore {
   private debounceTimer: number = -1
   private safetyTimer: number = -1
   private lastHistoryAt: number = 0
+  /** 撤销/重做后第一次编辑必须记录恢复点，不能并入旧输入。 */
+  private historyBoundary: boolean = false
   /** 撤销/重做/载入期间抑制历史记录，避免把回退动作本身也记成一步 */
   private restoring: boolean = false
   /**
@@ -231,9 +233,9 @@ export class EditorStore {
   // ===== 编辑 =====
 
   /** One editor transaction, including format offsets shifted by typing. */
-  setEditorState(text: string, runsJson: string, caret: number): void {
+  setEditorState(text: string, runsJson: string, caret: number, ownerId?: string): void {
     const doc: OpenDoc | undefined = this.activeDoc
-    if (doc === undefined) { return }
+    if (doc === undefined || (ownerId !== undefined && ownerId !== doc.id)) { return }
     if (doc.draft === text && doc.runsJson === runsJson) { doc.caret = caret; doc.rev++; return }
     this.remember(doc)
     doc.draft = text
@@ -262,9 +264,9 @@ export class EditorStore {
   }
 
   /** 编辑器上报光标变化 */
-  setCaret(offset: number): void {
+  setCaret(offset: number, ownerId?: string): void {
     const doc: OpenDoc | undefined = this.activeDoc
-    if (doc !== undefined) {
+    if (doc !== undefined && (ownerId === undefined || ownerId === doc.id)) {
       doc.caret = offset
       doc.rev++
     }
@@ -313,7 +315,7 @@ export class EditorStore {
       return
     }
     const now: number = Date.now()
-    if (this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1].docId !== doc.id ||
+    if (this.historyBoundary || this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1].docId !== doc.id ||
       now - this.lastHistoryAt > HISTORY_MERGE_MS) {
       this.undoStack.push(new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson))
       if (this.undoStack.length > MAX_HISTORY) {
@@ -321,6 +323,7 @@ export class EditorStore {
       }
       this.lastHistoryAt = now
     }
+    this.historyBoundary = false
     this.redoStack = this.redoStack.filter((entry: HistoryEntry): boolean => entry.docId !== doc.id)
   }
 
@@ -351,6 +354,7 @@ export class EditorStore {
     doc.dirty = true
     doc.rev++
     this.restoring = false
+    this.historyBoundary = true
     // 通知编辑器把画布正文回退到新 draft（否则界面与数据会不一致）
     this.contentRev++
     this.scheduleFlush()

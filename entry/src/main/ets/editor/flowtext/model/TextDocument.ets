@@ -236,7 +236,8 @@ export class TextDocument {
     const lo: number = Math.max(0, Math.min(start, end));
     const hi: number = Math.max(start, end);
     const first: number[] = this.paragraphBounds(lo);
-    const last: number[] = this.paragraphBounds(hi > 0 ? hi - 1 : 0);
+    // 折叠光标属于其所在段；只有非空选区的右端点按半开区间回退一位。
+    const last: number[] = this.paragraphBounds(hi > lo ? hi - 1 : lo);
     const ps: number = first[0];
     const pe: number = last[1];
     if (pe <= ps) {

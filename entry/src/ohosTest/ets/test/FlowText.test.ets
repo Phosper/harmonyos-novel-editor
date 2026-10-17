@@ -276,6 +276,16 @@ export default function flowTextTest(): void {
       expect(FlowTextFixture.savedText).assertEqual('Xabc'); expect(FlowTextFixture.savedCaret).assertEqual(1);
       expect(FlowTextFixture.savedRuns[0].endOffset).assertEqual(4);
     });
+    it('canvasHeadingAtParagraphStartUpdatesNativeLayoutAndFormats', 0, () => {
+      const controller = FlowTextFixture.controller;
+      controller.setDocument('abc\ndef', [], 4);controller.toggleParagraphStyle(1);
+      const runs: FormatRun[] = controller.getRuns();
+      expect(runs.length).assertEqual(1);expect(runs[0].startOffset).assertEqual(4);
+      expect(runs[0].endOffset).assertEqual(7);expect(runs[0].heading).assertEqual(1);
+      expect(FlowTextFixture.savedText).assertEqual('abc\ndef');expect(FlowTextFixture.savedCaret).assertEqual(4);
+      expect(FlowTextFixture.savedRuns[0].heading).assertEqual(1);
+      controller.toggleParagraphStyle(1);expect(controller.getRuns().length).assertEqual(0);
+    });
     it('canvasPhysicalKeyboardSelectionAndEmojiBackspace', 0, async () => {
       const driver: Driver = Driver.create();
       const controller = FlowTextFixture.controller;

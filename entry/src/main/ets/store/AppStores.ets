@@ -22,14 +22,13 @@ import type { WorldSettingModel } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 import type { RelationshipModel } from '../model/Relationship'
 import { RelationshipType } from '../model/Relationship'
-import { bookRepo, chapterRepo, runInTransaction } from './Repos'
+import { bookRepo, chapterRepo, materialRepo, relationRepo, runInTransaction } from './Repos'
 import type { TransactionRepos } from './Repos'
 import { BookBackupSnapshot, BackupPayload, BackupPayloadLoose } from './BackupTypes'
 import { UiStore } from './UiStore'
 import { ProjectStore } from './ProjectStore'
 import { EditorStore } from './EditorStore'
 import type { EditorDraftSnapshot } from './EditorStore'
-import { ProjectItem } from './StoreModels'
 import { MaterialStore } from './MaterialStore'
 import { RelationStore } from './RelationStore'
 
@@ -42,6 +41,8 @@ export class AppStores {
 
   private inited: boolean = false
   private openRequestRev: number = 0
+  private projectRequestRev: number = 0
+  private reloadRequestRev: number = 0
 
   // ===== 启动 =====
 
@@ -74,11 +75,18 @@ export class AppStores {
 
   /** 重新载入当前项目的全部数据 */
   async reloadAll(): Promise<void> {
+    const request: number = ++this.reloadRequestRev
     const bookId: string = this.project.currentBookId
+    this.material.setBookScope(bookId)
+    this.relation.setBookScope(bookId)
     await this.project.reloadChapters()
+    if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     await this.project.refreshCounts()
+    if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     await this.material.load(bookId)
+    if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     await this.relation.load(bookId, this.material.characters)
+    if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     this.syncSelection()
   }
 
@@ -90,15 +98,21 @@ export class AppStores {
   // ===== 项目 =====
 
   async selectBook(bookId: string): Promise<void> {
+    const request: number = ++this.projectRequestRev
     if (this.project.currentBookId === bookId) {
       return
     }
     await this.editor.flushAllStrict()
+    if (request !== this.projectRequestRev) return
     this.openRequestRev++
-    this.project.currentBookId = bookId
-    this.project.libFilter = LibId.ALL
+    this.reloadRequestRev++
+    this.project.setCurrentBook(bookId)
+    this.material.setBookScope(bookId)
+    this.relation.setBookScope(bookId)
     this.editor.reset()
+    this.enterEditorIfEmpty()
     await this.reloadAll()
+    if (request !== this.projectRequestRev || bookId !== this.project.currentBookId) return
     this.enterEditorIfEmpty()
   }
 
@@ -111,14 +125,7 @@ export class AppStores {
     await this.editor.flushAllStrict()
     const created: BookModel = await bookRepo.createBook(trimmed, this.ui.mode)
     // 已入库就已创建成功。先保留可见项，后续列表查询失败也不能诱导再次创建。
-    if (!this.project.books.some((b: BookModel) => b.id === created.id)) {
-      this.project.books.push(created)
-    }
-    if (!this.project.projects.some((p: ProjectItem) => p.id === created.id)) {
-      const item: ProjectItem = new ProjectItem(created.id)
-      item.name = created.name
-      this.project.projects.push(item)
-    }
+    this.project.registerBook(created)
     try {
       await this.project.loadBooks()
       await this.selectBook(created.id)
@@ -137,8 +144,7 @@ export class AppStores {
     if (this.project.books.length === 0) {
       await this.project.ensureCurrentBook(this.ui.mode)
     } else if (this.project.currentBookId === bookId) {
-      this.project.currentBookId = this.project.books[0].id
-      this.project.libFilter = LibId.ALL
+      this.project.setCurrentBook(this.project.books[0].id)
     }
     await this.reloadAll()
     this.enterEditorIfEmpty()
@@ -516,13 +522,14 @@ export class AppStores {
         return created
       })
 
-      await this.project.loadBooks()
+      this.project.registerBook(book)
       try {
+        await this.project.loadBooks()
         await this.selectBook(book.id)
       } catch (switchError) {
         // 事务已经提交：当前草稿保存失败只阻止切项目，不能把成功恢复报告成失败。
-        Logger.warn('Backup restored, current drafts prevented switching: ' + String(switchError))
-        return book.name + '（已恢复，请先保存当前草稿再切换项目）'
+        Logger.warn('Backup restored, refresh or switching failed: ' + String(switchError))
+        return book.name + '（已恢复，暂时无法切换项目）'
       }
       if (skippedChapters > 0) {
         return book.name + '（' + skippedChapters + ' 篇因超长未导入）'
@@ -561,16 +568,17 @@ export class AppStores {
 
   /** 汇总当前项目的全部数据为备份载荷 */
   async exportBackupData(): Promise<BackupPayload> {
-    // 在查询等待前捕获项目、素材与草稿，切项目不能混入另一项目的数据。
+    // 书籍与草稿在调用时捕获。素材按相同 bookId 查库，不能依赖正在切项目的 UI 缓存。
+    const bookId: string = this.project.currentBookId
     const book: BookModel | undefined = this.project.currentBook
     const snapshot: BookBackupSnapshot | null = book !== undefined
       ? { id: book.id, name: book.name, mode: book.mode }
       : null
-    const characters: CharacterModel[] = this.material.characters.slice()
-    const worldSettings: WorldSettingModel[] = this.material.worldSettings.slice()
-    const inspirations: InspirationModel[] = this.material.inspirations.slice()
-    const relationships: RelationshipModel[] = this.relation.relationships.slice()
     const chapters: ChapterModel[] = await this.loadFullChapters()
+    const characters: CharacterModel[] = await materialRepo.loadCharacters(bookId)
+    const worldSettings: WorldSettingModel[] = await materialRepo.loadWorldSettings(bookId)
+    const inspirations: InspirationModel[] = await materialRepo.loadInspirationsByBook(bookId)
+    const relationships: RelationshipModel[] = await relationRepo.loadRelationships(bookId)
     const payload: BackupPayload = {
       app: 'Weaver',
       version: 1,

@@ -47,8 +47,8 @@ export struct TextEditorHost {
   /** 取回该文稿的行内格式标注（Phase B 起使用） */
   loadFormat: (docId: string) => FormatRun[] = () => []
   onTextChange: (text: string) => void = () => {}
-  onEdit: (text: string, runs: FormatRun[], caret: number) => void = () => {}
-  onCaretChange: (offset: number) => void = () => {}
+  onEdit: (text: string, runs: FormatRun[], caret: number, ownerId: string) => void = () => {}
+  onCaretChange: (offset: number, ownerId: string) => void = () => {}
   /** 选区变化（Phase A 仅上抛，供工具栏态） */
   onSelectionChange: (start: number, end: number) => void = () => {}
   /** 格式变化（Phase B 落库） */
@@ -61,9 +61,9 @@ export struct TextEditorHost {
   onRequestShare: (text: string) => void = () => {}
   /** 控制器就绪回调：应用层据此触发格式命令（T026） */
   onControllerReady: (controller: CanvasTextEditorController) => void = () => {}
-  onRequestSave: () => void = () => {}
-  onUndo: () => void = () => {}
-  onRedo: () => void = () => {}
+  onRequestSave: (ownerId: string) => void = () => {}
+  onUndo: (ownerId: string) => void = () => {}
+  onRedo: (ownerId: string) => void = () => {}
 
   private flowController: CanvasTextEditorController = new CanvasTextEditorController()
   /** 已载入的文稿标识，用于区分「切换文稿」与「普通重渲染」 */
@@ -142,7 +142,8 @@ export struct TextEditorHost {
         scrollPolicy: this.scrollPolicy,
         controller: this.flowController,
         onEdit: (text: string, runs: FormatRun[], caret: number) => {
-          this.onEdit(text, runs, caret)
+          // activeId 可先于下一帧回灌改变；事件始终归属于画布实际载入的文稿。
+          this.onEdit(text, runs, caret, this.loadedDocId)
         },
         onTextChange: (text: string, version: number) => {
           // 用户输入。注意：普通输入不会让 contentRev 递增（只有撤销/重做才递增），
@@ -151,7 +152,7 @@ export struct TextEditorHost {
           this.onTextChange(text)
         },
         onCaretChange: (offset: number) => {
-          this.onCaretChange(offset)
+          this.onCaretChange(offset, this.loadedDocId)
         },
         onSelectionChange: (start: number, end: number) => {
           this.onSelectionChange(start, end)
@@ -163,7 +164,7 @@ export struct TextEditorHost {
           this.onScrollState(state)
         },
         onRequestSave: () => {
-          this.onRequestSave()
+          this.onRequestSave(this.loadedDocId)
         },
         onRequestFind: (text: string) => {
           this.onRequestFind(text)
@@ -172,10 +173,10 @@ export struct TextEditorHost {
           this.onRequestShare(text)
         },
         onUndo: () => {
-          this.onUndo()
+          this.onUndo(this.loadedDocId)
         },
         onRedo: () => {
-          this.onRedo()
+          this.onRedo(this.loadedDocId)
         }
       })
         .width('100%')

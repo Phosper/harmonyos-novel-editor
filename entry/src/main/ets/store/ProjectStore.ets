@@ -28,6 +28,9 @@ export class ProjectStore {
   @Trace docItems: DocItem[] = []
   /** 项目列表项 */
   @Trace projects: ProjectItem[] = []
+  private chapterLoadRev: number = 0
+  private countLoadRev: number = 0
+  private projectCountLoadRev: number = 0
 
   get currentBook(): BookModel | undefined {
     return this.books.find((b: BookModel) => b.id === this.currentBookId)
@@ -68,12 +71,31 @@ export class ProjectStore {
   /** 首次启动无项目时建一个（沿用引导页选定的写作模式）；已有项目则用第一个 */
   async ensureCurrentBook(defaultMode: BookMode): Promise<void> {
     if (this.books.length > 0) {
-      this.currentBookId = this.books[0].id
+      this.setCurrentBook(this.books[0].id)
       return
     }
     const book: BookModel = await bookRepo.createBook('我的作品', defaultMode)
-    this.books = [book]
-    this.currentBookId = book.id
+    this.registerBook(book)
+    this.setCurrentBook(book.id)
+  }
+
+  /** 已提交的项目先发布，后续刷新失败也不能让用户误以为创建/恢复失败。 */
+  registerBook(book: BookModel): void {
+    if (!this.books.some((b: BookModel) => b.id === book.id)) {
+      this.books.push(book)
+    }
+    this.syncProjects()
+  }
+
+  setCurrentBook(bookId: string): void {
+    this.chapterLoadRev++
+    this.countLoadRev++
+    this.currentBookId = bookId
+    this.libFilter = LibId.ALL
+    this.chapters = []
+    this.docItems = []
+    this.libCounts = { all: 0, fav: 0, insp: 0, trash: 0 }
+    this.syncProjects()
   }
 
   async reload(): Promise<void> {
@@ -83,17 +105,34 @@ export class ProjectStore {
   }
 
   async reloadChapters(): Promise<void> {
-    this.chapters = await chapterRepo.loadChapters(this.currentBookId, this.libFilter)
+    const request: number = ++this.chapterLoadRev
+    const bookId: string = this.currentBookId
+    const filter: LibId = this.libFilter
+    const chapters: ChapterModel[] = await chapterRepo.loadChapters(bookId, filter)
+    if (request !== this.chapterLoadRev || bookId !== this.currentBookId || filter !== this.libFilter) {
+      return
+    }
+    this.chapters = chapters
     this.syncDocItems()
   }
 
   async refreshCounts(): Promise<void> {
-    this.libCounts = await chapterRepo.counts(this.currentBookId)
+    const request: number = ++this.countLoadRev
+    const bookId: string = this.currentBookId
+    const counts: LibCounts = await chapterRepo.counts(bookId)
+    if (request !== this.countLoadRev || bookId !== this.currentBookId) {
+      return
+    }
+    this.libCounts = counts
     await this.refreshProjectDocCounts()
   }
 
   async refreshProjectDocCounts(): Promise<void> {
+    const request: number = ++this.projectCountLoadRev
     const perBook: Map<string, number> = await chapterRepo.countActivePerBook()
+    if (request !== this.projectCountLoadRev) {
+      return
+    }
     for (const p of this.projects) {
       p.docCount = perBook.get(p.id) ?? 0
     }
@@ -104,6 +143,8 @@ export class ProjectStore {
       return
     }
     this.libFilter = lib
+    this.chapters = []
+    this.docItems = []
     await this.reloadChapters()
   }
 

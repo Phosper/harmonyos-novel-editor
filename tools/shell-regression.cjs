@@ -59,10 +59,17 @@ function shell() {
   return probe;
 }
 let count = 0;
+let failures = 0;
 async function check(name, action) {
-  await action();
-  count++;
-  console.log('PASS ' + name);
+  try {
+    await action();
+    count++;
+    console.log('PASS ' + name);
+  } catch (error) {
+    failures++;
+    console.error('FAIL ' + name);
+    console.error(error);
+  }
 }
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-shell-regression-'));
 const output = path.join(tempDir, 'export.txt');
@@ -84,10 +91,15 @@ function exportHarness(options = {}) {
       handles.set(handle.fd, handle);
       return { fd: handle.fd };
     },
-    async write(fd, text) {
+    write(fd, data) {
       calls.push(['write']);
-      if (options.writeError) throw options.writeError;
-      return (await handles.get(fd).write(text)).bytesWritten;
+      if (options.writeSyncError) throw options.writeSyncError;
+      if (options.writeError) return Promise.reject(options.writeError);
+      const writeCount = calls.filter(call => call[0] === 'write').length;
+      if (options.zeroAtWrite === writeCount) return Promise.resolve(0);
+      const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(new Uint8Array(data));
+      const length = Math.min(bytes.byteLength, options.maxWrite ?? bytes.byteLength);
+      return handles.get(fd).write(bytes, 0, length, null).then(result => result.bytesWritten);
     },
     async fsync(fd) {
       calls.push(['fsync']);
@@ -108,11 +120,46 @@ function exportHarness(options = {}) {
     DocumentSaveOptions: class {},
     DocumentViewPicker: class { async save() { return options.cancel ? [] : [output]; } }
   };
-  const fileContext = vm.createContext({ fileIo: io, picker, Logger: log });
-  vm.runInContext(compile(read('utils/ExportService.ets')), fileContext);
-  return { service: vm.runInContext('ExportService', fileContext), calls, handles };
+  const util = { TextEncoder: class {
+    encodeInto(value) {
+      if (options.encoderSyncError) throw options.encoderSyncError;
+      // HarmonyOS encodeInto(string) differs from the two-argument Node API.
+      if (value === '') return undefined;
+      const bytes = new TextEncoder().encode(value);
+      if (!options.encodingViewPadding) return bytes;
+      const padded = new Uint8Array(bytes.byteLength + 8);
+      padded.set(bytes, 4);
+      return padded.subarray(4, 4 + bytes.byteLength);
+    }
+  } };
+  const fileContext = vm.createContext({ fileIo: io, picker, Logger: log, util });
+  for (const file of ['model/Chapter.ets', 'editor/flowtext/model/EditorTypes.ets',
+    'editor/flowtext/model/FormatCodec.ets', 'utils/MarkdownRenderer.ets', 'utils/ExportService.ets']) {
+    vm.runInContext(compile(read(file)), fileContext);
+  }
+  return { service: vm.runInContext('ExportService', fileContext),
+    format: vm.runInContext('ChapterFormat', fileContext), calls, handles };
 }
 (async () => {
+  await check('formatted TXT chapter exports preserve literal Markdown symbols and whitespace', () => {
+    const harness = exportHarness();
+    const content = '# 标题\n字面 *星号* _下划线_ `代码` ~~删除线~~\n> 引用\n  尾部  ';
+    const chapter = { title: '片段', content, format: harness.format.TXT, runsJson: '0,4,1,0,0' };
+    assert.equal(harness.service.renderChapter(chapter, 'txt', chapter.title), content);
+  });
+  await check('formatted TXT chapters keep their literal body in whole-book TXT exports', () => {
+    const harness = exportHarness();
+    const content = '# 标题\n字面 *星号* _下划线_ `代码`\n  尾部  ';
+    const chapter = { title: '片段', content, format: harness.format.TXT, runsJson: '0,4,1,0,0' };
+    assert.equal(harness.service.renderBook('示例书', [chapter], 'txt'), '示例书\n\n片段\n==\n\n' + content);
+  });
+  await check('Markdown source still removes Markdown syntax for chapter and whole-book TXT exports', () => {
+    const harness = exportHarness();
+    const chapter = { title: '片段', content: '# 标题\n**重点**与 _斜体_ 与 `代码`', format: harness.format.MD };
+    const plain = '标题\n重点与 斜体 与 代码';
+    assert.equal(harness.service.renderChapter(chapter, 'txt', chapter.title), plain);
+    assert.equal(harness.service.renderBook('示例书', [chapter], 'txt'), '示例书\n\n片段\n==\n\n' + plain);
+  });
   await check('all six visible menu choices export their advertised format', async () => {
     const expected = [['chapter', 'txt'], ['chapter', 'md'], ['chapter', 'html'], ['book', 'txt'], ['book', 'md'], ['backup', undefined]];
     for (let index = 0; index < expected.length; index++) {
@@ -224,6 +271,49 @@ function exportHarness(options = {}) {
     assert.deepEqual(harness.calls.map(call => call[0]), ['open', 'write', 'fsync', 'close']);
     assert.equal(harness.handles.size, 0);
   });
+  await check('UTF-8 short writes are retried without splitting or losing encoded bytes', async () => {
+    const content = '首😀尾\n组合e\u0301与\u0000零字节';
+    for (const maxWrite of [1, 2, 3, 7]) {
+      const harness = exportHarness({ maxWrite, encodingViewPadding: true });
+      assert.equal(await harness.service.saveText('export.txt', content), true);
+      assert.deepEqual(fs.readFileSync(output), Buffer.from(content, 'utf8'));
+      assert.ok(harness.calls.filter(call => call[0] === 'write').length > 1);
+      assert.equal(harness.calls.at(-2)[0], 'fsync');
+      assert.equal(harness.calls.at(-1)[0], 'close');
+      assert.equal(harness.handles.size, 0);
+    }
+    const longContent = '甲😀e\u0301\n'.repeat(15000);
+    const harness = exportHarness({ maxWrite: 4093, encodingViewPadding: true });
+    assert.equal(await harness.service.saveText('export.txt', longContent), true);
+    assert.deepEqual(fs.readFileSync(output), Buffer.from(longContent, 'utf8'));
+    assert.equal(harness.handles.size, 0);
+  });
+  await check('a write with zero progress rejects and closes without syncing truncated output', async () => {
+    for (const options of [{ maxWrite: 0 }, { maxWrite: 2, zeroAtWrite: 2 }]) {
+      const harness = exportHarness(options);
+      await assert.rejects(harness.service.saveText('export.txt', '首😀尾'), /写入未完成/);
+      assert.equal(harness.calls.some(call => call[0] === 'fsync'), false);
+      assert.equal(harness.calls.filter(call => call[0] === 'close').length, 1);
+      assert.equal(harness.handles.size, 0);
+    }
+  });
+  await check('synchronous encoding and write failures close descriptors and preserve the original error', async () => {
+    for (const field of ['encoderSyncError', 'writeSyncError']) {
+      const error = new Error(field);
+      const harness = exportHarness({ [field]: error, closeError: new Error('secondary close failure') });
+      await assert.rejects(harness.service.saveText('export.txt', '首😀尾'), received => received === error);
+      assert.equal(harness.calls.some(call => call[0] === 'fsync'), false);
+      assert.equal(harness.calls.filter(call => call[0] === 'close').length, 1);
+      assert.equal(harness.handles.size, 0);
+    }
+  });
+  await check('an empty export truncates and syncs without encoding or requesting a zero-byte write', async () => {
+    const harness = exportHarness();
+    assert.equal(await harness.service.saveText('export.txt', ''), true);
+    assert.equal(fs.statSync(output).size, 0);
+    assert.deepEqual(harness.calls.map(call => call[0]), ['open', 'fsync', 'close']);
+    assert.equal(harness.handles.size, 0);
+  });
   await check('picker cancellation returns false without opening a descriptor', async () => {
     const harness = exportHarness({ cancel: true });
     assert.equal(await harness.service.saveText('export.txt', 'new'), false);
@@ -266,6 +356,10 @@ function exportHarness(options = {}) {
     assert.equal(harness.handles.size, 0);
   });
   console.log(`Shell regression: ${count} checks passed`);
+  if (failures > 0) {
+    console.error(`Shell regression: ${failures} checks failed`);
+    process.exitCode = 1;
+  }
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {
   if (fs.existsSync(output)) fs.unlinkSync(output);
   fs.rmdirSync(tempDir);

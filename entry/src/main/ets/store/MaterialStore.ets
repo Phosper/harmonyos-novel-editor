@@ -15,6 +15,22 @@ export class MaterialStore {
   @Trace characters: CharacterModel[] = []
   @Trace worldSettings: WorldSettingModel[] = []
   @Trace inspirations: InspirationModel[] = []
+  private scopeBookId: string | null = null
+  private loadRev: number = 0
+  private characterLoadRev: number = 0
+  private worldLoadRev: number = 0
+  private inspirationLoadRev: number = 0
+
+  setBookScope(bookId: string): void {
+    if (this.scopeBookId === bookId) {
+      return
+    }
+    this.scopeBookId = bookId
+    this.loadRev++
+    this.characters = []
+    this.worldSettings = []
+    this.inspirations = []
+  }
 
   get isEmpty(): boolean {
     return this.characters.length === 0 && this.worldSettings.length === 0 &&
@@ -34,21 +50,50 @@ export class MaterialStore {
   }
 
   async load(bookId: string): Promise<void> {
-    this.characters = await materialRepo.loadCharacters(bookId)
-    this.worldSettings = await materialRepo.loadWorldSettings(bookId)
-    this.inspirations = await materialRepo.loadInspirationsByBook(bookId)
+    this.setBookScope(bookId)
+    const request: number = ++this.loadRev
+    const characterRequest: number = ++this.characterLoadRev
+    const worldRequest: number = ++this.worldLoadRev
+    const inspirationRequest: number = ++this.inspirationLoadRev
+    const characters: CharacterModel[] = await materialRepo.loadCharacters(bookId)
+    const worlds: WorldSettingModel[] = await materialRepo.loadWorldSettings(bookId)
+    const inspirations: InspirationModel[] = await materialRepo.loadInspirationsByBook(bookId)
+    if (request !== this.loadRev || bookId !== this.scopeBookId) {
+      return
+    }
+    if (characterRequest === this.characterLoadRev) this.characters = characters
+    if (worldRequest === this.worldLoadRev) this.worldSettings = worlds
+    if (inspirationRequest === this.inspirationLoadRev) this.inspirations = inspirations
   }
 
   async reloadCharacters(bookId: string): Promise<void> {
-    this.characters = await materialRepo.loadCharacters(bookId)
+    if (bookId !== this.scopeBookId) return
+    const request: number = ++this.characterLoadRev
+    const scope: number = this.loadRev
+    const characters: CharacterModel[] = await materialRepo.loadCharacters(bookId)
+    if (request === this.characterLoadRev && scope === this.loadRev && bookId === this.scopeBookId) {
+      this.characters = characters
+    }
   }
 
   async reloadWorldSettings(bookId: string): Promise<void> {
-    this.worldSettings = await materialRepo.loadWorldSettings(bookId)
+    if (bookId !== this.scopeBookId) return
+    const request: number = ++this.worldLoadRev
+    const scope: number = this.loadRev
+    const worlds: WorldSettingModel[] = await materialRepo.loadWorldSettings(bookId)
+    if (request === this.worldLoadRev && scope === this.loadRev && bookId === this.scopeBookId) {
+      this.worldSettings = worlds
+    }
   }
 
   async reloadInspirations(bookId: string): Promise<void> {
-    this.inspirations = await materialRepo.loadInspirationsByBook(bookId)
+    if (bookId !== this.scopeBookId) return
+    const request: number = ++this.inspirationLoadRev
+    const scope: number = this.loadRev
+    const inspirations: InspirationModel[] = await materialRepo.loadInspirationsByBook(bookId)
+    if (request === this.inspirationLoadRev && scope === this.loadRev && bookId === this.scopeBookId) {
+      this.inspirations = inspirations
+    }
   }
 
   // ===== 人物 =====

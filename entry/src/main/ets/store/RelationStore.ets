@@ -10,13 +10,32 @@ export class RelationStore {
   @Trace relationships: RelationshipModel[] = []
   @Trace nodes: GraphNode[] = []
   @Trace edges: GraphEdge[] = []
+  private scopeBookId: string | null = null
+  private loadRev: number = 0
+
+  setBookScope(bookId: string): void {
+    if (this.scopeBookId === bookId) {
+      return
+    }
+    this.scopeBookId = bookId
+    this.loadRev++
+    this.relationships = []
+    this.nodes = []
+    this.edges = []
+  }
 
   get hasNodes(): boolean {
     return this.nodes.length > 0
   }
 
   async load(bookId: string, characters: CharacterModel[]): Promise<void> {
-    this.relationships = await relationRepo.loadRelationships(bookId)
+    this.setBookScope(bookId)
+    const request: number = ++this.loadRev
+    const relationships: RelationshipModel[] = await relationRepo.loadRelationships(bookId)
+    if (request !== this.loadRev || bookId !== this.scopeBookId) {
+      return
+    }
+    this.relationships = relationships
     this.rebuild(characters)
   }
 
@@ -65,13 +84,21 @@ export class RelationStore {
 
   async add(bookId: string, fromId: string, toId: string, type: RelationshipType,
     label: string, notes: string, characters: CharacterModel[]): Promise<void> {
+    const request: number = this.loadRev
     const created: RelationshipModel = await relationRepo.create(bookId, fromId, toId, type, label, notes)
+    if (request !== this.loadRev || bookId !== this.scopeBookId) {
+      return
+    }
     this.relationships = this.relationships.concat([created])
     this.rebuild(characters)
   }
 
   async remove(id: string, characters: CharacterModel[]): Promise<void> {
+    const request: number = this.loadRev
     await relationRepo.delete(id)
+    if (request !== this.loadRev) {
+      return
+    }
     this.relationships = this.relationships.filter((r: RelationshipModel) => r.id !== id)
     this.rebuild(characters)
   }

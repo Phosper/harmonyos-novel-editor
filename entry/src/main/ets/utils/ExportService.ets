@@ -1,10 +1,13 @@
 // 导出服务 —— 支持 TXT / Markdown / HTML / JSON 备份，单篇与整本两种粒度
 import { picker, fileIo } from '@kit.CoreFileKit'
+import { util } from '@kit.ArkTS'
 import { Logger } from './Logger'
 import { ChapterFormat } from '../model/Chapter'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { FormatRun } from '../editor/flowtext/model/EditorTypes'
 import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
+
+const EXPORT_WRITE_CHUNK_BYTES: number = 64 * 1024
 
 /** 导出目标格式 */
 export enum ExportFormat {
@@ -27,6 +30,9 @@ export class ExportService {
 
   /** 单篇内容 → 目标格式的文本 */
   static renderChapter(chapter: ExportableChapter, target: ExportFormat, documentTitle: string): string {
+    if (target === ExportFormat.TXT) {
+      return ExportService.plainTextOf(chapter)
+    }
     const source: string = ExportService.sourceOf(chapter)
     const isMarkdownSource: boolean = chapter.format === ChapterFormat.MD || ExportService.hasFormat(chapter)
     if (target === ExportFormat.MD) {
@@ -54,6 +60,13 @@ export class ExportService {
       return chapter.content
     }
     return ExportService.applyMarkdown(chapter.content, chapter.runsJson as string)
+  }
+
+  /** TXT 正文中的标记符号也是原文；只有 Markdown 源需要去除语法标记。 */
+  private static plainTextOf(chapter: ExportableChapter): string {
+    return chapter.format === ChapterFormat.MD
+      ? MarkdownRenderer.toPlainText(ExportService.sourceOf(chapter))
+      : chapter.content
   }
 
   /** 按格式标注把纯正文转为 Markdown（标题前缀 + 行内 ** / *） */
@@ -151,11 +164,9 @@ export class ExportService {
       const heading: string = target === ExportFormat.MD
         ? '# ' + ch.title
         : ch.title + '\n' + ExportService.repeatChar('=', ch.title.length)
-      const chSource: string = ExportService.sourceOf(ch)
-      const chIsMd: boolean = ch.format === ChapterFormat.MD || ExportService.hasFormat(ch)
       const text: string = target === ExportFormat.MD
-        ? chSource
-        : (chIsMd ? MarkdownRenderer.toPlainText(chSource) : chSource)
+        ? ExportService.sourceOf(ch)
+        : ExportService.plainTextOf(ch)
       parts.push(heading + '\n\n' + text)
     }
     const join: string = target === ExportFormat.MD ? '\n\n---\n\n' : '\n\n\n'
@@ -184,6 +195,26 @@ export class ExportService {
     return s
   }
 
+  /** 先统一编码，再按实际写入的字节数推进；短写可能发生在 UTF-8 字符中间。 */
+  private static async writeText(fd: number, text: string): Promise<void> {
+    if (text.length === 0) {
+      return
+    }
+    const bytes: Uint8Array = new util.TextEncoder().encodeInto(text)
+    const buffer: ArrayBuffer = bytes.buffer as ArrayBuffer
+    let offset: number = 0
+    while (offset < bytes.byteLength) {
+      const end: number = Math.min(offset + EXPORT_WRITE_CHUNK_BYTES, bytes.byteLength)
+      const chunk: ArrayBuffer = buffer.slice(bytes.byteOffset + offset, bytes.byteOffset + end)
+      // 不传 WriteOptions.offset：该字段表示文件位置，默认文件指针会随实际写入推进。
+      const written: number = await fileIo.write(fd, chunk)
+      if (!Number.isInteger(written) || written <= 0 || written > chunk.byteLength) {
+        throw new Error('文件写入未完成：无有效写入进度')
+      }
+      offset += written
+    }
+  }
+
   /** 弹系统保存框并写出文本 */
   static async saveText(defaultFileName: string, text: string): Promise<boolean> {
     try {
@@ -198,7 +229,7 @@ export class ExportService {
       const file: fileIo.File = await fileIo.open(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC)
       let writeFailed: boolean = false
       try {
-        await fileIo.write(file.fd, text)
+        await ExportService.writeText(file.fd, text)
         await fileIo.fsync(file.fd)
       } catch (e) {
         writeFailed = true

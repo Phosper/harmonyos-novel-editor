@@ -82,8 +82,8 @@ export class ImportService {
     return query > 0 ? name.substring(0, query) : name
   }
 
-  // 按 fd 读全量文本。fileIo.read 单次不一定读满，故循环累积。
-  private static async readText(uri: string): Promise<string> {
+  /** 从已取得访问权限的文件读取完整 UTF-8 文本，拒绝不完整的读取。 */
+  static async readText(uri: string): Promise<string> {
     const file: fileIo.File = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY)
     try {
       const stat: fileIo.Stat = await fileIo.stat(file.fd)
@@ -94,17 +94,21 @@ export class ImportService {
       if (size > MAX_BYTES) {
         throw new Error('文件过大（' + size + ' 字节），上限 ' + MAX_BYTES)
       }
-      const buffer: ArrayBuffer = new ArrayBuffer(size)
+      const bytes: Uint8Array = new Uint8Array(size)
       let offset: number = 0
       while (offset < size) {
-        const readLen: number = await fileIo.read(file.fd, buffer, { offset: offset, length: size - offset })
+        // read 的 offset 是文件位置，并非写入目标缓冲区的位置；每块需显式拼接。
+        // 不传 offset，沿当前文件指针连续读取，支持短读及跨块的 UTF-8 字符。
+        const chunk: ArrayBuffer = new ArrayBuffer(Math.min(64 * 1024, size - offset))
+        const readLen: number = await fileIo.read(file.fd, chunk, { length: chunk.byteLength })
         if (readLen <= 0) {
-          break
+          throw new Error('文件读取未完成，请重试')
         }
+        bytes.set(new Uint8Array(chunk, 0, readLen), offset)
         offset += readLen
       }
       const decoder: util.TextDecoder = util.TextDecoder.create('utf-8', { ignoreBOM: true })
-      return decoder.decodeToString(new Uint8Array(buffer.slice(0, offset)))
+      return decoder.decodeToString(bytes)
     } finally {
       await fileIo.close(file)
     }

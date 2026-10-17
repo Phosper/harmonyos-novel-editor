@@ -66,6 +66,27 @@ class StoreDouble {
     if (this.onQuery) await this.onQuery(predicates);
     return new ResultSet(rows);
   }
+  async querySql(sql, args = []) {
+    const all = [...this.tables.get('chapters').values()];
+    let rows;
+    if (sql.startsWith('SELECT id, book_id')) {
+      rows = all.filter(ch => ch.is_trash === args[0] && (args.length < 2 || ch.book_id === args[1]) &&
+        (!sql.includes('is_fav = 1') || ch.is_fav === 1) && (!sql.includes('is_inspiration = 1') || ch.is_inspiration === 1));
+    } else if (sql.includes('c_all')) {
+      const scoped = all.filter(ch => ch.book_id === args[0]);
+      rows = [{c_all: scoped.filter(ch => !ch.is_trash).length, c_fav: scoped.filter(ch => !ch.is_trash && ch.is_fav).length,
+        c_insp: scoped.filter(ch => !ch.is_trash && ch.is_inspiration).length, c_trash: scoped.filter(ch => ch.is_trash).length}];
+    } else if (sql.includes('GROUP BY book_id')) {
+      const counts = new Map();
+      for (const ch of all.filter(ch => !ch.is_trash)) counts.set(ch.book_id, (counts.get(ch.book_id) || 0) + 1);
+      rows = [...counts].map(([book_id, c]) => ({book_id, c}));
+    } else {
+      throw new Error('Unsupported SQL in data regression double: ' + sql);
+    }
+    rows = rows.map(row => ({...row}));
+    if (this.onQuerySql) await this.onQuerySql(sql, args);
+    return new ResultSet(rows);
+  }
   async beginTransaction() {
     this.checkWrite();
     const shadow = new StoreDouble();
@@ -111,7 +132,7 @@ for (const file of [
   'repository/BookRepository', 'repository/ChapterRepository', 'repository/MaterialRepository', 'repository/RelationshipRepository',
   'store/Repos', 'store/StoreModels', 'store/EditorStore', 'store/ProjectStore', 'store/MaterialStore', 'store/RelationStore', 'store/AppStores'
 ]) load(file + '.ets');
-const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, MAX_CONTENT_BYTES, runInTransaction, chapterRepo})', context);
+const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES, runInTransaction, chapterRepo})', context);
 function chapter(id = 'a', bookId = 'book-a', content = 'previous saved text') {
   return {id, book_id: bookId, title: 'Chapter ' + id, content, format: 'txt', format_runs: '', sort_order: 0,
     word_count: content.length, caret_offset: 0, is_fav: 0, is_inspiration: 0, is_trash: 0, created_at: 1, updated_at: 1};
@@ -198,6 +219,8 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     const {app, doc} = fixture(); const entered = deferred(), resume = deferred();
     app.material.characters = [{id: 'character-a', bookId: 'book-a', name: 'A'}];
     app.relation.relationships = [{id: 'relation-a', bookId: 'book-a'}];
+    store.seed('characters', {id: 'character-a', book_id: 'book-a', name: 'A'});
+    store.seed('relationships', {id: 'relation-a', book_id: 'book-a'});
     store.onQuery = async predicates => { if (predicates.table === 'chapters') { entered.resolve(); await resume.promise; } };
     const exporting = app.exportBackupData(); await entered.promise;
     app.editor.setEditorState('later edit', 'later-format', 8);
@@ -290,6 +313,88 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.equal(store.tables.get('books').size, 3);
     assert.ok(app.project.books.some(book => book.name === 'Created before reload failure'));
     assert.ok(app.project.projects.some(book => book.name === 'Created before reload failure'));
+  });
+  await check('an older project list query cannot overwrite a newer project or mix its backup materials', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    app.project.books.push({id: 'book-c', name: 'Book C', mode: api.BookMode.PROFESSIONAL});
+    store.seed('chapters', chapter('b', 'book-b', 'Content B')); store.seed('chapters', chapter('c', 'book-c', 'Content C'));
+    store.seed('characters', {id: 'char-b', book_id: 'book-b', name: 'Character B'});
+    store.seed('characters', {id: 'char-c', book_id: 'book-c', name: 'Character C'});
+    const entered = deferred(), resume = deferred();
+    store.onQuerySql = async (sql, args) => { if (sql.startsWith('SELECT id, book_id') && args[1] === 'book-b') { entered.resolve(); await resume.promise; } };
+    app.reloadAll = api.AppStores.prototype.reloadAll.bind(app);
+    const older = app.selectBook('book-b'); await entered.promise; await app.selectBook('book-c'); resume.resolve(); await older;
+    const backup = await app.exportBackupData();
+    assert.equal(app.project.currentBookId, 'book-c'); assert.deepEqual(copy(app.project.chapters.map(ch => ch.bookId)), ['book-c']);
+    assert.deepEqual(copy(app.material.characters.map(ch => ch.bookId)), ['book-c']);
+    assert.equal(backup.book.id, 'book-c'); assert.equal(backup.chapters[0].bookId, 'book-c'); assert.equal(backup.characters[0].bookId, 'book-c');
+  });
+  await check('an older library query cannot overwrite a newer filter', async () => {
+    const {app} = fixture(); const fav = chapter('fav'); fav.is_fav = 1; store.seed('chapters', fav);
+    const entered = deferred(), resume = deferred();
+    store.onQuerySql = async sql => { if (sql.startsWith('SELECT id, book_id') && !sql.includes('is_fav = 1')) { entered.resolve(); await resume.promise; } };
+    const older = app.project.reloadChapters(); await entered.promise; await app.project.setLibFilter(api.LibId.FAV); resume.resolve(); await older;
+    assert.equal(app.project.libFilter, api.LibId.FAV); assert.deepEqual(copy(app.project.chapters.map(ch => ch.id)), ['fav']);
+  });
+  await check('a backup during project loading queries the selected project rather than old visible material arrays', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    app.material.characters = [{id: 'char-a', bookId: 'book-a', name: 'A'}];
+    app.relation.relationships = [{id: 'rel-a', bookId: 'book-a'}];
+    store.seed('characters', {id: 'char-b', book_id: 'book-b', name: 'B'});
+    store.seed('relationships', {id: 'rel-b', book_id: 'book-b'});
+    const entered = deferred(), resume = deferred();
+    store.onQuerySql = async (sql, args) => { if (sql.startsWith('SELECT id, book_id') && args[1] === 'book-b') { entered.resolve(); await resume.promise; } };
+    app.reloadAll = api.AppStores.prototype.reloadAll.bind(app);
+    const switching = app.selectBook('book-b'); await entered.promise;
+    const backup = await app.exportBackupData(); resume.resolve(); await switching;
+    assert.equal(backup.book.id, 'book-b'); assert.equal(backup.characters[0].id, 'char-b'); assert.equal(backup.relationships[0].id, 'rel-b');
+  });
+  await check('an older pending material load cannot replace a newer project material scope', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('characters', {id: 'char-a', book_id: 'book-a', name: 'A'});
+    store.seed('characters', {id: 'char-b', book_id: 'book-b', name: 'B'});
+    const entered = deferred(), resume = deferred();
+    store.onQuery = async p => { if (p.table === 'characters' && p.matches(store.get('characters', 'char-a'))) { entered.resolve(); await resume.promise; } };
+    const older = app.material.load('book-a'); await entered.promise;
+    app.reloadAll = api.AppStores.prototype.reloadAll.bind(app); await app.selectBook('book-b'); resume.resolve(); await older;
+    assert.deepEqual(copy(app.material.characters.map(ch => ch.id)), ['char-b']);
+  });
+  await check('an older pending relationship load cannot replace a newer project graph', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('relationships', {id: 'rel-a', book_id: 'book-a'}); store.seed('relationships', {id: 'rel-b', book_id: 'book-b'});
+    const entered = deferred(), resume = deferred();
+    store.onQuery = async p => { if (p.table === 'relationships' && p.matches(store.get('relationships', 'rel-a'))) { entered.resolve(); await resume.promise; } };
+    const older = app.relation.load('book-a', []); await entered.promise;
+    app.reloadAll = api.AppStores.prototype.reloadAll.bind(app); await app.selectBook('book-b'); resume.resolve(); await older;
+    assert.deepEqual(copy(app.relation.relationships.map(r => r.id)), ['rel-b']);
+  });
+  await check('a committed restore remains visible and reports success after a project-list read failure', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.onQuery = async p => { if (p.table === 'books') throw new Error('book list unavailable'); };
+    const result = await app.importBackupText(JSON.stringify({app: 'Weaver', book: {name: 'Restored despite reload', mode: 'professional'}}));
+    assert.notEqual(result, ''); assert.match(result, /已恢复/); assert.equal(store.tables.get('books').size, 3);
+    assert.ok(app.project.projects.some(p => p.name === 'Restored despite reload（导入）'));
+  });
+  await check('the first default project appears in the sidebar and is selected', async () => {
+    store = new StoreDouble(); const app = new api.AppStores();
+    await app.project.loadBooks(); await app.project.ensureCurrentBook(api.BookMode.PROFESSIONAL);
+    assert.equal(app.project.books.length, 1); assert.equal(app.project.projects.length, 1);
+    assert.equal(app.project.projects[0].id, app.project.currentBookId); assert.equal(app.project.projects[0].active, true);
+  });
+  await check('clicking the current project cancels an older project switch still waiting for a save', async () => {
+    const {app, doc} = fixture(); const entered = deferred(), resume = deferred();
+    store.onUpdate = async () => { entered.resolve(); await resume.promise; };
+    const older = app.selectBook('book-b'); await entered.promise;
+    await app.selectBook('book-a'); resume.resolve(); await older;
+    assert.equal(app.project.currentBookId, 'book-a'); assert.equal(app.editor.openDocs[0], doc);
+  });
+  await check('deleting the final project publishes its automatically created replacement', async () => {
+    const {app, doc} = fixture(); doc.dirty = false; store.tables.get('books').delete('book-b');
+    app.project.books = app.project.books.filter(book => book.id === 'book-a');
+    await app.deleteBook('book-a');
+    assert.equal(app.project.books.length, 1); assert.equal(app.project.projects.length, 1);
+    assert.notEqual(app.project.currentBookId, 'book-a'); assert.equal(app.project.projects[0].id, app.project.currentBookId);
+    assert.equal(app.project.projects[0].active, true);
   });
   console.log('Data regression: ' + checks + ' checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

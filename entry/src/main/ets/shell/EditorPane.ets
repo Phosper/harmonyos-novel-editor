@@ -103,29 +103,29 @@ export struct EditorPane {
               const d: OpenDoc | undefined = this.app.editor.openDocs.find((x: OpenDoc) => x.id === docId)
               return d !== undefined ? d.caret : 0
             },
-            onEdit: (text: string, runs: FormatRun[], caret: number) => {
+            onEdit: (text: string, runs: FormatRun[], caret: number, ownerId: string) => {
               if (this.app !== null) {
-                this.app.editor.setEditorState(text, FormatCodec.encode(runs), caret)
-                this.app.ui.noteTyping()
+                this.app.editor.setEditorState(text, FormatCodec.encode(runs), caret, ownerId)
+                if (this.app.editor.activeId === ownerId) { this.app.ui.noteTyping() }
               }
             },
-            onCaretChange: (offset: number) => {
+            onCaretChange: (offset: number, ownerId: string) => {
               if (this.app !== null) {
-                this.app.editor.setCaret(offset)
+                this.app.editor.setCaret(offset, ownerId)
               }
             },
-            onRequestSave: () => {
-              if (this.app !== null) {
+            onRequestSave: (ownerId: string) => {
+              if (this.app !== null && this.app.editor.activeId === ownerId) {
                 this.app.editor.flushActive()
               }
             },
-            onUndo: () => {
-              if (this.app !== null) {
+            onUndo: (ownerId: string) => {
+              if (this.app !== null && this.app.editor.activeId === ownerId) {
                 this.app.editor.undo()
               }
             },
-            onRedo: () => {
-              if (this.app !== null) {
+            onRedo: (ownerId: string) => {
+              if (this.app !== null && this.app.editor.activeId === ownerId) {
                 this.app.editor.redo()
               }
             }

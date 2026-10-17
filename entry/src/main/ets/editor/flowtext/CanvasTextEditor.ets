@@ -241,6 +241,8 @@ export struct CanvasTextEditor {
   private ime: ImeBridge = new ImeBridge();
   private previewMgr: PreviewTextManager = new PreviewTextManager();
   private selMgr: SelectionManager = new SelectionManager();
+  /** 载入或销毁后，旧粘贴请求不得再改写当前文稿。 */
+  private documentGeneration: number = 0;
   private caretAnimator: EditorAnimator | null = null;
   private glyphAnimator: EditorAnimator | null = null;
   private caret: CursorState = new CursorState();
@@ -516,10 +518,12 @@ export struct CanvasTextEditor {
   }
 
   private pasteAtCaret(): void {
+    const generation: number = this.documentGeneration;
     this.hideSelectionMenu();
     this.diag('paste action invoked buffer=' + appClipboard.length.toString());
     const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
     board.getData().then((data: pasteboard.PasteData) => {
+      if (generation !== this.documentGeneration) { return; }
       let text: string = '';
       try {
         const raw: string = data.getPrimaryText();
@@ -548,6 +552,7 @@ export struct CanvasTextEditor {
         this.insertAtCaret(text);
       }
     }).catch((e: BusinessError) => {
+      if (generation !== this.documentGeneration) { return; }
       this.diag('paste sys failed, use buffer: ' + e.code);
       if (appClipboard.length > 0) {
         this.insertAtCaret(appClipboard);
@@ -557,15 +562,8 @@ export struct CanvasTextEditor {
 
   /** 在光标处插入文本（粘贴用） */
   private insertAtCaret(text: string): void {
-    const at: number = this.doc.caretOffset;
-    this.oldLines = this.lines;
-    this.lastEditOffset = at;
-    this.doc.insert(at, text);
-    this.previewMgr.cancel();
-    this.afterEdit();
-    if (this.onTextChange !== null) {
-      this.onTextChange(this.doc.text, this.doc.version);
-    }
+    // 与键入共用选区替换和预上屏提交，整次粘贴只产生一个编辑事务。
+    this.insertExternalText(text);
   }
 
   private selectAllText(): void {
@@ -596,6 +594,7 @@ export struct CanvasTextEditor {
   }
 
   aboutToDisappear(): void {
+    this.documentGeneration++;
     this.cancelLongPress();
     if (this.controller !== null) { this.controller.unbind(this); }
     this.stopBlink();
@@ -752,6 +751,7 @@ export struct CanvasTextEditor {
   loadText(text: string): void { this.loadDocument(text, [], text.length); }
 
   loadDocument(text: string, runs: FormatRun[], caret: number): void {
+    this.documentGeneration++;
     this.preferredX = -1;
     this.doc.setTextWithCaret(text, caret);
     this.doc.setRuns(runs);

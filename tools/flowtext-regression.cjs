@@ -72,11 +72,18 @@ function method(source,name) {
   const match = source.match(new RegExp('^  (?:private )?'+name+'\\([\\s\\S]*?^  }','m'));
   assert.ok(match,'source method '+name); return match[0];
 }
+function uiCallback(file,name,indent) {
+  const padding=' '.repeat(indent);
+  const match=read(file).match(new RegExp('^'+padding+name+': (\\([^\\n]*\\) => \\{[\\s\\S]*?^'+padding+'\\})','m'));
+  assert.ok(match,'source callback '+file+' '+name);
+  return vm.runInContext(compile('(function '+match[1].replace(' => ',' ')+')'),context);
+}
 vm.runInContext(compile(read('editor/flowtext/CanvasTextEditor.ets').split('@Component')[0]),context);
 const canvas = read('editor/flowtext/CanvasTextEditor.ets').split('export struct CanvasTextEditor {')[1];
 vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','getRuns','moveCaretTo','moveCaretAnimated','insertExternalText','extendSelection',
   'selectTo','applyKeyCommand','afterCaretMove','afterEdit','emitSelection','setRuns','afterFormatChange',
-  'handleKeyPreIme','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
+  'handleKeyPreIme','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
+  'pasteAtCaret','insertAtCaret','aboutToDisappear'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
 vm.runInContext(compile('class HostProbe {\n'+method(read('editor/TextEditorHost.ets'),'onContentRevChanged')+'\n}'),context);
 const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionManager,FormatRun,StyleKind,LayoutLine,GlyphRunData,'+
   'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
@@ -117,12 +124,28 @@ function editor(value) {
   Object.assign(e,{doc:doc(value),selMgr:new api.SelectionManager(),previewMgr:new api.PreviewTextManager(),
     lastText:value,preferredX:-1,anims:{clear(){}},lines:[],caret:new api.CursorState(),theme:{fontSize:16},
     cache:null,renderer:null,onEdit:null,onCaretChange:null,onTextChange:null,onFormatChange:null,onSelectionChange:null,
+    documentGeneration:0,controller:null,ime:new api.ImeBridge(),caretAnimator:null,glyphAnimator:null,
     padLeftVp(){return 0;},padTopVp(){return 0;},ensureCaretLayout(){},ensureCaretVisible(){},effectivePolicy(){return 0;},
     relayout(){},drawNow(){},reportSelection(){},reportCursor(){},hideSelectionMenu(){},diag(){},
+    cancelLongPress(){},stopBlink(){},stopFling(){},
     animateCaretMove(from,to){this.caret=to;}});
   e.selMgr.setSource(value);e.selMgr.collapse(e.doc.caretOffset);return e;
 }
 check('switch document clears stale selection before inserting',()=>{const e=editor('ABCDE');e.selMgr.setSelection(1,3);e.loadText('uvwxyz');e.moveCaretAnimated(6);e.insertExternalText('!');assert.equal(e.doc.text,'uvwxyz!');});
+check('paste replaces a selection in either direction in one edit',()=>{
+  for(const [anchor,head] of [[1,4],[4,1]]) {
+    const e=editor('ABCDE');e.doc.setRuns([new api.FormatRun(0,5,true)]);
+    e.selMgr.setSelection(anchor,head);e.emitSelection();let edits=0;e.onEdit=()=>edits++;
+    e.insertAtCaret('X');assert.equal(e.doc.text,'AXE');assert.equal(e.doc.caretOffset,2);
+    assert.ok(e.selMgr.selection.isEmpty());assert.equal(edits,1);
+    assert.deepEqual(json(e.doc.runs),[json(new api.FormatRun(0,3,true))]);
+  }
+});
+check('paste replaces the provisional composition range in one edit',()=>{
+  const e=editor('ABCDE');e.selMgr.setSelection(1,3);e.emitSelection();e.engineRef=null;e.registerImeCallbacks();
+  e.ime.onPreviewText('ni',-1,-1);let edits=0;e.onEdit=()=>edits++;e.insertAtCaret('X');
+  assert.equal(e.doc.text,'AXDE');assert.equal(e.previewMgr.isComposing,false);assert.equal(edits,1);
+});
 check('continuous Shift Left preserves anchor and direction',()=>{const e=editor('ABCDE');e.moveCaretAnimated(4);e.extendSelection(-1);e.extendSelection(-1);assert.deepEqual(json(e.selMgr.selection),{startOffset:2,endOffset:4});assert.equal(e.doc.caretOffset,2);assert.equal(e.doc.selectionEnd,4);e.extendSelection(1);assert.equal(e.doc.caretOffset,3);});
 check('empty IME commit preserves selected text, anchor, formats and history',()=>{
   const e=editor('ABCDE');e.doc.setRuns([new api.FormatRun(0,5,true)]);e.moveCaretAnimated(4);e.extendSelection(-1);
@@ -150,6 +173,45 @@ check('loading format does not report a user edit',()=>{const e=editor('abc');le
 check('controller load preserves formats and saved caret before binding',()=>{const controller=new api.CanvasTextEditorController();controller.setDocument('abc',[new api.FormatRun(0,3,true)],1);const e=editor('');controller.bind(e);assert.equal(e.doc.text,'abc');assert.equal(e.doc.caretOffset,1);assert.equal(e.doc.runs[0].bold,true);});
 check('undo restores content before format',()=>{const e=editor('abcX');const host=new api.HostProbe();Object.assign(host,{docId:'a',contentRev:2,appliedRev:1,loadText(){return 'abc';},loadCaret(){return 2;},loadFormat(){return [new api.FormatRun(0,3,true)];},flowController:{getText(){return e.doc.text;},setDocument(value,runs,caret){e.loadDocument(value,runs,caret);},setText(v){e.loadText(v);},setRuns(r){e.setRuns(r);},setCaretPosition(n){e.moveCaretAnimated(n);}}});host.onContentRevChanged();assert.equal(e.doc.text,'abc');assert.equal(e.doc.runs[0].endOffset,3);});
 check('history preserves other documents and clears redo after new edits',()=>{const store=new api.EditorStore();store.scheduleFlush=()=>{};const a=new api.OpenDoc('a','A',0,'','a',0);const b=new api.OpenDoc('b','B',0,'','b',0);store.openDocs=[a,b];store.activeId='a';store.setEditorState('a1','0,1,1,0,0',2);store.activeId='b';store.setEditorState('b1','',2);store.activeId='a';store.undo();assert.equal(a.draft,'a');store.activeId='b';store.undo();assert.equal(b.draft,'b');store.activeId='a';store.setEditorState('a2','',2);store.redo();assert.equal(a.draft,'a2');});
+check('heading at a collapsed paragraph start affects the current paragraph',()=>{
+  const d=doc('abc\ndef');d.toggleHeading(1,4,4);
+  assert.equal(d.headingAt(4),1);assert.equal(d.headingAt(0),0);
+  d.toggleHeading(1,4,4);assert.equal(d.runs.length,0);
+  d.toggleHeading(1,0,4);assert.equal(d.headingAt(0),1);assert.equal(d.headingAt(4),0);
+});
+check('new input after undo or redo starts a separate history entry',()=>{
+  const originalDate=vm.runInContext('Date',context);let now=1000;context.Date={now:()=>now};
+  try {
+    const store=new api.EditorStore();store.scheduleFlush=()=>{};
+    const d=new api.OpenDoc('a','A',0,'','A',1);store.openDocs=[d];store.activeId='a';
+    store.setEditorState('AB','',2);now=2000;store.setEditorState('ABC','',3);store.undo();
+    assert.equal(d.draft,'AB');now=2100;store.setEditorState('ABX','',3);store.undo();
+    assert.equal(d.draft,'AB');assert.equal(d.caret,2);
+    store.redo();assert.equal(d.draft,'ABX');now=2200;store.setEditorState('ABXY','',4);
+    now=2250;store.setEditorState('ABXYZ','',5);store.undo();
+    assert.equal(d.draft,'ABX');assert.equal(d.caret,3);
+  } finally { context.Date=originalDate; }
+});
+check('caret updates reject an editor belonging to another document',()=>{
+  const store=new api.EditorStore();const a=new api.OpenDoc('a','A',0,'','AAAA',1);
+  const b=new api.OpenDoc('b','B',0,'','BBBB',4);store.openDocs=[a,b];store.activeId='b';
+  store.setCaret(2,'a');assert.equal(b.caret,4);assert.equal(a.caret,1);
+  store.setCaret(3,'b');assert.equal(b.caret,3);
+  store.setCaret(1);assert.equal(b.caret,1);
+});
+check('host undo and redo callbacks retain their loaded document owner',()=>{
+  const store=new api.EditorStore();store.scheduleFlush=()=>{};
+  const a=new api.OpenDoc('a','A',0,'','A',1),b=new api.OpenDoc('b','B',0,'','B',1);
+  store.openDocs=[a,b];store.activeId='b';store.setEditorState('B edited','',8);
+  const pane={app:{editor:store}};
+  const undo=uiCallback('shell/EditorPane.ets','onUndo',12),redo=uiCallback('shell/EditorPane.ets','onRedo',12);
+  const host={loadedDocId:'a',onUndo:undo.bind(pane),onRedo:redo.bind(pane)};
+  const hostUndo=uiCallback('editor/TextEditorHost.ets','onUndo',8),hostRedo=uiCallback('editor/TextEditorHost.ets','onRedo',8);
+  hostUndo.call(host);assert.equal(b.draft,'B edited');assert.equal(store.undoStack.length,1);
+  host.loadedDocId='b';hostUndo.call(host);assert.equal(b.draft,'B');
+  host.loadedDocId='a';hostRedo.call(host);assert.equal(b.draft,'B');assert.equal(store.redoStack.length,1);
+  host.loadedDocId='b';hostRedo.call(host);assert.equal(b.draft,'B edited');assert.equal(a.draft,'A');
+});
 function line(start,value,y=0) {
   const l=new api.LayoutLine();Object.assign(l,{startIndex:start,endIndex:start+value.length,consumedEnd:start+value.length,yOffset:y,height:24,step:28,baseline:y+18,ascent:14,descent:4,width:value.length*10});
   const r=new api.GlyphRunData();Object.assign(r,{textStart:start,textEnd:l.endIndex,font:new Font(),glyphs:Array.from(value).map(c=>c.charCodeAt(0)),glyphOffsets:Array.from(value).map((_,i)=>i),positions:Array.from(value).map((_,i)=>({x:i*10,y:0})),advances:Array.from(value).map(()=>({x:10,y:16}))});l.runs=[r];return l;
@@ -224,6 +286,47 @@ check('insert animation belongs to inserted glyph',()=>{const a=api.GlyphAnimato
 check('removed glyph has independent exit animation',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'B')],animationOptions('AB','B'));assert.equal(a.exits.length,1);assert.equal(a.exits[0].glyph,65);assert.equal(a.map.size,0);});
 check('scrolled caret and handles stay visible',()=>{const theme=new api.RenderTheme();const renderer=new api.GlyphRenderer(theme);const canvas={attachBrush(){},detachBrush(){},drawRect(r){draws.push(r);},drawCircle(...v){draws.push(v);}};const caret=new api.CursorState();Object.assign(caret,{x:12,y:1000,height:16});renderer.drawCaret(canvas,caret,new api.ViewportInfo(1000,200));renderer.drawHandles(canvas,[caret],new api.ViewportInfo(1000,200));assert.equal(draws.length,3);});
 (async()=>{
+  for(const failed of [false,true]) {
+    let completePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise((resolve,reject)=>{
+      completePaste=()=>failed?reject({code:1}):resolve({getPrimaryText(){return 'X';}});
+    });}};}};
+    vm.runInContext("appClipboard='FALLBACK'",context);
+    const e=editor('ABCDE');e.selMgr.setSelection(1,4);e.emitSelection();let edits=0;e.onEdit=()=>edits++;
+    e.pasteAtCaret();completePaste();await Promise.resolve();await Promise.resolve();
+    assert.equal(e.doc.text,failed?'AFALLBACKE':'AXE');assert.equal(edits,1);
+    count++;console.log('PASS current-document paste '+(failed?'fallback':'success')+' replaces its selection');
+  }
+  for(const failed of [false,true]) {
+    let completePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise((resolve,reject)=>{
+      completePaste=()=>failed?reject({code:1}):resolve({getPrimaryText(){return 'PASTE';}});
+    });}};}};
+    vm.runInContext("appClipboard='FALLBACK'",context);
+    const e=editor('Document A');let edits=0;e.onEdit=()=>edits++;e.pasteAtCaret();
+    e.loadDocument('Document B',[],10);completePaste();await Promise.resolve();await Promise.resolve();
+    assert.equal(e.doc.text,'Document B');assert.equal(edits,0);
+    count++;console.log('PASS delayed paste '+(failed?'fallback':'success')+' cannot edit a replacement document');
+  }
+  for(const failed of [false,true]) {
+    let completePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise((resolve,reject)=>{
+      completePaste=()=>failed?reject({code:1}):resolve({getPrimaryText(){return 'PASTE';}});
+    });}};}};
+    const store=new api.EditorStore();store.scheduleFlush=()=>{};
+    const a=new api.OpenDoc('a','A',0,'','Document A',10),b=new api.OpenDoc('b','B',0,'','Document B',10);
+    store.openDocs=[a,b];store.activeId='a';const e=editor(a.draft);
+    e.onEdit=(text,runs,caret)=>store.setEditorState(text,'',caret,'a');e.pasteAtCaret();
+    // activeId changes before the host's next UI update has loaded B into the canvas.
+    store.activeId='b';completePaste();await Promise.resolve();await Promise.resolve();
+    assert.equal(b.draft,'Document B');assert.equal(b.caret,10);assert.equal(b.dirty,false);
+    assert.equal(a.draft,'Document A');assert.equal(store.undoStack.length,0);
+    count++;console.log('PASS paste '+(failed?'fallback':'success')+' cannot edit a new active document before host reload');
+  }
+  {
+    let resolvePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise(resolve=>{resolvePaste=resolve;});}};}};
+    const e=editor('closed document');let edits=0;e.onEdit=()=>edits++;e.pasteAtCaret();e.aboutToDisappear();
+    resolvePaste({getPrimaryText(){return 'PASTE';}});await Promise.resolve();await Promise.resolve();
+    assert.equal(e.doc.text,'closed document');assert.equal(edits,0);
+    count++;console.log('PASS delayed paste cannot edit an unmounted editor');
+  }
   const bridge=new api.ImeBridge();const other=()=>{};listeners.set('insertText',new Set([other]));
   const one=bridge.attach(false,0,0), two=bridge.attach(false,0,0);
   assert.equal(nativeAttachCount,1);assert.equal(one,two);bridge.detach();resolveAttach();await one;
