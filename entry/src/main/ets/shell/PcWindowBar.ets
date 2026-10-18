@@ -1,17 +1,21 @@
-// 桌面端自绘窗口控制条（由 DesktopWindowChrome 隐藏原生标题栏）
+// 桌面端窗口控制条 —— **兼容薄壳**（历史入口）
+//
+// 真正的沉浸标题栏已迁到 `shell/DesktopTitleBar.ets`（48vp + 沉浸材质 + 无障碍三键）。
+// 本文件保留两件事：
+//   1) `PcWindowBar` 组件仍然可用：内部直接渲染 DesktopTitleBar，参数透传，零视觉差异；
+//   2) 原有窗口控制方法（win / startMove / minimize / toggleMaximize / close /
+//      onTitleTouch / onTitleMouse）**逐字保留**，它们是行为契约——
+//      `tools/window-regression.cjs` 会从本文件抽取这些方法在 vm 里执行，
+//      删方法或改动调用序列（含 configureDesktopChrome 的调用时机）会让旧回归失败。
 import { window } from '@kit.ArkUI'
 import { Logger } from '../utils/Logger'
 import { configureDesktopChrome } from '../utils/DesktopWindowChrome'
-import { tokensFor, WeaverColorSet, DEFAULT_THEME_ID } from '../constants/DesignTokens'
+import { DesktopTitleBar } from './DesktopTitleBar'
 import type { AppStores } from '../store/AppStores'
 
 @ComponentV2
 export struct PcWindowBar {
   @Param app: AppStores | null = null
-
-  private colors(): WeaverColorSet {
-    return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
-  }
 
   private win(): window.Window | undefined {
     return AppStorage.get<window.Window>('mainWindow')
@@ -97,42 +101,7 @@ export struct PcWindowBar {
   }
 
   build() {
-    Row() {
-      Text('Weaver')
-        .fontSize(12).fontColor(this.colors().textSecondary)
-        .margin({ left: 12 })
-
-      Row() { }
-        .layoutWeight(1)
-        .height('100%')
-        // 保留触屏与鼠标输入；右键等其它鼠标按钮不能触发窗口移动。
-        .onTouch((event: TouchEvent) => this.onTitleTouch(event))
-        .onMouse((event: MouseEvent) => this.onTitleMouse(event))
-        // 双击标题栏空白区切换最大化 —— 与桌面端窗口操作习惯一致
-        .gesture(TapGesture({ count: 2 }).onAction(() => {
-          this.toggleMaximize()
-        }))
-
-      this.winButton('─', () => this.minimize())
-      this.winButton('□', () => this.toggleMaximize())
-      this.winButton('✕', () => this.close())
-    }
-    // 自绘高度独立于原生标题栏配置。
-    .width('100%').height(36)
-    .backgroundColor(this.colors().bgSurface)
-    .border({ width: { bottom: 1 }, color: this.colors().divider })
-  }
-
-  // 窗口控制按钮统一为中性样式：图标用二级文本色，背景透明靠 hover 高亮反馈，
-  // 不再使用 Windows 风格的红色关闭按钮（与 HarmonyOS 桌面形态不一致）
-  @Builder
-  winButton(glyph: string, action: () => void) {
-    Row() {
-      Text(glyph).fontSize(12).fontColor(this.colors().textSecondary)
-    }
-    .width(46).height('100%')
-    .justifyContent(FlexAlign.Center)
-    .hoverEffect(HoverEffect.Highlight)
-    .onClick(action)
+    // 参数透传：safeTop/chromeHeight 从组件父级（AppShell）给出；薄壳默认按 48 + safeTop 兜底
+    DesktopTitleBar({ app: this.app })
   }
 }

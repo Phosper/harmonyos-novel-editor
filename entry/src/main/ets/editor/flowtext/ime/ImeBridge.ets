@@ -1,6 +1,7 @@
 /** Owns an IME client, including pending attach and exact listener cleanup. */
 import { inputMethod } from '@kit.IMEKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { ImeEchoGuard } from '../../interaction/InputArbiter';
 
 export class ImeBridge {
   private controller: inputMethod.InputMethodController = inputMethod.getController();
@@ -10,6 +11,12 @@ export class ImeBridge {
   private pending: Promise<void> | null = null;
   private generation: number = 0;
   private pendingGeneration: number = 0;
+  /**
+   * 键盘兜底与 IME 回声仲裁（由 CanvasTextEditor 注入）。
+   * 放在监听入口而不是宿主回调里：实体监听是唯一真实到达路径，
+   * 宿主回调只负责把文本写进文档。
+   */
+  private echoGuard: ImeEchoGuard | null = null;
   onInsertText: ((text: string) => void) | null = null;
   onDeleteLeft: ((length: number) => void) | null = null;
   onDeleteRight: ((length: number) => void) | null = null;
@@ -24,7 +31,16 @@ export class ImeBridge {
   onGetCursorIndex: (() => number) | null = null;
   get attached(): boolean { return this.isAttached; }
 
-  private insertListener = (value: string): void => { if (this.onInsertText !== null) { this.onInsertText(value); } };
+  /** 注入回声守卫（宿主在 aboutToAppear 调用一次） */
+  setEchoGuard(guard: ImeEchoGuard): void {
+    this.echoGuard = guard;
+  }
+
+  private insertListener = (value: string): void => {
+    // 键盘兜底刚插入过同文本（40ms 内）→ 这是 IME 回声，丢弃，防止双输入
+    if (this.echoGuard !== null && this.echoGuard.claim(value, Date.now())) { return; }
+    if (this.onInsertText !== null) { this.onInsertText(value); }
+  };
   private leftListener = (n: number): void => { if (this.onDeleteLeft !== null) { this.onDeleteLeft(n); } };
   private rightListener = (n: number): void => { if (this.onDeleteRight !== null) { this.onDeleteRight(n); } };
   private moveListener = (d: inputMethod.Direction): void => { if (this.onMoveCursor !== null) { this.onMoveCursor(d); } };

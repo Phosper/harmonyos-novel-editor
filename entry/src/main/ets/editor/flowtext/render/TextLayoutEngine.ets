@@ -316,6 +316,25 @@ export class TextLayoutEngine {
     return line;
   }
 
+  /**
+   * 行内某个 native scalar 索引对应的 x（vp，相对行左边缘）。
+   *
+   * `getOffsetForStringIndex` 返回 px 且相对行左边缘（不含对齐/缩进偏移）；
+   * 本项目段落对齐固定为 START，故可直接作为 run/光标的行内原点。
+   * 异常时退化为 0，宁可让该 run 回到行首也不要抛异常打断绘制。
+   */
+  private offsetXVp(line: text.TextLine, scalarIndex: number): number {
+    try {
+      const x: number = line.getOffsetForStringIndex(scalarIndex);
+      if (!Number.isFinite(x) || x <= 0) {
+        return 0;
+      }
+      return x / this.pxPerVp;
+    } catch (e) {
+      return 0;
+    }
+  }
+
   private buildLayoutLine(line: text.TextLine, textStart: number, count: number, yOffsetVp: number): LayoutLine {
     // textStart/count 是文档偏移；窗口内偏移 = 减去 typesetBase
     const localStart: number = textStart - this.typesetBase;
@@ -355,11 +374,27 @@ export class TextLayoutEngine {
       data.textEnd = textStart + layoutLine.indexMap.fromScalar(range.start + range.end - layoutLine.nativeStartIndex);
       data.glyphOffsets = indices.map((index: number): number =>
         layoutLine.indexMap.fromScalar(index - layoutLine.nativeStartIndex) - localRunStart);
-      data.runOffsetX = 0; // Native positions are relative to the line, including bidi placement.
+      // Run.getPositions() 的 x 语义随 OH 版本/切行方式变化：
+      //  - 整段塑形时含 run 的 fOffset（段落绝对坐标）；
+      //  - LineTypeset.createLine 裁剪后的行，可能已被 rebase 到行首。
+      // 唯一稳定的做法：run 原点 x 用行 API 反推（run 首字符的行内左边缘），
+      // 字形相对 x 用 positions[g].x - positions[0].x（纯 run 内位移）。
+      // 这样无论 positions 是"行内绝对"还是"run 局部/段落绝对"，绘制结果都是
+      // 行原点 + run 原点 + 字形位移，不会叠在行首，也不会被重复加偏移。
+      data.runOffsetX = this.offsetXVp(line, range.start);
+      const basePosX: number = positions.length > 0 ? positions[0].x : 0;
       const advances: common2D.Point[] = run.getAdvances({ start: 0, end: data.glyphs.length });
       for (let g: number = 0; g < data.glyphs.length; g++) {
-        data.advances.push({ x: advances[g].x / this.pxPerVp, y: advances[g].y / this.pxPerVp });
-        data.positions.push({ x: positions[g].x / this.pxPerVp, y: positions[g].y / this.pxPerVp });
+        const adv: common2D.Point | null = g < advances.length ? advances[g] : null;
+        const pos: common2D.Point | null = g < positions.length ? positions[g] : null;
+        data.advances.push({
+          x: adv !== null ? adv.x / this.pxPerVp : 0,
+          y: adv !== null ? adv.y / this.pxPerVp : 0
+        });
+        data.positions.push({
+          x: pos !== null ? (pos.x - basePosX) / this.pxPerVp : 0,
+          y: pos !== null ? pos.y / this.pxPerVp : 0
+        });
       }
       layoutLine.runs.push(data);
     }

@@ -16,6 +16,8 @@ import { nav } from './Navigator'
 import { EditorPane } from './EditorPane'
 import { DocListPane } from './DocListPane'
 import { SettingsPanel } from './SettingsPanel'
+import { glassBarStyle, glassVeilStyle } from './MaterialSurface'
+import { sheetMaterial } from '../constants/LightTokens'
 
 @ComponentV2
 export struct WorkspaceDest {
@@ -102,9 +104,10 @@ export struct WorkspaceDest {
   build() {
     NavDestination() {
       if (app.ui.isWide) {
-        // 宽屏：第三栏只承载编辑器（列表/侧栏在其它栏）
+        // 宽屏/电脑：第三栏只承载编辑器。
+        // 标题已在统一窗口头（书名 · 章节）出现，这里不再叠一条同名 topBar；
+        // 字数/保存态/文档动作由 EditorPane 内部工具条承担。
         Column() {
-          this.topBar()
           EditorPane({ app: app }).layoutWeight(1)
         }
         .width('100%').height('100%')
@@ -129,7 +132,8 @@ export struct WorkspaceDest {
               .layoutWeight(1)
           }
           .width('100%').height('100%')
-          .backgroundColor(this.colors().bgPrimary)
+          // 抽屉面板：次级面配色（零模糊，靠色阶与编辑区分开）
+          .backgroundColor(this.colors().bgSurface)
 
           // 内容区：编辑页（抽屉展开时其右侧加一层点击即收起的遮罩）
           Stack() {
@@ -177,6 +181,9 @@ export struct WorkspaceDest {
       height: 400,
       dragBar: true,
       showClose: true,
+      // 半模态属于"弹窗类"，是 systemMaterial 真正生效的位置（全页面生效）；
+      // 材质对象按档位缓存，不会每次 build 都 new。不支持的设备无效果，自动回落下面的 backgroundColor。
+      systemMaterial: sheetMaterial(),
       backgroundColor: this.colors().bgPrimary,
       onDisappear: () => { this.moreOpen = false }
     })
@@ -206,19 +213,36 @@ export struct WorkspaceDest {
 
         Text('撤销').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
+          .clickEffect({ level: ClickEffectLevel.LIGHT })
           .onClick(() => { this.moreOpen = false; app.editor.undo() })
         Text('重做').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
+          .clickEffect({ level: ClickEffectLevel.LIGHT })
           .onClick(() => { this.moreOpen = false; app.editor.redo() })
         Text('一键排版').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
+          .clickEffect({ level: ClickEffectLevel.LIGHT })
           .onClick(() => { this.moreOpen = false; app.formatActiveDoc() })
         Text('收藏 / 取消收藏').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
+          .clickEffect({ level: ClickEffectLevel.LIGHT })
           .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleFav(app.editor.activeId), 'toggleFav') })
         Text('移入 / 移出灵感池').fontSize(16).fontColor(this.colors().textPrimary)
           .width('100%').height(52).padding({ left: 16, right: 16 })
+          .clickEffect({ level: ClickEffectLevel.LIGHT })
           .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleInspiration(app.editor.activeId), 'toggleInspiration') })
+
+        // 专注写作：手机/平板进入窗口内沉浸编辑（桌面还可用窗口头顶栏按钮与 F11）
+        Row() {
+          Text('专注写作').fontSize(16).fontColor(this.colors().textPrimary).layoutWeight(1)
+          Text('隐藏侧栏与列表').fontSize(12).fontColor(this.colors().textTertiary)
+        }
+        .width('100%').height(52).padding({ left: 16, right: 16 })
+        .clickEffect({ level: ClickEffectLevel.LIGHT })
+        .onClick(() => {
+          this.moreOpen = false
+          app.ui.toggleImmersiveEditing()
+        })
 
         // 设置：在弹层内进入二级（保持同一个弹层，不跳独立页）
         Row() {
@@ -226,6 +250,7 @@ export struct WorkspaceDest {
           Text('>').fontSize(15).fontColor(this.colors().textTertiary)
         }
         .width('100%').height(52).padding({ left: 16, right: 16 })
+        .clickEffect({ level: ClickEffectLevel.LIGHT })
         .onClick(() => { this.sheetPage = 1 })
       }
       .width('100%')
@@ -272,7 +297,9 @@ export struct WorkspaceDest {
     .clip(true)
     .animation({ duration: 180, curve: Curve.EaseOut })
     .padding({ left: 16, right: 16 })
-    .backgroundColor(this.colors().editorBg)
+    // 自绘顶栏：手机/平板上它是本屏第 ① 层实时模糊（专注模式高度为 0，不产生绘制）；
+    // lg 三栏下桌面标题栏已占第 ① 层，这里降成薄纱（零模糊），守住"每屏 ≤2 层模糊"的预算。
+    .attributeModifier(app.ui.isWide ? glassVeilStyle(app.ui.themeId) : glassBarStyle(app.ui.themeId))
   }
 
   @Builder

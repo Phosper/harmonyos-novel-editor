@@ -3,8 +3,10 @@ import { BookMode } from '../model/Book'
 import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { BreakPoint } from '../utils/BreakPoint'
+import { DeviceClass, DeviceSnapshot } from '../utils/DeviceProfile'
 import { applySystemBars, applySystemBarsDimmed } from '../utils/SystemBars'
 import { EditorViewMode, MobileTab, PAPER_THEMES, PaperTheme, DEFAULT_THEME_ID, themeById, WeaverTheme } from '../constants/DesignTokens'
+import type { CanvasTextEditorController } from '../editor/flowtext/CanvasTextEditor'
 
 /**
  * 需要用户输入或确认的对话框。
@@ -34,7 +36,20 @@ export class UiStore {
   private lastLightThemeId: string = DEFAULT_THEME_ID
 
   // 断点与设备形态
+  //
+  // 三条正交判据（见 docs/refactor/multidevice-interaction-refactor.md §1）：
+  //   布局层级 ← breakPoint（**只**由窗口宽度断点决定）；
+  //   设备形态 ← deviceClass（只决定 chrome 与命中区风格）；
+  //   输入形态 ← pointerPrimary（决定 hover / 右键 / 快捷键 / 焦点策略）。
+  // 电脑模式判据是 freeWindowMode（window.isInFreeWindowMode()），**不是**设备类型。
   @Trace breakPoint: BreakPoint = BreakPoint.LG
+  /** 设备形态归类（PHONE / TABLET / PC）：只用于 chrome 与命中区风格 */
+  @Trace deviceClass: DeviceClass = DeviceClass.PHONE
+  /** 自由窗口模式（PC 与平板电脑模式均为 true）—— 桌面 chrome 的唯一判据 */
+  @Trace freeWindowMode: boolean = false
+  /** 是否键鼠优先（modality === POINTER，仅实测到指针输入后为真）：驱动 hover / 右键 / 焦点环 / 快捷键 */
+  @Trace pointerPrimary: boolean = false
+  /** 兼容旧调用：等价于 deviceClass === PC（不再参与布局判断） */
   @Trace isPcDevice: boolean = false
 
   // 第一栏（侧栏）显隐
@@ -65,8 +80,42 @@ export class UiStore {
   // 打字机模式：仅当前段保持正文色，其余段落淡化（默认关闭，仅手机端菜单可切）
   @Trace typewriter: boolean = false
 
+  /**
+   * 沉浸编辑：编辑区在**应用窗口内**铺满，隐藏侧栏/列表/顶栏工具等非必要元素。
+   * 注意这不是系统全屏（不调用窗口 fullscreen），退出后恢复原布局。
+   */
+  @Trace immersiveEditing: boolean = false
+  /** 顶栏「查找」请求计数：EditorPane 监听后打开查找面板 */
+  @Trace findRequestTick: number = 0
+  /**
+   * 当前编辑器控制器（顶栏/工具条共用）。
+   * 由 EditorPane 在 onControllerReady 时注入；未打开文稿时为 null。
+   */
+  editorController: CanvasTextEditorController | null = null
+
+  toggleImmersiveEditing(): void {
+    this.immersiveEditing = !this.immersiveEditing
+  }
+
+  exitImmersiveEditing(): void {
+    if (this.immersiveEditing) {
+      this.immersiveEditing = false
+    }
+  }
+
+  requestFind(): void {
+    this.findRequestTick++
+  }
+
+  /** 显式设置打字机模式（控制器/按钮统一走这里，避免只写不读） */
+  setTypewriter(on: boolean): void {
+    if (this.typewriter !== on) {
+      this.typewriter = on
+    }
+  }
+
   toggleTypewriter(): void {
-    this.typewriter = !this.typewriter
+    this.setTypewriter(!this.typewriter)
   }
 
   /**
@@ -112,8 +161,47 @@ export class UiStore {
     return this.breakPoint === BreakPoint.LG
   }
 
+  /**
+   * 是否电脑形态（含平板电脑模式：自由窗口即桌面交互）。
+   * 只影响 chrome / 交互风格，**不**参与断点与布局层级判断。
+   */
+  get isDesktopMode(): boolean {
+    return this.deviceClass === DeviceClass.PC || this.freeWindowMode
+  }
+
+  /** 是否平板（触摸为主、可用键鼠：命中区 ≥48vp，侧栏抽屉可用） */
+  get isTabletDevice(): boolean {
+    return this.deviceClass === DeviceClass.TABLET
+  }
+
+  /** 是否走桌面沉浸标题栏：只由自由窗口模式决定（平板电脑模式同样走桌面 chrome） */
+  get usesDesktopChrome(): boolean {
+    return this.freeWindowMode
+  }
+
+  /** 兼容旧调用：语义改为「电脑形态 且 宽屏档」 */
   get isPc(): boolean {
-    return this.isPcDevice && this.breakPoint === BreakPoint.LG
+    return this.isDesktopMode && this.isWide
+  }
+
+  /**
+   * 用一份设备快照整体刷新设备相关状态（AppShell 订阅 DeviceProfile 后调用）。
+   * 断点也由快照给出，保证 store 与 AppShell 的 @Local 永远同一份真相。
+   */
+  applyDeviceSnapshot(snapshot: DeviceSnapshot): void {
+    if (this.deviceClass !== snapshot.deviceClass) {
+      this.deviceClass = snapshot.deviceClass
+      this.isPcDevice = snapshot.deviceClass === DeviceClass.PC
+    }
+    if (this.freeWindowMode !== snapshot.freeWindow) {
+      this.freeWindowMode = snapshot.freeWindow
+    }
+    if (this.pointerPrimary !== snapshot.pointerPrimary) {
+      this.pointerPrimary = snapshot.pointerPrimary
+    }
+    if (this.breakPoint !== snapshot.breakPoint) {
+      this.breakPoint = snapshot.breakPoint
+    }
   }
 
   // ===== 对话框 =====

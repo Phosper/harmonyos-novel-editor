@@ -10,13 +10,13 @@
 //    这里改为"显式子组件 + @Param"，@Param 变化必然驱动子组件刷新。
 // 2. 轮播页数量是固定的 4 个，不需要 ForEach，直接列出即可 —— 少一层差量算法就少一处不确定。
 // 3. 文案以固定数组驱动，无需状态，因此不存在"选中态同步"这类问题。
-import { router } from '@kit.ArkUI'
-import { deviceInfo } from '@kit.BasicServicesKit'
 import { app } from '../store/AppStores'
 import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { tokensFor, WeaverColorSet, WeaverRadii } from '../constants/DesignTokens'
 import { PcWindowBar } from '../shell/PcWindowBar'
+import { GlowPageBackground } from '../shell/MaterialSurface'
+import { glassAlpha } from '../constants/LightTokens'
 
 interface GuideSlide {
   title: string
@@ -60,40 +60,60 @@ struct GuideContent {
   private start(): void {
     // 写作模式已统一为专业版，不再由用户选择
     prefs.setGuided()
-    router.replaceUrl({ url: 'pages/Index' }).catch((e: Error) => {
+    // 全局 router 已废弃（编译告警）；改用 UIContext 的 Router
+    this.getUIContext().getRouter().replaceUrl({ url: 'pages/Index' }).catch((e: Error) => {
       Logger.error('GuideSwiperPage: replaceUrl failed: ' + String(e))
     })
   }
 
   build() {
-    Column() {
-      Swiper() {
-        GuideSlideView({ slide: SLIDES[0] })
-        GuideSlideView({ slide: SLIDES[1] })
-        GuideSlideView({ slide: SLIDES[2] })
-        GuideSlideView({ slide: SLIDES[3] })
-      }
-      .layoutWeight(1).width('100%').indicator(true).loop(false)
-
+    Stack() {
+      // 首启页也走同一套光感：页面渐变 + 顶部光晕（单层装饰，不吃点击）
+      GlowPageBackground(app.ui.themeId)
       Column() {
-        Button('开始使用 Weaver')
-          .width('80%').height(46).fontSize(16)
-          .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
-          .borderRadius(WeaverRadii.MD)
-          .onClick(() => this.start())
-      }.padding({ bottom: 44 })
+        Swiper() {
+          GuideSlideView({ slide: SLIDES[0] })
+          GuideSlideView({ slide: SLIDES[1] })
+          GuideSlideView({ slide: SLIDES[2] })
+          GuideSlideView({ slide: SLIDES[3] })
+        }
+        .layoutWeight(1).width('100%').indicator(true).loop(false)
+
+        Column() {
+          Button('开始使用 Weaver')
+            .width('80%').height(46).fontSize(16)
+            .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
+            .borderRadius(WeaverRadii.MD)
+            // 品牌色投影：给主行动按钮一点"浮起来"的空间感（深浅主题各自成立）
+            .shadow({ radius: 18, color: glassAlpha(this.colors().brand, 0.24), offsetY: 6 })
+            .clickEffect({ level: ClickEffectLevel.LIGHT })
+            .onClick(() => this.start())
+        }.padding({ bottom: 44 })
+      }
+      .width('100%').height('100%')
+      .backgroundColor(Color.Transparent)
     }
     .width('100%').height('100%')
-    .backgroundColor(this.colors().bgPrimary)
   }
 }
 
 @Entry
 @ComponentV2
 struct GuideSwiperPage {
+  /**
+   * 是否渲染桌面沉浸标题栏：判据是**自由窗口 / 电脑能力**，不是 deviceInfo.deviceType。
+   * 启动页早于 AppShell，因此直接读 EntryAbility 写入 AppStorage 的两个标记：
+   *   freeWindowMode = window.isInFreeWindowMode()；isPcDevice = 2in1 兜底。
+   */
+  private usesDesktopChrome(): boolean {
+    const free: boolean | undefined = AppStorage.get<boolean>('freeWindowMode')
+    const pc: boolean | undefined = AppStorage.get<boolean>('isPcDevice')
+    return (free !== undefined && free) || (pc !== undefined && pc)
+  }
+
   build() {
     Column() {
-      if (deviceInfo.deviceType === '2in1') {
+      if (this.usesDesktopChrome()) {
         PcWindowBar({ app: app })
       }
       GuideContent().layoutWeight(1)

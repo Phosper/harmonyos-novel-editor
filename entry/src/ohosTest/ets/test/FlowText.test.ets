@@ -3,7 +3,7 @@ import { Driver, ON } from '@kit.TestKit';
 import { KeyCode } from '@kit.InputKit';
 import { GraphemeUtil } from '../../../main/ets/editor/flowtext/model/GraphemeUtil';
 import { TextDocument } from '../../../main/ets/editor/flowtext/model/TextDocument';
-import { FormatRun, StyleKind } from '../../../main/ets/editor/flowtext/model/EditorTypes';
+import { FormatRun, StyleKind, CaretAffinity } from '../../../main/ets/editor/flowtext/model/EditorTypes';
 import { SelectionManager } from '../../../main/ets/editor/flowtext/interaction/SelectionManager';
 import { HitTester } from '../../../main/ets/editor/flowtext/interaction/HitTester';
 import { TextLayoutEngine, LayoutLine } from '../../../main/ets/editor/flowtext/render/TextLayoutEngine';
@@ -312,6 +312,72 @@ export default function flowTextTest(): void {
       expect(FlowTextFixture.savedCaret).assertEqual(3);
       await pressAndRelease(driver, KeyCode.KEYCODE_DEL);
       expect(controller.getText()).assertEqual('A');
+    });
+    it('multiRunLinesKeepLineRelativeOrigins', 0, () => {
+      // 多 run 行（中英回退/粗体分段）的 run 原点必须来自行 API，而不是固定 0
+      const value: string = 'abc中文ABC';
+      const runs: FormatRun[] = [new FormatRun(3, 7, true, false, 0)];
+      const lines: LayoutLine[] = layout(value, 240, 1, runs);
+      let checked: number = 0;
+      for (let i: number = 0; i < lines.length; i++) {
+        const line: LayoutLine = lines[i];
+        for (let r: number = 1; r < line.runs.length; r++) {
+          const run = line.runs[r];
+          const prev = line.runs[r - 1];
+          expect(run.runOffsetX > prev.runOffsetX).assertTrue();
+          expect(run.textStart >= prev.textStart).assertTrue();
+          if (line.nativeLine !== null) {
+            const scalar: number = line.nativeStartIndex +
+              line.indexMap.toScalar(run.textStart - line.startIndex);
+            const expectedX: number = line.nativeLine.getOffsetForStringIndex(scalar) / line.pxPerVp;
+            expect(Math.abs(run.runOffsetX - expectedX) < 0.5).assertTrue();
+          }
+          checked++;
+        }
+      }
+      expect(checked > 0).assertTrue();
+    });
+    it('caretAffinityAtSoftWrapKeepsHighlightAndCaretOnSameLine', 0, () => {
+      const value: string = 'abcdefghij';
+      const lines: LayoutLine[] = layout(value, 25, 1);
+      expect(lines.length > 1).assertTrue();
+      const boundary: number = lines[0].endIndex;
+      expect(lines[1].startIndex).assertEqual(boundary);
+      const down = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.DOWNSTREAM);
+      const up = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.UPSTREAM);
+      // DOWNSTREAM 贴上一行行尾（行尾 x 更大、y 更小）；UPSTREAM 贴下一行行首
+      expect(down.y < up.y).assertTrue();
+      expect(down.x > up.x).assertTrue();
+      expect(Math.abs(down.x - lines[0].width) < 0.5).assertTrue();
+    });
+    it('caretAndSelectionShareTheSameLineBox', 0, () => {
+      const value: string = '标题行与正文\nsecond line with 中文';
+      const lines: LayoutLine[] = layout(value, 240, 1, [new FormatRun(0, 5, false, false, 1)]);
+      for (let i: number = 0; i < lines.length; i++) {
+        const box = HitTester.lineBox(lines[i]);
+        expect(box.height > 0).assertTrue();
+      }
+      const first: LayoutLine = lines[0];
+      const box0 = HitTester.lineBox(first);
+      const caret = HitTester.caretPositionFor(first.startIndex, lines, 12, 8, 16,
+        CaretAffinity.DOWNSTREAM);
+      expect(Math.abs(caret.y - box0.top) < 0.01).assertTrue();
+      expect(Math.abs(caret.height - box0.height) < 0.01).assertTrue();
+    });
+    it('handleDragKeepsAnchorHeadIdentityWhenCrossing', 0, () => {
+      const m: SelectionManager = new SelectionManager();
+      m.setSource('ABCDE'); m.setSelection(1, 4);
+      expect(m.anchor).assertEqual(1); expect(m.head).assertEqual(4);
+      m.beginHandleDrag(1); m.updateHandleDrag(0);
+      expect(m.anchor).assertEqual(0); expect(m.head).assertEqual(4);
+      expect(m.startOffset).assertEqual(0); expect(m.endOffset).assertEqual(4);
+      m.updateHandleDrag(5);
+      expect(m.anchor).assertEqual(5); expect(m.head).assertEqual(4);
+      expect(m.startOffset).assertEqual(4); expect(m.endOffset).assertEqual(5);
+      expect(m.headAffinity).assertEqual(CaretAffinity.UPSTREAM);
+      m.endHandleDrag();
+      m.setSelection(4, 1);
+      expect(m.startOffset).assertEqual(1); expect(m.endOffset).assertEqual(4);
     });
   });
 }

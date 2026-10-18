@@ -24,6 +24,7 @@
  * 故 V2 应用层可以安全地把它嵌套进去。
  */
 import { Logger } from '../utils/Logger'
+import { deviceProfile } from '../utils/DeviceProfile'
 import { CanvasTextEditor, CanvasTextEditorController } from './flowtext/CanvasTextEditor'
 import { ScrollPolicy, FormatRun } from './flowtext/model/EditorTypes'
 
@@ -36,11 +37,17 @@ export struct TextEditorHost {
   @Prop textColor: string = '#182431'
   @Prop bgColor: string = '#FFFFFF'
   @Prop caretColor: string = '#007DFF'
+  /** 非当前段落淡化色（打字机模式）：由宿主按当前主题计算，编辑器不硬编码 */
+  @Prop dimTextColor: string = '#9AA0A6'
   @Prop placeholder: string = '开始写作…'
   /** 打字机模式（默认关）：开启后当前段垂直居中跟随 */
   @Prop typewriter: boolean = false
   /** 滚动策略（打字机关时为 NORMAL） */
   @Prop scrollPolicy: ScrollPolicy = ScrollPolicy.NORMAL
+  /** 电脑模式（自由窗口 / MatePad Edge 电脑模式）：键鼠优先交互（V1 岛屿只传基本类型） */
+  @Prop desktopMode: boolean = false
+  /** 指针为主输入（鼠标/触控板）：文本指针、右键菜单键盘操作、快捷键 */
+  @Prop pointerPrimary: boolean = false
 
   loadText: (docId: string) => string = () => ''
   loadCaret: (docId: string) => number = () => 0
@@ -62,6 +69,8 @@ export struct TextEditorHost {
   /** 控制器就绪回调：应用层据此触发格式命令（T026） */
   onControllerReady: (controller: CanvasTextEditorController) => void = () => {}
   onRequestSave: (ownerId: string) => void = () => {}
+  /** 沉浸编辑开关（F11） */
+  onToggleImmersive: () => void = () => {}
   onUndo: (ownerId: string) => void = () => {}
   onRedo: (ownerId: string) => void = () => {}
 
@@ -70,10 +79,17 @@ export struct TextEditorHost {
   private loadedDocId: string = ''
   /** 已消费到的 contentRev 版本号，避免同一版本被重复回灌 */
   private appliedRev: number = -1
+  /** 窗口重新激活订阅释放器（契约 §3：从桌面切回时把焦点还给编辑器） */
+  private unsubscribeActivated: (() => void) | null = null
 
   aboutToAppear(): void {
     this.appliedRev = this.contentRev
     this.onControllerReady(this.flowController)
+    // 电脑模式从其他窗口/任务栏切回来时，框架焦点已不在编辑器上；
+    // 订阅 DeviceProfile 的窗口激活通知，重新聚焦编辑器（否则切回来敲字没反应）。
+    this.unsubscribeActivated = deviceProfile.onWindowActivated(() => {
+      this.flowController.focus()
+    })
     this.reload()
   }
 
@@ -103,7 +119,7 @@ export struct TextEditorHost {
       this.flowController.setCaretPosition(caret)
       return
     }
-    this.flowController.setDocument(text, runs, caret)
+    this.flowController.setDocument(text, runs, caret, true)
     Logger.info('TextEditorHost: rev sync doc=' + this.docId + ' chars=' + text.length)
   }
 
@@ -122,6 +138,10 @@ export struct TextEditorHost {
   }
 
   aboutToDisappear(): void {
+    if (this.unsubscribeActivated !== null) {
+      this.unsubscribeActivated()
+      this.unsubscribeActivated = null
+    }
     this.flowController.blur()
   }
 
@@ -137,9 +157,12 @@ export struct TextEditorHost {
         textColor: this.textColor,
         bgColor: this.bgColor,
         caretColor: this.caretColor,
+        dimTextColor: this.dimTextColor,
         placeholder: this.placeholder,
         typewriter: this.typewriter,
         scrollPolicy: this.scrollPolicy,
+        desktopMode: this.desktopMode,
+        pointerPrimary: this.pointerPrimary,
         controller: this.flowController,
         onEdit: (text: string, runs: FormatRun[], caret: number) => {
           // activeId 可先于下一帧回灌改变；事件始终归属于画布实际载入的文稿。
@@ -177,6 +200,9 @@ export struct TextEditorHost {
         },
         onRedo: () => {
           this.onRedo(this.loadedDocId)
+        },
+        onToggleImmersive: () => {
+          this.onToggleImmersive()
         }
       })
         .width('100%')

@@ -7,6 +7,7 @@
 //   2) 选中态由 app.ui.mobileTab 单一来源派生，避免 Tabs 内部 index 与 store 两份真相。
 // 视觉仍遵循官方：底栏 56vp、图标位（本版以文字 + 选中指示条承载）、选中用品牌色。
 import { tokensFor, WeaverColorSet, WeaverMobile, MobileTab, DEFAULT_THEME_ID } from '../constants/DesignTokens'
+import { glassTabBarStyle } from './MaterialSurface'
 
 /** 底部页签项（静态描述，选中态由外部 selected 传入） */
 export interface MobileTabItem {
@@ -53,6 +54,7 @@ export struct MobileTabBar {
     }
     .width('100%')
     .height(WeaverMobile.TABBAR_H)
-    .backgroundColor(this.colors().bgPrimary)
+    // 底部页签玻璃条：与顶栏同一材质（上沿 1px 高光），是每屏第 2 层（也是最后一层）实时模糊
+    .attributeModifier(glassTabBarStyle(this.themeId))
   }
 }

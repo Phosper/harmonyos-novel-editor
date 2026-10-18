@@ -1,6 +1,7 @@
 // 设置面板（可复用）—— 由 bindSheet 底部弹层承载，替代整页跳转
 import { app } from '../store/AppStores'
 import { tokensFor, WeaverColorSet, THEMES, WeaverTheme } from '../constants/DesignTokens'
+import { sheenGlass, GLASS_NONE_GRADIENT } from '../constants/LightTokens'
 
 @ComponentV2
 export struct SettingsPanel {
@@ -27,6 +28,13 @@ export struct SettingsPanel {
           }
         }
         .width('100%').height(52).padding({ left: 16, right: 16 })
+        // 选中态用品牌薄纱（零模糊），未选中透出弹层玻璃
+        .linearGradient({
+          angle: 180,
+          colors: app.ui.themeId === t.id ? sheenGlass(app.ui.themeId).gradient : GLASS_NONE_GRADIENT
+        })
+        .border({ width: { bottom: 1 }, color: this.colors().divider })
+        .clickEffect({ level: ClickEffectLevel.LIGHT })
         .onClick(() => { app.ui.setTheme(t.id) })
       }, (t: WeaverTheme) => t.id)
 
@@ -37,6 +45,7 @@ export struct SettingsPanel {
           .onChange((on: boolean) => { app.ui.typewriter = on })
       }
       .width('100%').height(52).padding({ left: 16, right: 16 })
+      .clickEffect({ level: ClickEffectLevel.LIGHT })
     }
     .width('100%')
   }

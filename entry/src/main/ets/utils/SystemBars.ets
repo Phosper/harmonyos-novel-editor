@@ -13,6 +13,7 @@
 //     切成"底色 × 蒙层"的压暗色，与页面被压暗后的观感严格一致。
 import { window } from '@kit.ArkUI'
 import { Logger } from './Logger'
+import { isPcPlatform } from './DeviceProfile'
 
 /** 统一蒙层色：抽屉蒙层 / 对话框蒙层共用（bindSheet 用系统默认蒙层，无需指定） */
 export const OVERLAY_MASK_COLOR: string = '#66000000'
@@ -43,7 +44,19 @@ export function blendWithMask(bgHex6: string): string {
   return '#FF' + dim(hex.substring(0, 2)) + dim(hex.substring(2, 4)) + dim(hex.substring(4, 6))
 }
 
+/**
+ * 2in1（PC）没有传统状态栏/导航条，`setWindowSystemBarProperties` 在 2in1 上不可用
+ * （编译告警 "This API is unavailable to 2in1"，运行期返回 801）。
+ * 桌面 chrome 由窗口装饰与自绘标题栏负责，这里直接跳过，避免无意义的 IPC 与报错。
+ */
+function barsUnavailable(): boolean {
+  return isPcPlatform()
+}
+
 function setBars(w: window.Window, barColor: string, content: string): void {
+  if (barsUnavailable()) {
+    return
+  }
   w.setWindowSystemBarProperties({
     statusBarColor: barColor,
     navigationBarColor: barColor,

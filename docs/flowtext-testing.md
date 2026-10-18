@@ -67,3 +67,42 @@ node tools/import-regression.cjs
 Unicode 数据可用 `python tools/generate-grapheme-data.py` 从已保存数据重新生成；只有更新数据时才需要 `--download`。数据版权与许可见 `tools/unicode/LICENSE.txt`。
 
 尚需单独验收：不同厂商中文输入法的候选交互、手机触摸手柄、五万字持续输入帧率与内存、读屏编辑能力。通过这些回归用例不代表所有设备体验已经验收。
+
+## 2026-10-18 文字漂移与多选异常修复
+
+本轮针对"字形/光标/选区几何不一致、滚动跳变、多选手势状态残留"做修复，新增回归一律先能复现旧错误，再验证修复。
+
+**本地回归**：FlowText 60 项（新增 8 项）、数据 28、外壳 20、窗口 17、导入 5，合计 **130 项**全部通过；仍含 Unicode 17 官方 766 组字素样例。
+
+新增/加强的检查：
+- `multi-run lines get their own line-relative origin`：多 run 行的 run 原点由 `line.getOffsetForStringIndex` 反推，run 内字形用 `positions[i].x - positions[0].x` 归一；点击落在第二个 run 时不再误判到第一个 run。
+- `selection stores anchor/head; handle crossing never swaps identity`：选区只存 anchor/head，start/end 由 min/max 派生；手柄越界只改自己的端点，方向由 headAffinity 表达。
+- `caret affinity picks the same visual side as the selection highlight`：软换行边界 DOWNSTREAM 贴上一行行尾、UPSTREAM 贴下一行行首；光标盒与 `lineBox` 一致。
+- `dragging a selection keeps the drawn caret at head`：拖选/反向拖选时绘制光标跟随 head，而不是停在锚点。
+- `Ctrl+A updates caret, callbacks and IME once`：全选同步 caret/选区回调/IME 上报。
+- `clampScroll never resets to top while the layout cache is still empty`：改字号/改宽度重建引擎时不再把 scrollY 夹回 0。
+- `undo/redo reload preserves scroll; document switch resets it`：撤销/重做回灌保留滚动位置，换文稿才回到文首。
+- `preview text is drawn once, in the same run origin and baseline`：预上屏只画一次，字形总数与正文一致（旧 `drawNow` 未传 preview，预览与正文同色；`drawPreview` 为死代码且基线偏移）。
+
+**新增原生用例**（`entry/src/ohosTest/ets/test/FlowText.test.ets`）：多 run 行原点、软换行 affinity、caret 与 lineBox 一致性、手柄越界身份固定。运行方式不变：
+
+```powershell
+./tools/Test-FlowText.ps1 -DevEcoRoot 'D:/software/CommandLineTools-26.0.0.851' -JavaRoot 'D:/software/DevEco Studio/jbr' -BuildOnly
+./tools/Test-FlowText.ps1 -DevEcoRoot 'D:/software/CommandLineTools-26.0.0.851' -JavaRoot 'D:/software/DevEco Studio/jbr' -Device '<hdc list targets 的设备>'
+```
+
+**手工验收清单（每项保存 before/after 截图或录屏到 `artifacts/`）**：
+1. 中英混排/加粗/标题行：文字不重叠，点击定位准确，选区与字形对齐。
+2. 长文中部改字号/行距：不跳回顶部，光标仍在视口内。
+3. 切换四套主题：不跳回顶部，字形基线不跳。
+4. 拖宽/缩窄窗口、旋转、开关侧栏：重排后阅读位置保持。
+5. 五万字滚到底 + 底部连续回车：无回弹；fling 到边界立即停。
+6. 中文拼音组字：预览只出现一次、与正文同基线；提交无跳动。
+7. 正向/反向拖选：光标在 head 端，高亮跟随；松手只弹一次菜单。
+8. 长按选词后继续拖动：从词边界扩展，不重置为按下点。
+9. 拖动两端手柄并越过对端：方向翻转、不跳变；拖到屏幕边缘自动滚动且选区不滞后。
+10. Ctrl+A / Shift+方向键 / Home/End / 三击：选区、光标、工具栏态同步。
+11. 跨空行/跨段/标题行选区：空行有高亮、行间无缝、标题行高亮与光标同高。
+12. 触摸 Cancel（来电/返回手势）、鼠标拖出窗口释放：无残留选区/菜单/卡住。
+
+**本轮残余风险**：RTL/bidi 的 run 原点仍只按 LTR 近似；`changeSelection` 仍要求整篇文本（已做 32ms 节流）；惰性排版的锚点恢复为近似（±1 行）；真实设备上的字体回退/手柄手感需按上述清单人工确认。

@@ -14,8 +14,8 @@
 //    hideNavBar 保持 false —— 设为 true 会连同**内容区**一起隐藏，栈空即整屏空白。
 // 4. 二级页面用 NavDestination（官方路径），返回键由路由栈接管，无需手写 onBackPress。
 import { promptAction, window } from '@kit.ArkUI'
-import { deviceInfo } from '@kit.BasicServicesKit'
-import { BreakPoint, breakPointFrom } from '../utils/BreakPoint'
+import { BreakPoint } from '../utils/BreakPoint'
+import { DeviceSnapshot, deviceProfile } from '../utils/DeviceProfile'
 import { Logger } from '../utils/Logger'
 import { WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
 import { app } from '../store/AppStores'
@@ -26,17 +26,14 @@ import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportS
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
 import { InputDialog } from './InputDialog'
-import { PcWindowBar } from './PcWindowBar'
+import { DesktopTitleBar } from './DesktopTitleBar'
+import { EditorPane } from './EditorPane'
+import { EditorTools } from './EditorTools'
+import { GlowPageBackground, glassBarStyle } from './MaterialSurface'
 import { WorkspaceDest } from './WorkspaceDest'
 import { MobileShell } from './MobileShell'
 import { nav, Routes, ensureWorkspace } from './Navigator'
 import { SettingsDest } from '../pages/dest/SettingsDest'
-import { watchSafeArea, safeTopVp, safeBottomVp } from '../utils/SafeArea'
-
-enum ToolbarAction {
-  UNDO = 0,
-  REDO = 1
-}
 
 enum ExportAction {
   CHAPTER_TXT = 0,
@@ -56,33 +53,19 @@ export struct AppShell {
   /** 系统避让区（沉浸式全屏）：顶部状态栏 / 底部导航条高度（vp） */
   @Local safeTop: number = 0
   @Local safeBottom: number = 0
+  /** 自绘标题栏总高（含安全区，vp）：0 表示当前没有自绘标题栏（手机/平板） */
+  @Local chromeHeight: number = 0
+  /** 是否走桌面沉浸标题栏：= 自由窗口模式（window.isInFreeWindowMode()） */
+  @Local usesDesktopChrome: boolean = false
 
-  private sizeChangeBound: boolean = false
-  private safeDisposer: (() => void) | null = null
+  /** DeviceProfile 订阅释放器 */
+  private profileDisposer: (() => void) | null = null
 
   aboutToAppear(): void {
-    // isPcDevice 由 EntryAbility 写入 AppStorage，但此前**从未被读回**，
-    // 导致 app.ui.isPc 恒为 false → PcWindowBar 永不渲染 → 系统标题栏一直在。
-    // 这里是修复点：显式把 AppStorage 的值同步进 store。
-    const pc: boolean | undefined = AppStorage.get<boolean>('isPcDevice')
-    app.ui.isPcDevice = pc !== undefined ? pc : false
-    // 沉浸式：全设备全屏布局，内容延伸到系统栏区域 → 按避让区推开顶部/底部
-    this.safeDisposer = watchSafeArea(() => {
-      // 避让区变化（旋转/折叠/分屏）会连续触发多次：只在数值真的变了才写 @Local，
-      // 否则整棵 AppShell 子树会被无意义地重渲染（旋转动画期间掉帧）。
-      const top: number = safeTopVp()
-      const bottom: number = safeBottomVp()
-      if (top !== this.safeTop) {
-        this.safeTop = top
-      }
-      if (bottom !== this.safeBottom) {
-        this.safeBottom = bottom
-      }
-    })
-    this.safeTop = safeTopVp()
-    this.safeBottom = safeBottomVp()
-    this.syncBreakPoint()
-    this.registerSizeChange()
+    // 设备分流统一入口：断点 / 自由窗口 / 避让区 / 窗口状态全部由 DeviceProfile 订阅一次，
+    // AppShell 只消费快照。旧实现把 watchSafeArea + windowSizeChange 分两处注册，
+    // 且 isPcDevice 只写不读（导致 app.ui.isPc 恒为 false）—— 一并收口在这里。
+    this.bindDeviceProfile()
     app.init()
       .then(() => {
         this.loading = false
@@ -98,6 +81,17 @@ export struct AppShell {
         this.loadError = String(e)
         this.loading = false
       })
+  }
+
+  /**
+   * 退出沉浸后，确保宽屏第三栏仍停在编辑工作区（沉浸期间直接渲染 EditorPane，
+   * 不依赖 Navigation 路由栈；若栈里没有 WORKSPACE，退出后要补回来）。
+   */
+  @Monitor('app.ui.immersiveEditing')
+  onImmersiveEditingChanged(): void {
+    if (!app.ui.immersiveEditing && this.breakPoint === BreakPoint.LG && app.editor.hasDoc) {
+      ensureWorkspace()
+    }
   }
 
   /** 手机端启动：打开最近编辑过的文稿并进入编辑页（无文稿则停留在文稿列表） */
@@ -116,10 +110,11 @@ export struct AppShell {
   }
 
   aboutToDisappear(): void {
-    this.releaseSizeChange()
-    if (this.safeDisposer !== null) {
-      this.safeDisposer()
-      this.safeDisposer = null
+    // 只摘掉本页的订阅：窗口级监听归 DeviceProfile / EntryAbility 的窗口寿命管理，
+    // 页面卸载时解绑窗口监听会让再次进入页面时丢事件。
+    if (this.profileDisposer !== null) {
+      this.profileDisposer()
+      this.profileDisposer = null
     }
     app.flushAll()
   }
@@ -130,54 +125,70 @@ export struct AppShell {
     return AppStorage.get<window.Window>('mainWindow')
   }
 
-  private syncBreakPoint(): void {
+  /**
+   * 订阅设备快照并完成首次 attach。
+   * DeviceProfile 内部注册 windowSizeChange / freeWindowModeChange / avoidAreaChange /
+   * windowStatusChange；这里拿到的 disposer 只解除本页的订阅。
+   */
+  private bindDeviceProfile(): void {
+    if (this.profileDisposer !== null) {
+      return
+    }
+    this.profileDisposer = deviceProfile.onChange((snap: DeviceSnapshot): void => {
+      this.handleSnapshot(snap)
+    })
+    const win: window.Window | undefined = this.mainWindow()
     try {
-      const bp: WidthBreakpoint = this.getUIContext().getWindowWidthBreakpoint()
-      const next: BreakPoint = breakPointFrom(bp)
-      if (next !== this.breakPoint) {
-        // 断点档位变化时重置侧栏默认显隐：窄屏默认收起（以 Overlay 抽屉出现），宽屏默认常驻
-        app.ui.showSidebar = next !== BreakPoint.SM
-      }
-      this.breakPoint = next
-      app.ui.breakPoint = next
-      // 仅在宽屏（lg）让工作区常驻第三栏：它自带"还没有打开任何文稿"的空状态，
-      // 等价于官方的分栏占位页（splitPlaceholder）。
-      // sm/md 不再预置工作区 —— 手机端以底部页签/分段页签为首页，打开文稿时才推入工作区。
-      if (next === BreakPoint.LG) {
-        ensureWorkspace()
+      if (win !== undefined) {
+        // getUIContext() 只能在 loadContent 之后调用；aboutToAppear 已满足（§0 禁忌）
+        deviceProfile.attach(this.getUIContext(), win)
+      } else {
+        deviceProfile.refresh()
       }
     } catch (e) {
-      Logger.error('syncBreakPoint failed, keep current: ' + String(e))
+      Logger.error('AppShell: deviceProfile attach failed: ' + String(e))
+      // attach 失败也必须落到一份可用快照，否则界面会停在默认值上
+      this.handleSnapshot(deviceProfile.snapshot)
     }
   }
 
-  private registerSizeChange(): void {
-    const win: window.Window | undefined = this.mainWindow()
-    if (win === undefined) {
-      return
+  /**
+   * 应用一份设备快照（唯一写入口）。
+   *
+   * 断点档位变化时保留原有副作用：窄屏默认收起侧栏（以 Overlay 抽屉出现）、
+   * 宽屏常驻侧栏；宽屏常驻工作区（它自带"还没有打开任何文稿"的空状态）。
+   */
+  private handleSnapshot(snap: DeviceSnapshot): void {
+    const nextBreakPoint: BreakPoint = snap.breakPoint
+    if (nextBreakPoint !== this.breakPoint) {
+      app.ui.showSidebar = nextBreakPoint !== BreakPoint.SM
     }
-    try {
-      win.on('windowSizeChange', () => {
-        this.syncBreakPoint()
-      })
-      this.sizeChangeBound = true
-      Logger.info('AppShell: windowSizeChange bound')
-    } catch (e) {
-      Logger.error('bind windowSizeChange failed: ' + String(e))
+    this.breakPoint = nextBreakPoint
+    this.safeTop = snap.safeTopVp
+    this.safeBottom = snap.safeBottomVp
+    this.usesDesktopChrome = snap.isDesktopChrome
+    this.chromeHeight = snap.chromeHeightVp
+    // store 与 AppShell 用同一份快照：deviceClass / freeWindowMode / pointerPrimary / breakPoint
+    app.ui.applyDeviceSnapshot(snap)
+    // 仅在宽屏（lg）让工作区常驻第三栏；sm/md 打开文稿时才推入工作区
+    if (nextBreakPoint === BreakPoint.LG) {
+      ensureWorkspace()
     }
   }
 
-  private releaseSizeChange(): void {
-    const win: window.Window | undefined = this.mainWindow()
-    if (win === undefined || !this.sizeChangeBound) {
-      return
-    }
-    try {
-      win.off('windowSizeChange')
-    } catch (e) {
-      Logger.warn('unbind windowSizeChange failed: ' + String(e))
-    }
-    this.sizeChangeBound = false
+  /**
+   * 根容器顶部内边距（vp）—— **只取一种来源，绝不双算**：
+   *
+   *  · 电脑模式（自由窗口）：取 chromeHeight 这一种。快照里
+   *    chromeHeightVp = 48 + safeTopVp，已经含了状态栏高度；
+   *    DesktopTitleBar 是根容器的第一个子节点、自身高度就是 chromeHeight，
+   *    它已经把后续内容下推了 chromeHeight，所以根容器这里必须补 **0**。
+   *    （再加 safeTop 或再加 chromeHeight 都是双算 —— §3 的"防双算"落点在这里。）
+   *  · 手机/平板：没有自绘标题栏，仍按 safeTop 撑开；配合 expandSafeArea 的
+   *    背景延伸，原有上下避让行为完全不变。
+   */
+  private topInset(): number {
+    return this.usesDesktopChrome ? 0 : this.safeTop
   }
 
   private colors(): WeaverColorSet {
@@ -191,26 +202,73 @@ export struct AppShell {
   }
 
   // 官方默认 navBarWidth 240vp（可调范围 [240, min(组件宽40%, 432)]）
+  // 三形态分流（只改 chrome/尺寸，不改断点）：
+  //   电脑（自由窗口）→ 320：键鼠场景信息密度更高，列表列宽更宽
+  //   平板（触摸为主）→ 280：给正文留更多横向空间
+  //   md 档（手机横屏/折叠）→ 240
   private navBarWidthVp(): number {
-    return this.breakPoint === BreakPoint.MD ? 240 : 300
+    if (this.breakPoint === BreakPoint.MD) {
+      return 240
+    }
+    return app.ui.isDesktopMode ? 320 : 280
   }
 
-  // SideBarContainer 宽度：官方默认 min240/max280；平板和 2in1 最佳实践给 320/500
+  /**
+   * 平板触摸形态：设备是平板、且当前没有检测到键鼠。
+   * 只用于命中区/悬停反馈等**交互**差异，绝不用于断点或布局档位判断
+   * （CodeLinter one-multi-breakpoint-check 禁止设备类型参与断点）。
+   */
+  private isTabletTouch(): boolean {
+    return app.ui.isTabletDevice && !app.ui.pointerPrimary
+  }
+
+  // SideBarContainer 宽度：官方默认 min240/max280。
+  // 电脑自由窗口：默认 260 / 可拉到 400（给中间列表与正文留足空间）；
+  // 平板触摸：260/360（命中区更宽）；其余 240/280。
   private sideBarMinWidth(): number {
-    return app.ui.isPc ? 320 : 240
+    return 240
   }
 
   private sideBarMaxWidth(): number {
-    return app.ui.isPc ? 500 : 280
+    if (app.ui.usesDesktopChrome) {
+      return 400
+    }
+    return this.isTabletTouch() ? 360 : 280
+  }
+
+  private sideBarWidthVp(): number {
+    return app.ui.usesDesktopChrome ? 260 : 240
+  }
+
+  /** 顶栏高度：键鼠 44vp（紧凑）；平板触摸 52vp（命中区）；手机仍走 MobileShell */
+  private appBarHeight(): number {
+    return this.isTabletTouch() ? 52 : WeaverSpacing.TITLEBAR_H
+  }
+
+  /** 悬停反馈只在键鼠形态启用：触摸设备不显示 hover 高亮（无可悬停指针） */
+  private barHover(): HoverEffect {
+    return app.ui.pointerPrimary ? HoverEffect.Highlight : HoverEffect.None
   }
 
   // ===================== 结构 =====================
 
   build() {
     Stack() {
+      // 页面光感背景（T3）：底层线性渐变 + 顶部径向光晕，只画一层、不吃点击（hitTest None）。
+      // 只覆盖安全区内区域；状态栏条由窗口底色（SystemBars.applySystemBars）承托，同色无断层。
+      GlowPageBackground(app.ui.themeId)
+
       Column() {
-        if (deviceInfo.deviceType === '2in1') {
-          PcWindowBar({ app: app })
+        // 桌面沉浸标题栏：判据是自由窗口模式（含平板电脑模式），**不是** deviceType。
+        // 它自己的高度 = 48 + safeTop（chromeHeight），并同时覆盖状态栏条区域。
+        if (this.usesDesktopChrome) {
+          DesktopTitleBar({
+            app: app,
+            safeTop: this.safeTop,
+            chromeHeight: this.chromeHeight,
+            onExport: () => this.openExportMenu(),
+            onImport: () => this.runImport()
+          })
         }
         Column() {
           if (this.loading) {
@@ -230,8 +288,10 @@ export struct AppShell {
       // 底部必须一起避让：官方 FAQ 明确 SafeAreaType.SYSTEM **不含**底部导航栏，
       // 底部高度来自 TYPE_NAVIGATION_INDICATOR；只避让顶部会让列表末行/正文末行
       // 伸到手势条下方，且那片区域的点击优先被系统拦截。
-      .padding({ top: this.safeTop, bottom: this.safeBottom })
-      .backgroundColor(this.colors().bgPrimary)
+      // 顶部：电脑模式取 0（标题栏已占位，见 topInset 注释）；手机/平板取 safeTop
+      .padding({ top: this.topInset(), bottom: this.safeBottom })
+      // 背景交给下面的 GlowPageBackground 光感层，本容器必须透明（否则会把光感整块盖住）。
+      .backgroundColor(Color.Transparent)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
       if (app.ui.dialog !== ShellDialog.NONE) {
@@ -239,6 +299,28 @@ export struct AppShell {
       }
     }
     .width('100%').height('100%')
+    // 输入形态探测：鼠标进入窗口才触发（触摸设备不派发 hover），
+    // 第一次 hover 即把平板/电脑模式升级为键鼠优先（hover 高亮、光标、快捷键提示随之启用）。
+    .onHover((isHover: boolean) => {
+      if (isHover) {
+        deviceProfile.notePointerActivity()
+      }
+    })
+  }
+
+  /** 沉浸编辑：正文在窗口内居中铺开（阅读宽度上限 880vp），隐藏侧栏/列表/工具条 */
+  @Builder
+  immersiveBody() {
+    Row() {
+      Column() {
+        EditorPane({ app: app }).layoutWeight(1)
+      }
+      .width('100%').height('100%')
+      .constraintSize({ maxWidth: 880 })
+    }
+    .width('100%').height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(this.colors().bgPrimary)
   }
 
   @Builder
@@ -280,9 +362,16 @@ export struct AppShell {
   @Builder
   mainLayout() {
     Column() {
-      // 断点分发：lg 及以上走现有三栏（完全不变）；sm/md 走手机端外壳。
-      if (this.breakPoint === BreakPoint.LG) {
-        this.appBar()
+      // 断点分发：lg 及以上三栏；sm/md 走手机端外壳。
+      // 电脑模式：统一窗口头（DesktopTitleBar）已包含应用级动作，这里不再叠一条 appBar。
+      // 平板宽屏：保留触摸友好的 appBar（无窗口三键）。
+      // 沉浸编辑：窗口内只保留正文（桌面保留窗口头，手机/平板由编辑区浮动按钮退出）。
+      if (app.ui.immersiveEditing) {
+        this.immersiveBody()
+      } else if (this.breakPoint === BreakPoint.LG) {
+        if (!app.ui.usesDesktopChrome) {
+          this.appBar()
+        }
         this.wideBody()
       } else {
         MobileShell({
@@ -329,6 +418,7 @@ export struct AppShell {
     }
     .showSideBar(app.ui.showSidebar)
     .showControlButton(false)
+    .sideBarWidth(this.sideBarWidthVp())
     .minSideBarWidth(this.sideBarMinWidth())
     .maxSideBarWidth(this.sideBarMaxWidth())
     .minContentWidth(360)
@@ -342,52 +432,56 @@ export struct AppShell {
 
   // 命名注意：不要叫 toolbar —— 它是 ArkUI 内置属性名（基类 CustomComponent 已占用），
   // 同名 @Builder 会被解析成属性设置器并报类型错误。
+  // 宽屏顶栏：三形态只改"动作集合 / 命中区 / 悬停反馈"，不改断点与栏位结构。
+  //   电脑（自由窗口）：撤销 / 重做 / 导出 / 导入 / 设置 全部常驻，键鼠 hover 高亮；
+  //   平板（触摸为主）：撤销 / 重做已在编辑工具条（宽屏可见），顶栏只留导出 / 导入 / 设置，
+  //                    命中区放大到 48vp，无 hover；
+  //   手机：不使用本顶栏（走 MobileShell 的最小 chrome）。
   @Builder
   appBar() {
     Row() {
-      Text('侧栏')
-        .fontSize(13)
-        .fontColor(app.ui.showSidebar ? this.colors().brand : this.colors().textSecondary)
+      Text('☰')
+        .fontSize(16)
+        .fontColor(app.ui.showSidebar ? this.colors().textPrimary : this.colors().textTertiary)
+        .width(44).height(44).textAlign(TextAlign.Center)
+        .accessibilityText(app.ui.showSidebar ? '收起侧栏' : '展开侧栏')
+        .hoverEffect(this.barHover())
         .onClick(() => app.ui.toggleSidebar())
       Text(this.centerTitle())
-        .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.colors().textPrimary)
-        .margin({ left: 16 }).layoutWeight(1)
+        .fontSize(15).fontWeight(FontWeight.Medium)
+        .fontColor(this.colors().textPrimary)
+        .margin({ left: 8 }).layoutWeight(1)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
 
-      this.toolbarAction(ToolbarAction.UNDO, '撤销')
-      this.toolbarAction(ToolbarAction.REDO, '重做')
-      Text('导出').fontSize(13).fontColor(this.colors().textSecondary)
-        .margin({ left: 18 }).onClick(() => this.openExportMenu())
-      Text('导入').fontSize(13).fontColor(this.colors().textSecondary)
-        .margin({ left: 18 }).onClick(() => this.runImport())
-      Text('设置').fontSize(13).fontColor(this.colors().textSecondary)
-        .margin({ left: 18 }).onClick(() => nav.pushPath({ name: Routes.SETTINGS }))
+      if (app.editor.hasDoc) {
+        Text(app.editor.wordCount.toString() + ' 字')
+          .fontSize(11).fontColor(this.colors().textTertiary)
+          .margin({ right: 8 })
+        // 平板宽屏：常用工具同样上移到顶栏（compact 折叠格式组）
+        EditorTools({ app: app, compact: true, immersive: false })
+      }
+
+      this.barAction('导出', () => this.openExportMenu())
+      this.barAction('导入', () => this.runImport())
+      this.barAction('设置', () => nav.pushPath({ name: Routes.SETTINGS }))
     }
-    .width('100%').height(WeaverSpacing.TITLEBAR_H)
-    .padding({ left: 14, right: 14 })
-    .backgroundColor(this.colors().bgCard)
-    .border({ width: { bottom: 1 }, color: this.colors().divider })
+    .width('100%').height(this.appBarHeight())
+    .padding({ left: 6, right: 10 })
+    .attributeModifier(glassBarStyle(app.ui.themeId))
   }
 
+  /** 顶栏文字动作：触摸设备用 48vp 命中区，键鼠设备用紧凑间距 + hover 高亮 */
   @Builder
-  toolbarAction(kind: ToolbarAction, label: string) {
+  barAction(label: string, action: () => void) {
     Text(label)
-      .fontSize(13)
-      .fontColor(this.isToolbarEnabled(kind) ? this.colors().textSecondary : this.colors().textTertiary)
-      .margin({ left: 18 })
-      .onClick(() => this.runToolbar(kind))
-  }
-
-  private isToolbarEnabled(kind: ToolbarAction): boolean {
-    return kind === ToolbarAction.UNDO ? app.editor.canUndo : app.editor.canRedo
-  }
-
-  private runToolbar(kind: ToolbarAction): void {
-    if (kind === ToolbarAction.UNDO) {
-      app.editor.undo()
-    } else {
-      app.editor.redo()
-    }
+      .fontSize(this.isTabletTouch() ? 15 : 13)
+      .fontColor(this.colors().textSecondary)
+      .padding({ left: this.isTabletTouch() ? 12 : 6, right: this.isTabletTouch() ? 12 : 6,
+        top: 10, bottom: 10 })
+      .margin({ left: this.isTabletTouch() ? 4 : 14 })
+      .accessibilityText(label)
+      .hoverEffect(this.barHover())
+      .onClick(action)
   }
 
   private centerTitle(): string {

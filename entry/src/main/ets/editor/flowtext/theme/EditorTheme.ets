@@ -1,3 +1,5 @@
+import { TypewriterScaleOptions } from './TypewriterScale';
+
 /**
  * FlowText 主题配置
  *
@@ -29,11 +31,27 @@ export class EditorTheme {
   placeholderColor: string = '#9AA0A6';
   /** 预上屏文本颜色（拼音组合态） */
   previewColor: string = '#5C6470';
+  /**
+   * 非当前段落的淡化字色（打字机模式）。
+   * 由宿主按当前主题的正文色/纸色混合得到（见 DesignTokens.blendHexColor），
+   * 不在这里硬编码主题相关颜色。
+   */
+  dimTextColor: string = '#9AA0A6';
 
   /** 光标宽度（vp） */
   caretWidth: number = 2;
-  /** 光标闪烁动画时长（ms） */
+  /** 光标闪烁动画时长（ms）——保留字段以兼容旧调用；呼吸光标使用 caretBreathPeriodMs */
   caretBlinkDuration: number = 600;
+  /** 呼吸光标一个完整明暗周期的时长（ms）：低频缓变，避免干扰阅读 */
+  caretBreathPeriodMs: number = 2400;
+  /** 打字机段落缩放层级：当前段 1.08×、相邻 0.98×、逐行 -0.02、下限 0.90× */
+  typewriterScale: TypewriterScaleOptions = new TypewriterScaleOptions();
+  /** 段落切换缩放动画时长（ms）；关闭后直接切换（可作为减少动态效果的降级） */
+  typewriterScaleDurationMs: number = 180;
+  /** 是否启用段落缩放过渡动画 */
+  typewriterScaleAnimated: boolean = true;
+  /** 呼吸光标刷新步长（ms）：约 16fps，低频呼吸足够平滑，避免常驻 60fps 重绘 */
+  caretBreathStepMs: number = 60;
 
   /** 每行总高 = lineHeight + lineSpacing（末行除外由布局处处理） */
   lineStep(): number {

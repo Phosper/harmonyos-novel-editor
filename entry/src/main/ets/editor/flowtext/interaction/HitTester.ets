@@ -7,6 +7,7 @@
 import { LayoutLine } from '../render/TextLayoutEngine';
 import { CursorState } from './CursorState';
 import { GraphemeUtil } from '../model/GraphemeUtil';
+import { CaretAffinity, LineBox } from '../model/EditorTypes';
 
 export class HitTester {
   /**
@@ -81,12 +82,13 @@ export class HitTester {
     if (contentX >= targetLine.width) {
       return targetLine.endIndex;
     }
-    // 行内定位：逐字形累加宽度
-    let runX = 0;
+    // 行内定位（无原生行时的兜底）：逐字形按 run 局部坐标 + runOffsetX 累加。
+    // 多 run 行必须加上各自的行内原点，否则粗体/混排段会回到行首参与命中。
     for (let r = 0; r < targetLine.runs.length; r++) {
       const run = targetLine.runs[r];
+      const originX: number = run.runOffsetX;
       for (let g = 0; g < run.glyphs.length; g++) {
-        const left: number = runX;
+        const left: number = originX + run.positions[g].x;
         const right: number = left + run.advances[g].x;
         if (contentX < right) {
           // 取最近边界。用逐字形的真实码元偏移，而不是 textStart + g：
@@ -96,39 +98,71 @@ export class HitTester {
           }
           return run.offsetAfterGlyph(g);
         }
-        runX = right;
       }
     }
     return targetLine.endIndex;
   }
 
-  /** 字符偏移 → 光标状态（x/y/height；y 为内容坐标，不含 paddingTop，绘制时统一加 padTop）
-   *  光标垂直对齐"文字中线"：top = 行基线 - 0.8*字形(近似ascend)，height = 字形(≈字号)，跨行一致。 */
+  /**
+   * 一行文字的可见盒（内容坐标，vp）。
+   * 光标、选区高亮、手柄全部使用同一函数，避免"高亮 24vp、光标 19vp"的错位。
+   * ascent 在 OH 中为负值，LayoutLine 已取绝对值；leading 恒为 0，不重复相加。
+   */
+  static lineBox(line: LayoutLine): LineBox {
+    const ascent: number = Math.max(0, line.ascent);
+    const descent: number = Math.max(0, line.descent);
+    const glyphHeight: number = ascent + descent;
+    if (glyphHeight > 0.5) {
+      return new LineBox(line.baseline - ascent, glyphHeight);
+    }
+    return new LineBox(line.yOffset, Math.max(1, line.height));
+  }
+
+  /**
+   * 字符偏移 → 光标状态（x/y/height；y 为内容坐标，不含 paddingTop，绘制时统一加 padTop）。
+   *
+   * y/height 取该行的可见盒（与选区高亮、手柄完全一致）。
+   * 软换行边界处同一个 offset 有两个视觉位置，由 affinity 选边：
+   *   - DOWNSTREAM：贴上一行行尾（正向选择 head / 折叠光标）；
+   *   - UPSTREAM：贴下一行行首（反向选择 head）。
+   */
   static caretPositionFor(offset: number, lines: LayoutLine[], paddingLeftPx: number, paddingTopPx: number,
-    fontSizeVp: number): CursorState {
+    fontSizeVp: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): CursorState {
     const caret = new CursorState();
     if (lines.length === 0) {
       caret.x = paddingLeftPx;
       caret.y = 0;
-      caret.height = fontSizeVp;
+      caret.height = Math.max(1, fontSizeVp);
       return caret;
     }
-    let target: LayoutLine = lines[0];
-    for (let i = 0; i < lines.length; i++) {
-      if (offset >= lines[i].startIndex && (offset < lines[i].endIndex ||
-        (offset === lines[i].endIndex && (i === lines.length - 1 || lines[i + 1].startIndex !== offset)))) {
-        target = lines[i];
-        break;
+    const target: LayoutLine = HitTester.caretLineFor(offset, lines, affinity);
+    caret.x = HitTester.offsetToX(target, offset, paddingLeftPx);
+    const box: LineBox = HitTester.lineBox(target);
+    caret.y = box.top;
+    caret.height = box.height > 0.5 ? box.height : Math.max(1, fontSizeVp);
+    return caret;
+  }
+
+  /**
+   * 求 offset 的光标应落在哪一行。
+   * 软换行边界（offset === line.endIndex === next.startIndex）由 affinity 决定；
+   * 硬换行（next.startIndex !== offset）与末行一律落在当前行。
+   */
+  private static caretLineFor(offset: number, lines: LayoutLine[], affinity: CaretAffinity): LayoutLine {
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: LayoutLine = lines[i];
+      if (offset < line.endIndex) {
+        return line;
       }
-      if (i === lines.length - 1 && offset > lines[i].endIndex) {
-        target = lines[i];
+      if (offset === line.endIndex) {
+        const isLast: boolean = i === lines.length - 1;
+        if (isLast || lines[i + 1].startIndex !== offset) {
+          return line;
+        }
+        return affinity === CaretAffinity.DOWNSTREAM ? line : lines[i + 1];
       }
     }
-    caret.x = HitTester.offsetToX(target, offset, paddingLeftPx);
-    // 光标顶端推到文字字形顶部（近似 ascend = 0.8*fs），高度 = 字形高 → 垂直对齐文字中线
-    caret.y = target.baseline - target.ascent;
-    caret.height = Math.max(fontSizeVp, target.ascent + target.descent);
-    return caret;
+    return lines[lines.length - 1];
   }
 
   /**
@@ -217,9 +251,11 @@ export class HitTester {
   /** 行内字符偏移 → x（px） */
   static offsetToX(line: LayoutLine, offset: number, paddingLeftPx: number): number {
     if (line.nativeLine !== null) {
-      return paddingLeftPx + line.nativeLine.getOffsetForStringIndex(
+      const nativeX: number = line.nativeLine.getOffsetForStringIndex(
         line.nativeStartIndex + line.indexMap.toScalar(Math.max(0, Math.min(line.endIndex - line.startIndex,
-          offset - line.startIndex)))) / line.pxPerVp;
+          offset - line.startIndex))));
+      // 行 API 返回 px；异常值回退到行首，避免 NaN 把整个绘制坐标污染成空白页
+      return Number.isFinite(nativeX) ? paddingLeftPx + nativeX / line.pxPerVp : paddingLeftPx;
     }
     if (offset <= line.startIndex) {
       return paddingLeftPx;
@@ -227,24 +263,26 @@ export class HitTester {
     if (offset >= line.endIndex) {
       return paddingLeftPx + line.width;
     }
-    let x = paddingLeftPx;
+    // 兜底：run.positions 是 run 局部坐标，必须加各自的 runOffsetX
+    let lastX: number = paddingLeftPx;
     for (let r = 0; r < line.runs.length; r++) {
       const run = line.runs[r];
+      const originX: number = paddingLeftPx + run.runOffsetX;
       if (offset <= run.textStart) {
-        return x;
+        return originX;
       }
       if (offset >= run.textEnd) {
-        x += run.width();
+        lastX = originX + run.width();
         continue;
       }
       // 码元偏移落在哪个字形内，就取该字形的左边界 x。
       // 不能用 offset - textStart 当下标：emoji 占 2 码元会让下标越界或错位。
       const gi: number = run.glyphIndexAt(offset);
       if (gi < 0) {
-        return x;
+        return originX;
       }
-      return x + run.positions[gi].x;
+      return originX + run.positions[gi].x;
     }
-    return x;
+    return lastX;
   }
 }

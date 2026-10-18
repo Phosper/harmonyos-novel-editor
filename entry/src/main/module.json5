@@ -12,6 +12,13 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    // 沉浸光感材质使能（API 26，仅 entry 模块生效）：T3 的 ImmersiveMaterial 依赖此项
+    "metadata": [
+      {
+        "name": "ohos.arkui.UIMaterial.state",
+        "value": "enable"
+      }
+    ],
     "abilities": [
       {
         "name": "EntryAbility",
