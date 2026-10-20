@@ -3,6 +3,7 @@
 // 与底部页签共用 app.ui.mobileTab 作为选中来源；本组件只是顶部形态的呈现。
 import { tokensFor, WeaverColorSet, WeaverMobile, MobileTab, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import { MobileTabItem } from './MobileTabBar'
+import { glassVeilStyle } from './MaterialSurface'
 
 @ComponentV2
 export struct MobileSectionTabs {
@@ -44,7 +45,7 @@ export struct MobileSectionTabs {
     .width('100%')
     .height(44)
     .padding({ left: 8, right: 8 })
-    .backgroundColor(this.colors().bgCard)
-    .border({ width: { bottom: 1 }, color: this.colors().divider })
+    // 分段页签是"次级面"：零实时模糊（薄纱 + 下沿 1px 高光），把模糊预算留给列表头
+    .attributeModifier(glassVeilStyle(this.themeId))
   }
 }

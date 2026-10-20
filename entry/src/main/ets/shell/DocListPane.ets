@@ -12,6 +12,7 @@ import type { AppStores } from '../store/AppStores'
 import { fireAndLog } from '../store/AppStores'
 import { DocItem } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
+import { glassVeilStyle } from './MaterialSurface'
 
 @ComponentV2
 struct DocRow {
@@ -80,7 +81,10 @@ struct DocRow {
     // 保证整行热区 ≥48vp（官方推荐值），窄屏触摸更稳
     .constraintSize({ minHeight: 56 })
     .accessibilityText(this.item.title)
-    .backgroundColor(this.item.selected ? this.colors().activeBg : this.colors().bgPrimary)
+    // 键鼠形态下悬停高亮（触摸设备无 hover，不产生额外绘制）
+    .hoverEffect(HoverEffect.Highlight)
+    // 选中态 = 品牌色薄纱（零实时模糊，列表里不做逐行模糊）；未选中透出页面光感
+    .backgroundColor(this.item.selected ? this.colors().activeBg : Color.Transparent)
     .onClick(() => this.onOpen(this.item.id))
     .gesture(LongPressGesture().onAction(() => this.onMenu(this.item)))
   }
@@ -178,40 +182,137 @@ export struct DocListPane {
       } else if (data.index === 2) {
         fireAndLog(stores.toggleInspiration(item.id), 'toggleInspiration')
       } else {
-        fireAndLog(stores.moveToTrash(item.id), 'moveToTrash')
+        this.moveDocToTrash(item.id)
       }
     })
   }
 
   /** 原生滑动操作：删除按钮 */
+  /**
+   * 默认删除 = 移入废纸篓（可恢复），并提供短时撤销。
+   * 彻底删除只在废纸篓筛选的菜单里提供。
+   */
+  private moveDocToTrash(id: string): void {
+    const stores: AppStores | null = this.app
+    if (stores === null) {
+      return
+    }
+    stores.moveToTrash(id)
+      .then(() => {
+        this.offerTrashUndo(stores, id)
+      })
+      .catch(() => {
+        // 失败不能提示“已移入”；给出可重试反馈
+        try {
+          this.getUIContext().getPromptAction().showToast({ message: '移入废纸篓失败，请重试' })
+        } catch (e) {
+        }
+      })
+  }
+
+  private offerTrashUndo(stores: AppStores, id: string): void {
+    try {
+      const undo: promptAction.Button = { text: '撤销', color: this.colors().brand }
+      const ok: promptAction.Button = { text: '知道了', color: this.colors().textSecondary }
+      this.getUIContext().getPromptAction().showDialog({
+        title: '已移入废纸篓',
+        message: '可在废纸篓中恢复；也可以立即撤销。',
+        buttons: [undo, ok]
+      }).then((res) => {
+        if (res.index === 0) {
+          fireAndLog(stores.restoreChapter(id), 'restoreChapter')
+        }
+      }).catch(() => {})
+    } catch (e) {
+      // 对话框不可用不影响移动本身
+    }
+  }
+
   @Builder
   swipeDelete(item: DocItem) {
-    Button('删除')
+    Button(item.isTrash ? '恢复' : '移入废纸篓')
       .fontSize(14).fontColor('#FFFFFF')
-      .height('100%').width(88)
+      .height('100%').width(96)
       .backgroundColor(this.colors().danger)
-      .onClick(() => this.onDeleteDoc(item.id, item.title))
+      .onClick(() => {
+        if (item.isTrash && this.app !== null) {
+          fireAndLog(this.app.restoreChapter(item.id), 'restoreChapter')
+        } else {
+          this.moveDocToTrash(item.id)
+        }
+      })
+  }
+
+  /**
+   * 列表头标题：当前文库筛选（全部文稿/收藏/灵感池/废纸篓）。
+   * 书名已经在窗口头出现，这里作为"作用域"的副标题，避免同一标题重复两次。
+   */
+  private headerTitle(): string {
+    return this.app !== null ? this.app.project.libLabel : ''
+  }
+
+  /** 列表头副标题：书名 · 条数（书名为空时只显示条数） */
+  private headerSubtitle(): string {
+    if (this.app === null) {
+      return ''
+    }
+    const count: string = this.visibleCount().toString() + ' 篇'
+    const book: string = this.app.project.bookName
+    if (book.trim() === '') {
+      return count
+    }
+    return book + ' · ' + count
+  }
+
+  private createDoc(): void {
+    if (this.app !== null) {
+      // createChapter 末端会走 DAO throw，onClick 无法 await → 必须接住拒绝
+      fireAndLog(this.app.createChapter(), 'createChapter')
+    }
   }
 
   build() {
     Column() {
-      if (this.showHeader) {        Column() {
+      if (this.showHeader) {
+        Column() {
           Row() {
-            Text(this.app !== null ? this.app.project.libLabel : '')
-              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.colors().textPrimary)
-              .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(this.visibleCount() + ' 篇')
-              .fontSize(11).fontColor(this.colors().textTertiary)
-          }.width('100%')
+            Column() {
+              Text(this.headerTitle())
+                .fontSize(16).fontWeight(FontWeight.Medium)
+                .fontColor(this.colors().textPrimary)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+              Text(this.headerSubtitle())
+                .fontSize(11).fontColor(this.colors().textTertiary)
+                .margin({ top: 2 })
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+
+            // 新建文稿：列表头的唯一入口（侧栏不再出现同名按钮）
+            Text('+')
+              .fontSize(20)
+              .fontColor(this.colors().textSecondary)
+              .width(36).padding({ top: 4, bottom: 4 }).textAlign(TextAlign.Center)
+              .borderRadius(WeaverRadii.SM)
+              .accessibilityText('新建文稿')
+              .hoverEffect(HoverEffect.Highlight)
+              .onClick(() => this.createDoc())
+          }
+          .width('100%')
+          .height(44)
 
           Search({ value: this.keyword, placeholder: '搜索文稿' })
             .onChange((v: string) => { this.keyword = v })
-            .width('100%').height(40)
+            .width('100%').height(36)
             .backgroundColor(this.colors().bgSurface)
+            .border({ width: 1, color: this.colors().divider })
             .borderRadius(WeaverRadii.SM)
-            .margin({ top: 10 })
+            .margin({ top: 6 })
         }
-        .width('100%').padding({ left: 14, right: 14, top: 14, bottom: 10 })
+        .width('100%').padding({ left: 16, right: 12, top: 8, bottom: 10 })
+        // 列表头采用零模糊薄纱，为窗口头与弹层保留实时模糊预算。
+        .attributeModifier(glassVeilStyle(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID))
       }
 
       if (this.visibleCount() === 0) {
@@ -219,7 +320,7 @@ export struct DocListPane {
           Text(this.keyword.trim() === '' ? '还没有文稿' : '没有匹配的文稿')
             .fontSize(13).fontColor(this.colors().textTertiary)
           if (this.keyword.trim() === '') {
-            Text('点左下角「新建文稿」开始写作')
+            Text('点右上角「+」新建文稿开始写作')
               .fontSize(12).fontColor(this.colors().textTertiary).margin({ top: 6 })
           }
         }
@@ -241,12 +342,14 @@ export struct DocListPane {
           }, (item: DocItem) => item.id)
         }
         .layoutWeight(1).width('100%')
-        .backgroundColor(this.colors().listBg)
+        .backgroundColor(Color.Transparent)
         .divider({ strokeWidth: 1, color: this.colors().divider })
         .scrollBar(BarState.Auto)
       }
     }
     .width('100%').height('100%')
+    // 列表是"一级面"：与侧栏(bgSurface)拉开色阶；右分隔线明确栏边界
     .backgroundColor(this.colors().bgPrimary)
+    .border({ width: { right: 1 }, color: this.colors().divider })
   }
 }

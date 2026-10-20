@@ -3,6 +3,7 @@
 // @CustomDialog 传参不受支持，内联渲染在 V1/V2 混合期最稳。
 import { tokensFor, WeaverColorSet, WeaverRadii, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
+import { glassPanelStyle } from './MaterialSurface'
 
 @ComponentV2
 export struct InputDialog {
@@ -47,6 +48,7 @@ export struct InputDialog {
             .width('100%').height(44)
             .fontSize(15).fontColor(this.colors().textPrimary)
             .backgroundColor(this.colors().bgSurface)
+            .border({ width: 1, color: this.colors().divider })
             .borderRadius(WeaverRadii.SM)
             .margin({ bottom: 20 })
         }
@@ -57,6 +59,7 @@ export struct InputDialog {
             .backgroundColor(this.colors().bgSurface)
             .fontColor(this.colors().textSecondary)
             .borderRadius(WeaverRadii.SM)
+            .clickEffect({ level: ClickEffectLevel.LIGHT })
             .onClick(() => this.onCancel())
           Button(this.confirmLabel)
             .layoutWeight(1).height(42).fontSize(15)
@@ -64,19 +67,23 @@ export struct InputDialog {
             .fontColor(this.colors().onBrand)
             .borderRadius(WeaverRadii.SM)
             .margin({ left: 12 })
+            .clickEffect({ level: ClickEffectLevel.LIGHT })
             .onClick(() => this.onConfirm(this.value))
         }.width('100%')
       }
       .width('88%')
       .constraintSize({ maxWidth: 420, maxHeight: '90%' })
       .padding(20)
-      .backgroundColor(this.colors().bgCard)
-      .borderRadius(WeaverRadii.LG)
+      // 自绘内联弹窗（非系统 Dialog）→ systemMaterial 不生效，
+      // 用浮层玻璃（backgroundBlurStyle + 渐变 + 1px 描边 + 大圆角阴影）复刻同等观感
+      .attributeModifier(glassPanelStyle(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID))
       .onClick(() => {})
     }
     .width('100%').height('100%')
     .justifyContent(FlexAlign.Center)
+    // 与系统栏压暗保持同一蒙层强度，出现/消失使用统一动效。
     .backgroundColor('#66000000')
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
     .onClick(() => this.onCancel())
   }
 }

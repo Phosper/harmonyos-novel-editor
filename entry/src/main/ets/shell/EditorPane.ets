@@ -1,9 +1,11 @@
 // 编辑视图 —— 标签栏 + 工具条 + 正文编辑面
 import { promptAction } from '@kit.ArkUI'
 import { pasteboard } from '@kit.BasicServicesKit'
-import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID } from '../constants/DesignTokens'
+import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID, blendHexColor } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
-import { fireAndLog } from '../store/AppStores'
+import { app as globalApp, fireAndLog } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
+import { EditorStore } from '../store/EditorStore'
 import type { OpenDoc, DocItem } from '../store/StoreModels'
 import { SaveState } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
@@ -22,15 +24,60 @@ enum DocFlag {
 @ComponentV2
 export struct EditorPane {
   @Param app: AppStores | null = null
+  @Local ui: UiStore = globalApp.ui
+  @Local editor: EditorStore = globalApp.editor
   /** 查找替换浮层状态 */
   @Local showReplace: boolean = false
   /** 自绘编辑器控制器（格式命令用，T026） */
   @Local editorController: CanvasTextEditorController | null = null
   @Local findText: string = ''
   @Local replaceText: string = ''
+  /** 标题行内重命名态 */
+  @Local renaming: boolean = false
+  @Local draftTitle: string = ''
+  private renameDocId: string = ''
+
+  aboutToAppear(): void {
+    if (this.app !== null) {
+      this.ui = this.app.ui
+      this.editor = this.app.editor
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.app !== null && this.app.ui.editorController === this.editorController) {
+      this.app.ui.editorController = null
+    }
+    this.editorController = null
+    this.renaming = false
+    this.renameDocId = ''
+  }
+
+  @Monitor('editor.activeId')
+  onActiveDocChanged(): void {
+    this.renaming = false
+    this.renameDocId = ''
+    this.showReplace = false
+  }
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
+  }
+
+  /**
+   * 打字机模式的"非当前段落"字色。
+   * 由当前主题的正文色向纸色混合 50% 得到：明显变淡但仍保持可读，
+   * 深浅主题自动适配，不硬编码任何颜色。
+   */
+  /** 顶栏「查找」→ 打开查找替换面板（工具已上移到顶栏，避免编辑器内再放一条工具条） */
+  @Monitor('ui.findRequestTick')
+  onFindRequested(): void {
+    this.showReplace = true
+  }
+
+  private typewriterDimColor(): string {
+    const c: WeaverColorSet = this.colors()
+    return blendHexColor(c.textPrimary, c.editorBg, 0.5)
   }
 
   build() {
@@ -39,20 +86,19 @@ export struct EditorPane {
       if (this.app === null || !this.app.editor.hasDoc) {
         this.emptyState()
       } else {
-        // 仅宽屏保留工具条；手机端不常驻状态行（纯纯写作式最小 chrome）
-        if (this.app !== null && this.app.ui.isWide) {
-          this.toolBar()
-        }
-        // 仅宽屏保留快捷动作条；手机端动作全部收进 ⋮ 菜单（纯纯写作式最小 chrome）
-        if (this.app !== null && this.app.ui.isWide) {
-          this.quickBar()
-        }
+        // 轻量文稿标题：与正文左边缘对齐，点击可就地重命名（不加卡片/描边）
+        this.docTitleRow()
         // 正文编辑面：自绘 FlowText（唯一实现，T037 单引擎收敛）
+        Stack({ alignContent: Alignment.TopStart }) {
         TextEditorHost({
             docId: this.app.editor.activeId,
             contentRev: this.app.editor.contentRev,
             typewriter: this.app.ui.typewriter,
             scrollPolicy: this.app.ui.typewriter ? ScrollPolicy.CENTER : ScrollPolicy.NORMAL,
+            // 设备分流（契约 §1/§2.7）：电脑模式与键鼠优先由 UiStore 统一判定，
+            // 编辑器只接收基本类型，不感知 UiStore/DeviceProfile 实现
+            desktopMode: this.app.ui.isDesktopMode,
+            pointerPrimary: this.app.ui.pointerPrimary,
             loadFormat: (docId: string): FormatRun[] => {
               if (this.app === null) {
                 return []
@@ -61,11 +107,14 @@ export struct EditorPane {
               return d !== undefined ? FormatCodec.decode(d.runsJson) : []
             },
             onSelectionChange: (start: number, end: number) => {
-              // Phase A：仅承载选区态（工具栏态在 US2 使用）
+              // 只递增版本号：顶栏 B/I/H 据此重新求值，不把选区坐标塞进 store
+              if (this.app !== null) {
+                this.app.ui.selectionTick++
+              }
             },
             onFormatChange: (runs: FormatRun[]) => {
               if (this.app !== null) {
-                // onEdit persists text and format together.
+                this.app.ui.selectionTick++
               }
             },
             onScrollState: (state: number) => {
@@ -75,6 +124,10 @@ export struct EditorPane {
             },
             onControllerReady: (controller: CanvasTextEditorController) => {
               this.editorController = controller
+              // 顶栏工具组通过 store 取控制器（格式/打字机动作无需层层透传）
+              if (this.app !== null) {
+                this.app.ui.editorController = controller
+              }
             },
             onRequestFind: (text: string) => {
               this.findText = text
@@ -88,6 +141,7 @@ export struct EditorPane {
             textColor: this.colors().textPrimary,
             bgColor: this.colors().editorBg,
             caretColor: this.colors().brand,
+            dimTextColor: this.typewriterDimColor(),
             placeholder: '开始写作…',
             loadText: (docId: string): string => {
               if (this.app === null) {
@@ -128,16 +182,32 @@ export struct EditorPane {
               if (this.app !== null && this.app.editor.activeId === ownerId) {
                 this.app.editor.redo()
               }
+            },
+            onToggleImmersive: () => {
+              if (this.app !== null) {
+                this.app.ui.toggleImmersiveEditing()
+              }
             }
           })
-            .layoutWeight(1)
+            .width('100%').height('100%')
+          if (this.app !== null && this.app.editor.content.length === 0) {
+            Text('开始写作…')
+              .fontSize(this.app.ui.paperTheme.fontSize)
+              .fontColor(this.colors().textTertiary)
+              .padding({ left: 12, top: 8 })
+              .hitTestBehavior(HitTestMode.None)
+              .accessibilityText('开始写作')
+          }
+        }
+        .layoutWeight(1)
+        .width('100%')
       }
       }
       .width('100%').height('100%')
       .backgroundColor(this.app !== null ? this.colors().editorBg : this.colors().bgPrimary)
 
-      // 浮动字数（纯纯写作式：右上角弱化小浮标，不占用正文行）
-      if (this.app !== null && this.app.editor.hasDoc && !this.app.ui.immersive) {
+      // 手机端浮动字数（桌面/平板已在顶栏显示字数与保存状态，避免重复）
+      if (this.app !== null && this.app.editor.hasDoc && !this.app.ui.immersive && !this.app.ui.immersiveEditing && !this.app.ui.isWide) {
         Text((this.app.editor.wordCount) + ' 字')
           .fontSize(12).fontColor(this.colors().textTertiary)
           .padding({ left: 10, right: 10, top: 4, bottom: 4 })
@@ -149,48 +219,101 @@ export struct EditorPane {
       if (this.showReplace) {
         this.replacePanel()
       }
+
+      // 沉浸编辑退出入口：桌面窗口头已有「退出专注」，这里只服务平板/手机
+      if (this.app !== null && this.app.ui.immersiveEditing && !this.app.ui.usesDesktopChrome) {
+        Text('退出专注')
+          .fontSize(12).fontColor(this.colors().textSecondary)
+          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .backgroundColor(this.colors().bgSurface)
+          .borderRadius(14)
+          .margin({ top: 12, right: 12 })
+          .hoverEffect(HoverEffect.Highlight)
+          .accessibilityText('退出专注模式')
+          .onClick(() => {
+            if (this.app !== null) {
+              this.app.ui.exitImmersiveEditing()
+            }
+          })
+      }
     }
     .width('100%').height('100%')
   }
 
   @Builder
-  quickBar() {
-    Row() {
-      Text('撤销').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-        .onClick(() => { if (this.app !== null) { this.app.editor.undo() } })
-      Text('重做').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-        .onClick(() => { if (this.app !== null) { this.app.editor.redo() } })
-      // 行内/段落格式（T026）
-      Text('粗').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 10, right: 10, top: 10, bottom: 10 })
-        .onClick(() => this.applyInline(StyleKind.BOLD))
-      Text('斜').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 10, right: 10, top: 10, bottom: 10 })
-        .onClick(() => this.applyInline(StyleKind.ITALIC))
-      Text('标题').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 10, right: 10, top: 10, bottom: 10 })
-        .onClick(() => this.applyHeading(1))
-      Text('排版').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-        .onClick(() => this.runFormat())
-      Text('查找').fontSize(13).fontColor(this.colors().brand)
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-        .onClick(() => this.openReplace())
-      // 打字机模式开关：开启后仅当前段保持正文色，其余段落淡化
-      Text('打字机').fontSize(13)
-        .fontColor(this.app !== null && this.app.ui.typewriter ? this.colors().brand : this.colors().textTertiary)
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-        .onClick(() => { if (this.app !== null) { this.app.ui.toggleTypewriter() } })
-      Blank()
+  docTitleRow() {
+    if (this.app !== null && this.app.editor.hasDoc) {
+      Row() {
+        if (this.renaming) {
+          TextInput({ text: this.draftTitle })
+            .fontSize(15)
+            .height(28)
+            .width(240)
+            .backgroundColor(this.colors().bgSurface)
+            .borderRadius(WeaverRadii.XS)
+            .onChange((v: string) => { this.draftTitle = v })
+            .onSubmit(() => this.commitRename())
+            .onBlur(() => this.commitRename())
+          Text('完成')
+            .fontSize(12).fontColor(this.colors().brand)
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.commitRename())
+        } else {
+          Text(this.app.editor.title !== '' ? this.app.editor.title : '未命名文稿')
+            .fontSize(15).fontWeight(FontWeight.Medium)
+            .fontColor(this.colors().textPrimary)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .hoverEffect(HoverEffect.Highlight)
+            .accessibilityText('文稿标题，点击重命名')
+            .onClick(() => this.beginRename())
+        }
+        Blank()
+        Text('⋯')
+          .fontSize(16).fontColor(this.colors().textSecondary)
+          .width(48).height(36).textAlign(TextAlign.Center)
+          .accessibilityText('文稿格式、收藏与排版')
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => this.openMoreMenu())
+      }
+      .width('100%')
+      .height(36)
+      .padding({ left: 12, right: 12 })
+      .alignItems(VerticalAlign.Center)
     }
-    .width('100%')
-    .height(this.app === null || !this.app.ui.immersive ? 44 : 0)
-    .clip(true)
-    .animation({ duration: 180, curve: Curve.EaseOut })
-    .padding({ left: 8, right: 8 })
-    .backgroundColor(this.colors().editorBg)
+  }
+
+  private beginRename(): void {
+    if (this.app === null) {
+      return
+    }
+    this.draftTitle = this.app.editor.title
+    this.renameDocId = this.app.editor.activeId
+    this.renaming = true
+  }
+
+  private commitRename(): void {
+    if (!this.renaming) {
+      return
+    }
+    this.renaming = false
+    const app: AppStores | null = this.app
+    const ownerId: string = this.renameDocId
+    this.renameDocId = ''
+    if (app === null || ownerId === '' || app.editor.activeId !== ownerId) {
+      return
+    }
+    const next: string = this.draftTitle.trim()
+    if (next === '' || next === app.editor.title) {
+      return
+    }
+    app.renameChapter(ownerId, next)
+      .then(() => {
+        if (app.editor.activeId === ownerId && this.editorController !== null) {
+          this.editorController.focus()
+        }
+      })
+      .catch(() => { this.toast('重命名失败，请重试') })
   }
 
   @Builder
@@ -255,8 +378,8 @@ export struct EditorPane {
     this.getUIContext().getPromptAction().showToast({ message: msg })
   }
 
-  /** 分享所选文本：写入系统剪贴板（可跨应用粘贴）并提示 */
-  private shareText(text: string): void {
+  /** 把选中的文本写入系统剪贴板（可跨应用粘贴）；只有真正成功才提示“已复制”。 */
+  private async shareText(text: string): Promise<void> {
     if (text === '') {
       this.toast('无选中文本')
       return
@@ -264,11 +387,11 @@ export struct EditorPane {
     try {
       const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard()
       const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text)
-      board.setData(data).catch(() => {})
+      await board.setData(data)
+      this.toast('已复制所选文本到系统剪贴板')
     } catch (e) {
-      // 忽略：剪贴板不可用时仍给出提示
+      this.toast('复制失败，请重试或使用导出')
     }
-    this.toast('已复制所选文本，可粘贴分享')
   }
 
   /** 一键排版（编辑器无关：作用于 store 正文，可撤销） */
@@ -321,14 +444,17 @@ export struct EditorPane {
   @Builder
   emptyState() {
     Column() {
+      // 统一空状态版式：一句主文案 + 一句说明 + 一个主行动（居中，留白 24/8/20）
       Text('还没有打开任何文稿')
-        .fontSize(15).fontColor(this.colors().textSecondary)
-      Text('从左侧文稿列表选择一篇，或新建一篇开始写作')
-        .fontSize(13).fontColor(this.colors().textTertiary).margin({ top: 8 })
+        .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.colors().textPrimary)
+      Text('从文稿列表选择一篇，或新建一篇开始写作')
+        .fontSize(12).fontColor(this.colors().textTertiary).margin({ top: 8 })
       Button('新建文稿')
-        .height(40).fontSize(14).margin({ top: 22 })
+        .height(36).fontSize(13).margin({ top: 20 })
+        .padding({ left: 20, right: 20 })
         .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
         .borderRadius(WeaverRadii.SM)
+        .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
           if (this.app !== null) {
             // 建文稿要读聚合、写库，onClick 无法 await → 接住拒绝，避免未处理拒绝杀进程
@@ -337,53 +463,7 @@ export struct EditorPane {
         })
     }
     .width('100%').height('100%').justifyContent(FlexAlign.Center)
-  }
-
-  @Builder
-  toolBar() {
-    Row() {
-      Text((this.app !== null ? this.app.editor.wordCount : 0) + ' 字')
-        .fontSize(14).fontColor(this.colors().textSecondary)
-      Text(this.saveHintText())
-        .fontSize(14)
-        .fontColor(this.hintColor())
-        .margin({ left: 10 })
-        .maxLines(1)
-        .onClick(() => this.onSaveHintClick())
-
-      Blank()
-
-      this.formatChip(ChapterFormat.TXT, 'TXT')
-      this.formatChip(ChapterFormat.MD, 'MD')
-      this.flagText(DocFlag.FAV)
-      this.flagText(DocFlag.INSPIRATION)
-      Text('撤销')
-        .fontSize(14)
-        .fontColor(this.app !== null && this.app.editor.canUndo
-          ? this.colors().textSecondary : this.colors().textTertiary)
-        .padding({ left: 8, right: 8, top: 12, bottom: 12 })
-        .margin({ left: 8 })
-        .onClick(() => {
-          if (this.app !== null) {
-            this.app.editor.undo()
-          }
-        })
-      Text('重做')
-        .fontSize(14)
-        .fontColor(this.app !== null && this.app.editor.canRedo
-          ? this.colors().textSecondary : this.colors().textTertiary)
-        .padding({ left: 8, right: 8, top: 12, bottom: 12 })
-        .margin({ left: 4 })
-        .onClick(() => {
-          if (this.app !== null) {
-            this.app.editor.redo()
-          }
-        })
-    }
-    .width('100%').height(WeaverSpacing.TOOLBAR_H)
-    .padding({ left: 16, right: 16 })
-    .backgroundColor(this.colors().toolbarBg)
-    .border({ width: { bottom: 1 }, color: this.colors().divider })
+    .padding({ left: 24, right: 24 })
   }
 
   // 手机端次级工具条：仅保留字数与保存态，其余操作收进"更多"菜单

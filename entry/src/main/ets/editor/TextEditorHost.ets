@@ -36,11 +36,17 @@ export struct TextEditorHost {
   @Prop textColor: string = '#182431'
   @Prop bgColor: string = '#FFFFFF'
   @Prop caretColor: string = '#007DFF'
+  /** 非当前段落淡化色（打字机模式）：由宿主按当前主题计算，编辑器不硬编码 */
+  @Prop dimTextColor: string = '#9AA0A6'
   @Prop placeholder: string = '开始写作…'
   /** 打字机模式（默认关）：开启后当前段垂直居中跟随 */
   @Prop typewriter: boolean = false
   /** 滚动策略（打字机关时为 NORMAL） */
   @Prop scrollPolicy: ScrollPolicy = ScrollPolicy.NORMAL
+  /** 电脑模式（自由窗口 / MatePad Edge 电脑模式）：键鼠优先交互（V1 岛屿只传基本类型） */
+  @Prop desktopMode: boolean = false
+  /** 指针为主输入（鼠标/触控板）：文本指针、右键菜单键盘操作、快捷键 */
+  @Prop pointerPrimary: boolean = false
 
   loadText: (docId: string) => string = () => ''
   loadCaret: (docId: string) => number = () => 0
@@ -62,6 +68,8 @@ export struct TextEditorHost {
   /** 控制器就绪回调：应用层据此触发格式命令（T026） */
   onControllerReady: (controller: CanvasTextEditorController) => void = () => {}
   onRequestSave: (ownerId: string) => void = () => {}
+  /** 沉浸编辑开关（F11） */
+  onToggleImmersive: () => void = () => {}
   onUndo: (ownerId: string) => void = () => {}
   onRedo: (ownerId: string) => void = () => {}
 
@@ -103,7 +111,7 @@ export struct TextEditorHost {
       this.flowController.setCaretPosition(caret)
       return
     }
-    this.flowController.setDocument(text, runs, caret)
+    this.flowController.setDocument(text, runs, caret, true)
     Logger.info('TextEditorHost: rev sync doc=' + this.docId + ' chars=' + text.length)
   }
 
@@ -137,9 +145,12 @@ export struct TextEditorHost {
         textColor: this.textColor,
         bgColor: this.bgColor,
         caretColor: this.caretColor,
+        dimTextColor: this.dimTextColor,
         placeholder: this.placeholder,
         typewriter: this.typewriter,
         scrollPolicy: this.scrollPolicy,
+        desktopMode: this.desktopMode,
+        pointerPrimary: this.pointerPrimary,
         controller: this.flowController,
         onEdit: (text: string, runs: FormatRun[], caret: number) => {
           // activeId 可先于下一帧回灌改变；事件始终归属于画布实际载入的文稿。
@@ -177,6 +188,9 @@ export struct TextEditorHost {
         },
         onRedo: () => {
           this.onRedo(this.loadedDocId)
+        },
+        onToggleImmersive: () => {
+          this.onToggleImmersive()
         }
       })
         .width('100%')

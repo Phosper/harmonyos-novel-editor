@@ -118,6 +118,39 @@ export function tokens(dark: boolean): WeaverColorSet {
   return tokensFor(dark ? 'dark' : DEFAULT_THEME_ID)
 }
 
+function hexToRgb(hex: string): string[] {
+  let h: string = hex.startsWith('#') ? hex.substring(1) : hex
+  if (h.length === 8) {
+    // 8 位 ARGB：取后 6 位
+    h = h.substring(2)
+  } else if (h.length === 3) {
+    h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2)
+  }
+  if (h.length !== 6) {
+    return ['00', '00', '00']
+  }
+  return [h.substring(0, 2), h.substring(2, 4), h.substring(4, 6)]
+}
+
+/**
+ * 十六进制颜色混合：把 fg 按 ratio 向 bg 混合（0 = fg，1 = bg），返回 #RRGGBB。
+ * 用于"非当前段落淡化"：不硬编码颜色，始终从当前主题的正文色/纸色推导，
+ * 深浅主题都能得到可读的次级色。支持 #RGB / #RRGGBB / #AARRGGBB 输入。
+ */
+export function blendHexColor(fg: string, bg: string, ratio: number): string {
+  const f: string[] = hexToRgb(fg)
+  const b: string[] = hexToRgb(bg)
+  const t: number = Math.max(0, Math.min(1, ratio))
+  const mix = (a: number, c: number): string => {
+    const v: number = Math.round(a * (1 - t) + c * t)
+    const h: string = v.toString(16).toUpperCase()
+    return h.length === 1 ? '0' + h : h
+  }
+  return '#' + mix(parseInt(f[0], 16), parseInt(b[0], 16)) +
+    mix(parseInt(f[1], 16), parseInt(b[1], 16)) +
+    mix(parseInt(f[2], 16), parseInt(b[2], 16))
+}
+
 // 字体层级（全局统一；编辑器正文除外，由稿纸字号决定）
 export class TypeScale {
   static readonly DISPLAY: number = 24

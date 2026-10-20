@@ -3,7 +3,7 @@ import { Driver, ON } from '@kit.TestKit';
 import { KeyCode } from '@kit.InputKit';
 import { GraphemeUtil } from '../../../main/ets/editor/flowtext/model/GraphemeUtil';
 import { TextDocument } from '../../../main/ets/editor/flowtext/model/TextDocument';
-import { FormatRun, StyleKind } from '../../../main/ets/editor/flowtext/model/EditorTypes';
+import { FormatRun, StyleKind, CaretAffinity } from '../../../main/ets/editor/flowtext/model/EditorTypes';
 import { SelectionManager } from '../../../main/ets/editor/flowtext/interaction/SelectionManager';
 import { HitTester } from '../../../main/ets/editor/flowtext/interaction/HitTester';
 import { TextLayoutEngine, LayoutLine } from '../../../main/ets/editor/flowtext/render/TextLayoutEngine';
@@ -61,6 +61,42 @@ export default function flowTextTest(): void {
       expect(x1 > x0).assertTrue();
       expect(hit).assertEqual(1);
     });
+    it('nativeMixedRunOriginsKeepGlyphsSeparated', 0, () => {
+      const value: string = 'abc中文ABC😀 mixed';
+      const lines: LayoutLine[] = layout(value, 400, 2, [new FormatRun(3, 5, true)]);
+      let checked: number = 0;
+      for (const line of lines) {
+        if (line.nativeLine === null) { continue; }
+        const nativeRuns = line.nativeLine.getGlyphRuns();
+        for (let i: number = 0; i < line.runs.length; i++) {
+          const run = line.runs[i];
+          const raw = nativeRuns[i].getPositions();
+          if (raw.length === 0) { continue; }
+          const range = nativeRuns[i].getStringRange();
+          let rawMin: number = raw[0].x;
+          let drawnMin: number = run.positions[0].x;
+          for (let g: number = 1; g < raw.length; g++) {
+            rawMin = Math.min(rawMin, raw[g].x);
+            drawnMin = Math.min(drawnMin, run.positions[g].x);
+          }
+          drawnMin += run.runOffsetX;
+          const start: number = line.nativeLine.getOffsetForStringIndex(range.start);
+          const end: number = line.nativeLine.getOffsetForStringIndex(range.start + range.end);
+          const origin: number = Math.min(start, end) / line.pxPerVp;
+          console.info('FlowText native run ' + range.start + '+' + range.end +
+            ' rawMin=' + rawMin + ' caretStart=' + start + ' caretEnd=' + end +
+            ' offset=' + run.runOffsetX + ' drawnMin=' + drawnMin);
+          if (Math.abs(rawMin) < 0.01 && origin > 0.01) {
+            expect(Math.abs(drawnMin - origin) < 0.01).assertTrue();
+          } else {
+            expect(run.runOffsetX).assertEqual(0);
+            expect(Math.abs(drawnMin - rawMin / line.pxPerVp) < 0.01).assertTrue();
+          }
+          checked++;
+        }
+      }
+      expect(checked > 1).assertTrue();
+    });
     it('nativeWindowExcludesLaterFormatting', 0, () => {
       const engine: TextLayoutEngine = new TextLayoutEngine(10000, 16, 24, 4, 1);
       engine.setRuns([new FormatRun(5, 7, true)]);
@@ -90,62 +126,6 @@ export default function flowTextTest(): void {
       expect(offsets.includes(base + 1)).assertTrue();
       expect(offsets.includes(base + 3)).assertTrue();
       expect(offsets.includes(base + 2)).assertFalse();
-    });
-    it('nativeLayoutCrossesMultipleParagraphWindows', 0, () => {
-      const paragraph: string = '中文 A😀B '.repeat(40) + '\n';
-      const value: string = paragraph.repeat(15) + '尾段😀';
-      const lines: LayoutLine[] = layout(value, 240, 1,
-        [new FormatRun(value.length - 4, value.length, true)]);
-      expect(lines[lines.length - 1].endIndex).assertEqual(value.length);
-      const nextWindowStart: number = value.indexOf('\n', 4000) + 1;
-      let sampledWrap: boolean = false;
-      let sampledNextWindow: boolean = false;
-      for (let i: number = 0; i < lines.length; i++) {
-        const line: LayoutLine = lines[i];
-        expect(line.startIndex <= line.endIndex).assertTrue();
-        expect(GraphemeUtil.isBoundary(value, line.startIndex)).assertTrue();
-        expect(GraphemeUtil.isBoundary(value, line.endIndex)).assertTrue();
-        const sampleCaret: boolean = i === 1 || (!sampledNextWindow && line.startIndex >= nextWindowStart);
-        if (sampleCaret && line.nativeLine !== null && line.startIndex < line.endIndex) {
-          const at: number = GraphemeUtil.moveRight(value, line.startIndex);
-          const x: number = HitTester.offsetToX(line, at, 0);
-          const nativeIndex: number = line.nativeStartIndex + line.indexMap.toScalar(at - line.startIndex);
-          expect(Math.abs(x - line.nativeLine.getOffsetForStringIndex(nativeIndex))).assertLess(0.01);
-          const hit: number = HitTester.hitTest(x, line.yOffset + line.height / 2, [line], 0, 0, value);
-          if (hit !== at) {
-            throw new Error('Caret round-trip: line=[' + line.startIndex + ',' + line.endIndex +
-              ') at=' + at + ' x=' + x + ' nativeIndex=' + nativeIndex + ' hit=' + hit);
-          }
-          expect(hit).assertEqual(at);
-          sampledWrap = sampledWrap || i === 1;
-          sampledNextWindow = sampledNextWindow || line.startIndex >= nextWindowStart;
-        }
-        for (let r: number = 0; r < line.runs.length; r++) {
-          const run = line.runs[r];
-          for (const offset of run.glyphOffsets) {
-            const absolute: number = run.textStart + offset;
-            if (absolute < line.startIndex || absolute >= line.endIndex) {
-              let nativeDetails: string = '';
-              if (line.nativeLine !== null) {
-                const nativeRun = line.nativeLine.getGlyphRuns()[r];
-                const nativeRange = nativeRun.getStringRange();
-                nativeDetails = ' nativeRange=' + nativeRange.start + '+' + nativeRange.end +
-                  ' nativeIndices=' + nativeRun.getStringIndices().join(',') +
-                  ' textRange=' + line.nativeLine.getTextRange().start + '+' + line.nativeLine.getTextRange().end +
-                  ' x0=' + line.nativeLine.getOffsetForStringIndex(0) +
-                  ' x1=' + line.nativeLine.getOffsetForStringIndex(1) +
-                  ' hit0=' + line.nativeLine.getStringIndexForPosition({ x: 0, y: 0 });
-              }
-              throw new Error('Glyph outside line: absolute=' + absolute + ' line=[' + line.startIndex +
-                ',' + line.endIndex + ') nativeStart=' + line.nativeStartIndex + ' run=[' + run.textStart +
-                ',' + run.textEnd + ') offsets=' + run.glyphOffsets.join(',') + nativeDetails);
-            }
-            expect(absolute >= line.startIndex && absolute < line.endIndex).assertTrue();
-          }
-        }
-      }
-      expect(sampledWrap).assertTrue();
-      expect(sampledNextWindow).assertTrue();
     });
     it('graphemeDeletionPreservesPrefix', 0, () => {
       const samples: string[] = ['A😀', '甲𠮷', 'a👨‍👩‍👧', 'A👍🏽', 'A🇨🇳', 'Ae\u0301'];
@@ -312,6 +292,108 @@ export default function flowTextTest(): void {
       expect(FlowTextFixture.savedCaret).assertEqual(3);
       await pressAndRelease(driver, KeyCode.KEYCODE_DEL);
       expect(controller.getText()).assertEqual('A');
+    });
+    it('caretAffinityAtSoftWrapKeepsHighlightAndCaretOnSameLine', 0, () => {
+      const value: string = 'abcdefghij';
+      const lines: LayoutLine[] = layout(value, 25, 1);
+      expect(lines.length > 1).assertTrue();
+      const boundary: number = lines[0].endIndex;
+      expect(lines[1].startIndex).assertEqual(boundary);
+      const down = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.UPSTREAM);
+      const up = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.DOWNSTREAM);
+      // UPSTREAM 贴上一行行尾；DOWNSTREAM 贴下一行行首
+      expect(down.y < up.y).assertTrue();
+      expect(down.x > up.x).assertTrue();
+      expect(Math.abs(down.x - lines[0].width) < 0.5).assertTrue();
+    });
+    it('caretAndSelectionShareTheSameLineBox', 0, () => {
+      const value: string = '标题行与正文\nsecond line with 中文';
+      const lines: LayoutLine[] = layout(value, 240, 1, [new FormatRun(0, 5, false, false, 1)]);
+      for (let i: number = 0; i < lines.length; i++) {
+        const box = HitTester.lineBox(lines[i]);
+        expect(box.height > 0).assertTrue();
+      }
+      const first: LayoutLine = lines[0];
+      const box0 = HitTester.lineBox(first);
+      const caret = HitTester.caretPositionFor(first.startIndex, lines, 12, 8, 16,
+        CaretAffinity.UPSTREAM);
+      expect(Math.abs(caret.y - box0.top) < 0.01).assertTrue();
+      expect(Math.abs(caret.height - box0.height) < 0.01).assertTrue();
+    });
+    it('handleDragKeepsAnchorHeadIdentityWhenCrossing', 0, () => {
+      const m: SelectionManager = new SelectionManager();
+      m.setSource('ABCDE'); m.setSelection(1, 4);
+      expect(m.anchor).assertEqual(1); expect(m.head).assertEqual(4);
+      m.beginHandleDrag(1); m.updateHandleDrag(0);
+      expect(m.anchor).assertEqual(0); expect(m.head).assertEqual(4);
+      expect(m.startOffset).assertEqual(0); expect(m.endOffset).assertEqual(4);
+      m.updateHandleDrag(5);
+      expect(m.anchor).assertEqual(5); expect(m.head).assertEqual(4);
+      expect(m.startOffset).assertEqual(4); expect(m.endOffset).assertEqual(5);
+      expect(m.headAffinity).assertEqual(CaretAffinity.DOWNSTREAM);
+      m.endHandleDrag();
+      m.setSelection(4, 1);
+      expect(m.startOffset).assertEqual(1); expect(m.endOffset).assertEqual(4);
+    });
+    // Keep the long synchronous native layout probe after UI input checks so it cannot starve their first frame.
+    it('nativeLayoutCrossesMultipleParagraphWindows', 0, () => {
+      const paragraph: string = '中文 A😀B '.repeat(40) + '\n';
+      const value: string = paragraph.repeat(15) + '尾段😀';
+      const lines: LayoutLine[] = layout(value, 240, 1,
+        [new FormatRun(value.length - 4, value.length, true)]);
+      expect(lines[lines.length - 1].endIndex).assertEqual(value.length);
+      const nextWindowStart: number = value.indexOf('\n', 4000) + 1;
+      let sampledWrap: boolean = false;
+      let sampledNextWindow: boolean = false;
+      let checkedGlyphs: number = 0;
+      for (let i: number = 0; i < lines.length; i++) {
+        const line: LayoutLine = lines[i];
+        expect(line.startIndex <= line.endIndex).assertTrue();
+        expect(GraphemeUtil.isBoundary(value, line.startIndex)).assertTrue();
+        expect(GraphemeUtil.isBoundary(value, line.endIndex)).assertTrue();
+        const sampleCaret: boolean = i === 1 || (!sampledNextWindow && line.startIndex >= nextWindowStart);
+        if (sampleCaret && line.nativeLine !== null && line.startIndex < line.endIndex) {
+          const at: number = GraphemeUtil.moveRight(value, line.startIndex);
+          const x: number = HitTester.offsetToX(line, at, 0);
+          const nativeIndex: number = line.nativeStartIndex + line.indexMap.toScalar(at - line.startIndex);
+          expect(Math.abs(x - line.nativeLine.getOffsetForStringIndex(nativeIndex))).assertLess(0.01);
+          const hit: number = HitTester.hitTest(x, line.yOffset + line.height / 2, [line], 0, 0, value);
+          if (hit !== at) {
+            throw new Error('Caret round-trip: line=[' + line.startIndex + ',' + line.endIndex +
+              ') at=' + at + ' x=' + x + ' nativeIndex=' + nativeIndex + ' hit=' + hit);
+          }
+          expect(hit).assertEqual(at);
+          sampledWrap = sampledWrap || i === 1;
+          sampledNextWindow = sampledNextWindow || line.startIndex >= nextWindowStart;
+        }
+        for (let r: number = 0; r < line.runs.length; r++) {
+          const run = line.runs[r];
+          for (const offset of run.glyphOffsets) {
+            const absolute: number = run.textStart + offset;
+            if (absolute < line.startIndex || absolute >= line.endIndex) {
+              let nativeDetails: string = '';
+              if (line.nativeLine !== null) {
+                const nativeRun = line.nativeLine.getGlyphRuns()[r];
+                const nativeRange = nativeRun.getStringRange();
+                nativeDetails = ' nativeRange=' + nativeRange.start + '+' + nativeRange.end +
+                  ' nativeIndices=' + nativeRun.getStringIndices().join(',') +
+                  ' textRange=' + line.nativeLine.getTextRange().start + '+' + line.nativeLine.getTextRange().end +
+                  ' x0=' + line.nativeLine.getOffsetForStringIndex(0) +
+                  ' x1=' + line.nativeLine.getOffsetForStringIndex(1) +
+                  ' hit0=' + line.nativeLine.getStringIndexForPosition({ x: 0, y: 0 });
+              }
+              throw new Error('Glyph outside line: absolute=' + absolute + ' line=[' + line.startIndex +
+                ',' + line.endIndex + ') nativeStart=' + line.nativeStartIndex + ' run=[' + run.textStart +
+                ',' + run.textEnd + ') offsets=' + run.glyphOffsets.join(',') + nativeDetails);
+            }
+            // The detailed guard above checks every glyph; avoid thousands of duplicate Hypium assertions.
+            checkedGlyphs++;
+          }
+        }
+      }
+      expect(sampledWrap).assertTrue();
+      expect(sampledNextWindow).assertTrue();
+      expect(checkedGlyphs > 0).assertTrue();
     });
   });
 }

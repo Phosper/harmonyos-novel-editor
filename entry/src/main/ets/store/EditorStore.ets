@@ -118,12 +118,34 @@ export class EditorStore {
     return countChars(this.content)
   }
 
+  /**
+   * 撤销/重做是**跨文稿共享**的历史栈，但按钮状态必须只看当前文稿：
+   * 否则打开一篇没有历史的文稿时会误显示“可撤销”，点击却没有反应。
+   */
   get canUndo(): boolean {
-    return this.undoStack.length > 0
+    const doc: OpenDoc | undefined = this.activeDoc
+    if (doc === undefined) {
+      return false
+    }
+    for (let i: number = this.undoStack.length - 1; i >= 0; i--) {
+      if (this.undoStack[i].docId === doc.id) {
+        return true
+      }
+    }
+    return false
   }
 
   get canRedo(): boolean {
-    return this.redoStack.length > 0
+    const doc: OpenDoc | undefined = this.activeDoc
+    if (doc === undefined) {
+      return false
+    }
+    for (let i: number = this.redoStack.length - 1; i >= 0; i--) {
+      if (this.redoStack[i].docId === doc.id) {
+        return true
+      }
+    }
+    return false
   }
 
   get dirtyCount(): number {

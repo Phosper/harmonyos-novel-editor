@@ -11,6 +11,34 @@ export class SelectionInfo {
   }
 }
 
+/**
+ * 光标（选区端点）的亲和性：软换行边界处，同一个 UTF-16 offset 对应两个视觉位置。
+ *
+ * - UPSTREAM：靠近**上一行行尾**。正向选择（anchor < head）的 head 用它，
+ *   这样"选区高亮结束在上一行行尾"与"光标画在同一处"一致。
+ * - DOWNSTREAM：靠近**下一行行首**。反向选择（anchor > head）的 head 用它。
+ *
+ * 参考 OpenHarmony ace_engine 的 TextSelector/TextSelectController：
+ * selection 只存 base/extent，start/end 由 min/max 派生；行尾按 affinity 选边。
+ */
+export enum CaretAffinity {
+  UPSTREAM = 0,
+  DOWNSTREAM = 1
+}
+
+/** 一行文字的可见盒（内容坐标，vp）：光标、选区高亮、手柄共用，保证三者几何一致。 */
+export class LineBox {
+  top: number = 0;
+  height: number = 0;
+  bottom: number = 0;
+
+  constructor(top: number = 0, height: number = 0) {
+    this.top = top;
+    this.height = height;
+    this.bottom = top + height;
+  }
+}
+
 /** 中文输入法预上屏信息 */
 export class PreviewInfo {
   text: string = '';

@@ -19,13 +19,17 @@
 import { KeyCode } from '@kit.InputKit';
 
 /*
- * 少数键码在 SDK 的 KeyCode 中没有稳定导出符号（Home/End/标点区），
- * 这里按官方js-apis-keycode 枚举的数值定义本地常量。
- * 数值来源：KEYCODE_MINUS=2057、KEYCODE_SLASH=2065、KEYCODE_MOVE_HOME=2081、KEYCODE_MOVE_END=2082。
- * 若后续确认了符号名，可直接替换为对应的 KeyCode 成员。
+ * 少数键码在个别 SDK 版本的 KeyCode 中没有稳定导出符号（Home/End/标点区），
+ * 这里按官方 js-apis-keycode（API 26）的数值定义本地常量：
+ *   KEYCODE_GRAVE=2056、KEYCODE_MINUS=2057、KEYCODE_SLASH=2064、KEYCODE_AT=2065、KEYCODE_PLUS=2066、
+ *   KEYCODE_MOVE_HOME=2081、KEYCODE_MOVE_END=2082。
+ * 数值以官方文档为准；不要凭记忆改。
  */
+const KEY_GRAVE: number = 2056;
 const KEY_MINUS: number = 2057;
-const KEY_SLASH: number = 2065;
+const KEY_SLASH: number = 2064;
+const KEY_AT: number = 2065;
+const KEY_PLUS: number = 2066;
 const KEY_MOVE_HOME: number = 2081;
 const KEY_MOVE_END: number = 2082;
 
@@ -166,9 +170,8 @@ export class KeyboardHandler {
         out.text = '\n';
         return out;
       case KeyCode.KEYCODE_TAB:
-        // Tab 不应跳走焦点：交给宿主插入缩进
-        out.action = KeyAction.INSERT;
-        out.text = '  ';
+        // Tab 必须交还框架焦点遍历（契约 §2.3）：不产生编辑命令，由调用方 return false 放行
+        out.action = KeyAction.NONE_PASSTHROUGH;
         return out;
       case KeyCode.KEYCODE_ESCAPE:
         out.action = KeyAction.NONE_PASSTHROUGH;
@@ -184,7 +187,25 @@ export class KeyboardHandler {
       out.text = shift ? KeyboardHandler.toUpper(keyText) : keyText;
       return out;
     }
+    // 数字键兜底：keyText 缺失时按 keyCode 推出 0-9（与 ShortcutMap 口径一致）
+    const digit: string = KeyboardHandler.digitFromKeyCode(keyCode);
+    if (digit !== '') {
+      out.action = KeyAction.INSERT;
+      out.text = digit;
+      return out;
+    }
     return out;
+  }
+
+  /** 数字键兜底：keyText 缺失时按 keyCode 推出 0-9 */
+  private static digitFromKeyCode(keyCode: number): string {
+    if (keyCode >= KeyCode.KEYCODE_0 && keyCode <= KeyCode.KEYCODE_9) {
+      return String.fromCharCode(0x30 + (keyCode - KeyCode.KEYCODE_0));
+    }
+    if (keyCode >= KeyCode.KEYCODE_NUMPAD_0 && keyCode <= KeyCode.KEYCODE_NUMPAD_9) {
+      return String.fromCharCode(0x30 + (keyCode - KeyCode.KEYCODE_NUMPAD_0));
+    }
+    return '';
   }
 
   /** 是否为可打印字符键（排除功能键与修饰键） */
@@ -198,17 +219,19 @@ export class KeyboardHandler {
     if (keyCode >= KeyCode.KEYCODE_NUMPAD_0 && keyCode <= KeyCode.KEYCODE_NUMPAD_9) {
       return true;
     }
-    if (keyCode === KeyCode.KEYCODE_SPACE) {
+    if (keyCode === KeyCode.KEYCODE_SPACE || keyCode === KeyCode.KEYCODE_COMMA || keyCode === KeyCode.KEYCODE_PERIOD) {
       return true;
     }
-    // 标点类键位（用范围判断，避免逐个列举遗漏）
-    if (keyCode >= KEY_MINUS && keyCode <= KEY_SLASH) {
+    // 标点类键位：` - = [ ] \\ ; ' / @ +（用范围判断，避免逐个列举遗漏）
+    if (keyCode >= KEY_GRAVE && keyCode <= KEY_PLUS) {
       return true;
     }
     // 小键盘运算符（官方已确认的成员）
     if (keyCode === KeyCode.KEYCODE_NUMPAD_ADD || keyCode === KeyCode.KEYCODE_NUMPAD_SUBTRACT ||
       keyCode === KeyCode.KEYCODE_NUMPAD_MULTIPLY || keyCode === KeyCode.KEYCODE_NUMPAD_DIVIDE ||
-      keyCode === KeyCode.KEYCODE_NUMPAD_DOT) {
+      keyCode === KeyCode.KEYCODE_NUMPAD_DOT || keyCode === KeyCode.KEYCODE_NUMPAD_COMMA ||
+      keyCode === KeyCode.KEYCODE_NUMPAD_EQUALS || keyCode === KeyCode.KEYCODE_NUMPAD_LEFT_PAREN ||
+      keyCode === KeyCode.KEYCODE_NUMPAD_RIGHT_PAREN) {
       return true;
     }
     return false;

@@ -599,6 +599,13 @@ export class AppStores {
     await this.editor.flushAll()
   }
 
+  /**
+   * 严格落库：任一草稿未保存成功即 reject，供关闭窗口等“不能静默丢稿”的路径使用。
+   */
+  async flushAllStrict(): Promise<void> {
+    await this.editor.flushAllStrict()
+  }
+
   destroy(): void {
     this.editor.flushAll()
     this.editor.stopTimers()

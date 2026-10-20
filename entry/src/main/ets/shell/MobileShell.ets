@@ -20,6 +20,7 @@ import { DocListPane } from './DocListPane'
 import { MobileTabBar, MobileTabItem } from './MobileTabBar'
 import { WorkspaceDest } from './WorkspaceDest'
 import { SettingsDest } from '../pages/dest/SettingsDest'
+import { GlowPageBackground, glassBarStyle } from './MaterialSurface'
 
 @ComponentV2
 export struct MobileShell {
@@ -54,15 +55,21 @@ export struct MobileShell {
   // ===================== 结构 =====================
 
   build() {
-    Column() {
-      if (this.isNarrow()) {
-        this.narrowLayout()
-      } else {
-        this.mediumLayout()
+    Stack() {
+      // 页面光感背景（渐变 + 顶部光晕，单层不吃点击）；
+      // 内层容器背景置透明，让光感透出（原来是各层各铺一色，玻璃层会盖不住）
+      GlowPageBackground(app.ui.themeId)
+      Column() {
+        if (this.isNarrow()) {
+          this.narrowLayout()
+        } else {
+          this.mediumLayout()
+        }
       }
+      .width('100%').height('100%')
+      .backgroundColor(Color.Transparent)
     }
     .width('100%').height('100%')
-    .backgroundColor(this.colors().bgPrimary)
   }
 
   // ===================== sm：单列 + 底部页签 =====================
@@ -92,7 +99,7 @@ export struct MobileShell {
       .layoutWeight(1).width('100%')
     }
     .width('100%').height('100%')
-    .backgroundColor(this.colors().bgPrimary)
+    .backgroundColor(Color.Transparent)
   }
 
   // ===================== md：侧栏 + 内容双栏 =====================
@@ -130,7 +137,7 @@ export struct MobileShell {
       this.docList()
     }
     .width('100%').height('100%')
-    .backgroundColor(this.colors().bgPrimary)
+    .backgroundColor(Color.Transparent)
   }
 
   // ===================== chrome =====================
@@ -157,7 +164,8 @@ export struct MobileShell {
     }
     .width('100%').height(WeaverMobile.TITLEBAR_H)
     .padding({ left: 16, right: 10 })
-    .backgroundColor(this.colors().bgPrimary)
+    // 自绘顶栏不是系统标题栏 → 用 backgroundBlurStyle + 渐变 + 1px 下沿高光
+    .attributeModifier(glassBarStyle(app.ui.themeId))
   }
 
   // ===================== 各板块（复用既有组件） =====================

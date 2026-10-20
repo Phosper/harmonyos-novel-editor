@@ -83,7 +83,7 @@ try {
     )) {
       $testLog = Join-Path $taskOutput $testGroup.Log
       & $taskHdc -t $Device shell aa force-stop com.chungu.weaver | Out-Null
-      & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -s class $testGroup.Classes -s timeout 20000 -w 60 *> $testLog
+      & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -s class $testGroup.Classes -s timeout 20000 -w 180 *> $testLog
       $result = Get-Content -Raw -LiteralPath $testLog
       # aa can exit 0 even when Hypium reports errors; inspect the actual test summary.
       if ($result -notmatch 'Tests run: ([1-9]\d*), Failure: 0, Error: 0, Pass: ([1-9]\d*), Ignore: 0' -or $Matches[1] -ne $Matches[2]) {

@@ -355,7 +355,7 @@ export class TextLayoutEngine {
       data.textEnd = textStart + layoutLine.indexMap.fromScalar(range.start + range.end - layoutLine.nativeStartIndex);
       data.glyphOffsets = indices.map((index: number): number =>
         layoutLine.indexMap.fromScalar(index - layoutLine.nativeStartIndex) - localRunStart);
-      data.runOffsetX = 0; // Native positions are relative to the line, including bidi placement.
+      data.runOffsetX = this.localRunOriginVp(line, range, positions);
       const advances: common2D.Point[] = run.getAdvances({ start: 0, end: data.glyphs.length });
       for (let g: number = 0; g < data.glyphs.length; g++) {
         data.advances.push({ x: advances[g].x / this.pxPerVp, y: advances[g].y / this.pxPerVp });
@@ -364,5 +364,22 @@ export class TextLayoutEngine {
       layoutLine.runs.push(data);
     }
     return layoutLine;
+  }
+
+  /** Some API 26 devices rebase each run to x=0; line-positioned runs stay untouched. */
+  private localRunOriginVp(line: text.TextLine, range: text.Range, positions: common2D.Point[]): number {
+    if (positions.length === 0) { return 0; }
+    let minX: number = positions[0].x;
+    for (const point of positions) { minX = Math.min(minX, point.x); }
+    // Do not subtract the first glyph: that would discard shaping offsets and bidi placement.
+    if (Math.abs(minX) > 0.01) { return 0; }
+    try {
+      const start: number = line.getOffsetForStringIndex(range.start);
+      const end: number = line.getOffsetForStringIndex(range.start + range.end);
+      const origin: number = Math.min(start, end);
+      return Number.isFinite(origin) && origin > 0.01 ? origin / this.pxPerVp : 0;
+    } catch (error) {
+      return 0;
+    }
   }
 }
