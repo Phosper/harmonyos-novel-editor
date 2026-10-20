@@ -152,6 +152,23 @@ export class TextLayoutEngine {
   }
 
   /**
+   * A cache fork needs its own window map and typeset origin. Sharing this engine
+   * would let preview layout change the offsets used by the committed cache.
+   * Native line objects remain self-contained and can safely be retained.
+   */
+  cloneConfiguration(): TextLayoutEngine {
+    const copy: TextLayoutEngine = new TextLayoutEngine(this.maxWidthPx / this.pxPerVp,
+      this.fontSizePx / this.pxPerVp, this.lineHeightPx / this.pxPerVp,
+      this.lineSpacingPx / this.pxPerVp, this.pxPerVp);
+    copy.textColor = { alpha: this.textColor.alpha, red: this.textColor.red,
+      green: this.textColor.green, blue: this.textColor.blue };
+    const runs: FormatRun[] = [];
+    for (const run of this.runsValue) { runs.push(run.clone()); }
+    copy.setRuns(runs);
+    return copy;
+  }
+
+  /**
    * 取 offset 处单词的 [start,end]（ICU 词边界，与 Android/iOS 双击选词同源）。
    * 段落对象懒建并按文本缓存；失败/无能力时返回空数组，由调用方回退启发式。
    */

@@ -3,6 +3,23 @@ import { inputMethod } from '@kit.IMEKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { ImeEchoGuard } from '../../interaction/InputArbiter';
 
+class ImeSelectionReport {
+  value: string;
+  start: number;
+  end: number;
+  attempts: number = 0;
+
+  constructor(value: string, start: number, end: number) {
+    this.value = value;
+    this.start = start;
+    this.end = end;
+  }
+
+  matches(value: string, start: number, end: number): boolean {
+    return this.value === value && this.start === start && this.end === end;
+  }
+}
+
 export class ImeBridge {
   private controller: inputMethod.InputMethodController = inputMethod.getController();
   private isAttached: boolean = false;
@@ -11,6 +28,13 @@ export class ImeBridge {
   private pending: Promise<void> | null = null;
   private generation: number = 0;
   private pendingGeneration: number = 0;
+  // Selection IPC is serialized: one in flight and only the latest pending report.
+  // Retry only a current report; a newer composition/selection always takes priority.
+  private selectionInFlight: ImeSelectionReport | null = null;
+  private selectionPending: ImeSelectionReport | null = null;
+  private selectionRetryTimer: number = -1;
+  private selectionRetryRevision: number = 0;
+  private readonly selectionRetryDelays: number[] = [32, 128];
   /**
    * 键盘兜底与 IME 回声仲裁（由 CanvasTextEditor 注入）。
    * 放在监听入口而不是宿主回调里：实体监听是唯一真实到达路径，
@@ -54,12 +78,16 @@ export class ImeBridge {
   private indexListener = (): number => { return this.onGetCursorIndex === null ? 0 : this.onGetCursorIndex(); };
 
   attach(showKeyboard: boolean, textInputType: number, enterKeyType: number): Promise<void> {
-    if (this.isAttached) { return Promise.resolve(); }
+    if (this.isAttached) {
+      this.resumeSelectionSync();
+      return Promise.resolve();
+    }
     if (this.pending !== null) {
       if (this.pendingGeneration === this.generation) { return this.pending; }
       return this.pending.then(() => this.attach(showKeyboard, textInputType, enterKeyType));
     }
     const token: number = ++this.generation;
+    this.clearSelectionSync();
     this.pendingGeneration = token;
     this.pending = this.attachClient(token, showKeyboard, textInputType, enterKeyType);
     return this.pending;
@@ -83,6 +111,7 @@ export class ImeBridge {
 
   detach(): void {
     this.generation++;
+    this.clearSelectionSync();
     this.unregisterListeners();
     if (this.isAttached) { this.controller.detach().catch(() => {}); }
     this.isAttached = false;
@@ -94,10 +123,83 @@ export class ImeBridge {
     }
   }
   changeSelection(value: string, start: number, end: number): void {
-    if (this.isAttached) { this.controller.changeSelection(value, start, end).catch(() => {}); }
+    if (!this.isAttached) { return; }
+    this.cancelSelectionRetry();
+    // A -> B -> A while A is in flight only needs the in-flight A to finish.
+    if (this.selectionInFlight !== null && this.selectionInFlight.matches(value, start, end)) {
+      this.selectionPending = null;
+      return;
+    }
+    this.selectionPending = new ImeSelectionReport(value, start, end);
+    this.sendPendingSelection();
   }
   hideKeyboard(): void { if (this.isAttached) { this.controller.hideTextInput().catch(() => {}); } }
-  showKeyboard(): void { if (this.isAttached) { this.controller.showTextInput().catch(() => {}); } }
+  showKeyboard(): void {
+    if (this.isAttached) {
+      this.resumeSelectionSync();
+      this.controller.showTextInput().catch(() => {});
+    }
+  }
+
+  private cancelSelectionRetry(): void {
+    this.selectionRetryRevision++;
+    if (this.selectionRetryTimer >= 0) {
+      clearTimeout(this.selectionRetryTimer);
+      this.selectionRetryTimer = -1;
+    }
+  }
+
+  private clearSelectionSync(): void {
+    this.cancelSelectionRetry();
+    this.selectionInFlight = null;
+    this.selectionPending = null;
+  }
+
+  /** A fresh focus/keyboard request can retry a report parked after three failures. */
+  private resumeSelectionSync(): void {
+    if (this.selectionPending === null || this.selectionInFlight !== null ||
+      this.selectionRetryTimer >= 0) { return; }
+    this.selectionPending.attempts = 0;
+    this.sendPendingSelection();
+  }
+
+  private sendPendingSelection(): void {
+    if (!this.isAttached || this.selectionInFlight !== null || this.selectionPending === null ||
+      this.selectionRetryTimer >= 0) { return; }
+    const report: ImeSelectionReport = this.selectionPending;
+    const token: number = this.generation;
+    this.selectionPending = null;
+    this.selectionInFlight = report;
+    report.attempts++;
+    try {
+      this.controller.changeSelection(report.value, report.start, report.end)
+        .then(() => this.finishSelectionSync(token, report, true))
+        .catch(() => this.finishSelectionSync(token, report, false));
+    } catch (error) {
+      this.finishSelectionSync(token, report, false);
+    }
+  }
+
+  private finishSelectionSync(token: number, report: ImeSelectionReport, succeeded: boolean): void {
+    // The native promise cannot be cancelled. Its completion belongs only to its old client.
+    if (token !== this.generation || this.selectionInFlight !== report) { return; }
+    this.selectionInFlight = null;
+    if (succeeded || this.selectionPending !== null) {
+      this.sendPendingSelection();
+      return;
+    }
+    this.selectionPending = report;
+    if (report.attempts > this.selectionRetryDelays.length) {
+      console.warn('FlowText IME selection sync failed after ' + report.attempts + ' attempts');
+      return;
+    }
+    const revision: number = ++this.selectionRetryRevision;
+    this.selectionRetryTimer = setTimeout(() => {
+      if (token !== this.generation || revision !== this.selectionRetryRevision) { return; }
+      this.selectionRetryTimer = -1;
+      this.sendPendingSelection();
+    }, this.selectionRetryDelays[report.attempts - 1]);
+  }
 
   private registerListeners(): void {
     this.regularRegistered = true;

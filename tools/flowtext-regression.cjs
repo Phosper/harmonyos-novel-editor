@@ -109,7 +109,7 @@ vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','g
   'selectTo','applyKeyCommand','afterCaretMove','afterEdit','emitSelection','setRuns','afterFormatChange',
   'handleKeyPreIme','handleKeyEvent','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
   'readEditorModifiers','adoptKeyFocus','dispatchCommand','editHost','insertFromKeyboard','hostInsertText','hostDismiss','handleMenuKey',
-  'pasteAtCaret','insertAtCaret','aboutToDisappear',
+  'pasteAtCaret','insertAtCaret','aboutToDisappear','hasCaretLayout','cancelCaretLayout','deferCaretLayout','continueCaretLayout','clearPreviewLayout','settleCaret','drawNow','reportCursor',
   'affinityAt','inlineStyleMask','styleMaskAt','visualCaret','reportSelection','handleTouch','stopCaretAnimation','stopScrollAnimation','stopGlyphAnimation','syncSelectionToCaret','handlePositions','selectAllText',
   'captureViewAnchor','refreshDensity','ensureLayoutThroughY','engineSignature','extendWordSelection','clampScroll','tailPadVp','laidOutHeightVp',
   'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','placeCaretImmediately','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
@@ -156,11 +156,13 @@ function editor(value) {
     lastText:value,preferredX:-1,anims:{clear(){}},lines:[],caret:new api.CursorState(),
     theme:{fontSize:16,typewriterScaleAnimated:false,typewriterScaleDurationMs:180},
     twAnimFirst:-1,twAnimLast:-1,twTargetFirst:-1,twTargetLast:-1,twScaleInitialized:false,twScaleAnimator:null,
-    cache:null,renderer:null,onEdit:null,onCaretChange:null,onTextChange:null,onFormatChange:null,onSelectionChange:null,
+    cache:null,engineRef:null,renderer:null,onEdit:null,onCaretChange:null,onTextChange:null,onFormatChange:null,onSelectionChange:null,
     documentGeneration:0,controller:null,ime:new api.ImeBridge(),caretAnimator:null,glyphAnimator:null,scrollAnimator:null,
     caretAnimating:false,viewHeightVp:600,scrollY:0,
     commandRouter:new api.EditorCommandRouter(),hostAdapter:null,echoGuard:new api.ImeEchoGuard(),
     imeUsable:false,focused:false,focusConfirmed:false,menuVisible:false,menuIndex:0,previewDoc:null,previewCache:null,
+    caretLayoutTimer:-1,caretLayoutRevision:0,caretLayoutPending:false,caretLayoutHidden:false,caretLayoutRestoreVisible:true,
+    previewBaseVersion:-1,previewBaseFormatVersion:-1,previewLayoutStart:-1,
     startBlink(){},
     padLeftVp(){return 0;},padTopVp(){return 0;},ensureCaretLayout(){},ensureVisibleLayout(){},ensureCaretVisible(){},effectivePolicy(){return 0;},
     relayout(){},drawNow(){},reportSelection(){},reportCursor(){},hideSelectionMenu(){},diag(){},
@@ -377,6 +379,122 @@ check('Ctrl+A updates caret, callbacks and IME once',()=>{
   const cmd=new api.KeyboardEvent();cmd.action=api.KeyAction.SELECT_ALL;e.applyKeyCommand(cmd);
   assert.equal(e.doc.caretOffset,5);assert.deepEqual(json(changed),[0,5]);assert.ok(reported>0);
   assert.equal(e.selMgr.anchor,0);assert.equal(e.selMgr.head,5);
+});
+check('long-document Ctrl+A selects immediately without laying out its offscreen tail',()=>{
+  const value='甲乙丙\n'.repeat(5000)+'尾';const e=editor(value);
+  const cache=new api.LayoutCache(cacheEngine());
+  e.lines=cache.ensureLayout(value,e.doc.version,e.doc.formatVersion,56);e.cache=cache;
+  const countBefore=cache.lineCount();e.ensureCaretLayout=()=>{throw new Error('full selection must not force the tail');};
+  let selected;e.onSelectionChange=(start,end)=>selected=[start,end];e.selectAllText();
+  assert.deepEqual(selected,[0,value.length]);assert.equal(e.doc.caretOffset,value.length);
+  assert.equal(cache.lineCount(),countBefore);assert.equal(cache.isComplete(),false);
+  assert.equal(e.caret.visible,false);assert.deepEqual(Array.from(e.handlePositions()),[]);
+});
+function withLayoutTimers(action) {
+  const oldSet=context.setTimeout,oldClear=context.clearTimeout;let next=0;const pending=new Map(),all=[];
+  context.setTimeout=(fn)=>{const id=++next;pending.set(id,fn);all.push(fn);return id;};
+  context.clearTimeout=id=>pending.delete(id);
+  const timers={pending,all,drain(){let turns=0;while(pending.size){assert.ok(turns++<1000);const [id,fn]=pending.entries().next().value;pending.delete(id);fn();}}};
+  try {action(timers);} finally {context.setTimeout=oldSet;context.clearTimeout=oldClear;}
+}
+function longNavigationEditor() {
+  const value='甲乙丙\n'.repeat(5000)+'尾';const e=editor(value);
+  e.cache=new api.LayoutCache(cacheEngine());e.lines=e.cache.ensureLayout(value,e.doc.version,e.doc.formatVersion,56);
+  e.doc.moveCaret(0);e.selMgr.collapse(0);e.focused=true;return e;
+}
+check('far caret navigation yields in bounded slices while logical offsets update immediately',()=>withLayoutTimers(timers=>{
+  const e=longNavigationEditor();const before=e.cache.lineCount();e.moveCaretAnimated(e.doc.length);
+  assert.equal(e.doc.caretOffset,e.doc.length);assert.equal(e.selMgr.head,e.doc.length);
+  assert.ok(e.cache.lineCount()-before<=32);assert.equal(e.caretLayoutPending,true);assert.equal(e.caret.visible,false);
+  timers.drain();assert.equal(e.cache.isComplete(),true);assert.equal(e.caretLayoutPending,false);
+  assert.equal(e.caret.visible,true);assert.ok(e.caret.y>0);
+}));
+check('a newer caret request invalidates already queued layout callbacks',()=>withLayoutTimers(timers=>{
+  const e=longNavigationEditor();e.moveCaretAnimated(e.doc.length);const stale=timers.all[0];
+  e.moveCaretAnimated(0);const lines=e.cache.lineCount();stale();
+  assert.equal(e.doc.caretOffset,0);assert.equal(e.cache.lineCount(),lines);assert.equal(timers.pending.size,0);
+}));
+check('document reload and typing cancel pending navigation without moving or editing the replacement',()=>withLayoutTimers(timers=>{
+  for(const replace of [false,true]) {
+    const e=longNavigationEditor();e.moveCaretAnimated(e.doc.length);const stale=timers.all.at(-1);
+    if(replace){e.loadDocument('B',[],1);}else{e.insertExternalText('X');}
+    const text=e.doc.text,caret=e.doc.caretOffset,lines=e.cache.lineCount();stale();
+    assert.equal(e.doc.text,text);assert.equal(e.doc.caretOffset,caret);assert.equal(e.cache.lineCount(),lines);
+    assert.equal(e.caretLayoutPending,false);assert.equal(timers.pending.size,0);
+  }
+}));
+check('Shift far navigation keeps its selection direction while the visual reveal is pending',()=>withLayoutTimers(timers=>{
+  const e=longNavigationEditor();e.selectTo(e.doc.length);
+  assert.equal(e.selMgr.anchor,0);assert.equal(e.selMgr.head,e.doc.length);assert.equal(e.caretLayoutPending,true);
+  timers.drain();assert.equal(e.selMgr.anchor,0);assert.equal(e.selMgr.head,e.doc.length);
+}));
+check('cancelling at an unfinished soft-wrap boundary keeps stale caret and handles hidden',()=>withLayoutTimers(timers=>{
+  const e=editor('A'.repeat(2000));e.doc.moveCaret(0);e.selMgr.collapse(0);e.focused=true;
+  e.cache=new api.LayoutCache(cacheEngine());e.moveCaretAnimated(160);
+  assert.equal(e.lines.at(-1).endIndex,160);assert.equal(e.caretLayoutPending,true);
+  e.cancelCaretLayout();assert.equal(e.caret.visible,false);
+  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.DOWNSTREAM),false);
+  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.UPSTREAM),true);
+  e.selMgr.setSelection(170,160);assert.deepEqual(Array.from(e.handlePositions()),[]);
+  e.ime.isAttached=true;let reports=0;e.ime.updateCursor=()=>reports++;
+  api.EditorProbe.prototype.reportCursor.call(e);assert.equal(reports,0);
+  e.renderer={draw(){}};api.EditorProbe.prototype.drawNow.call(e);assert.equal(e.caret.visible,false);
+  e.lines=e.cache.ensureOffset(e.doc.text,e.doc.version,e.doc.formatVersion,160);
+  api.EditorProbe.prototype.drawNow.call(e);assert.equal(e.caret.visible,true);
+  assert.equal(e.caretLayoutHidden,false);assert.ok(e.caret.y>0);assert.equal(timers.pending.size,0);
+}));
+check('drawing a covered caret respects keyboard-hide visibility',()=>{
+  const e=editor('ABC');e.lines=[line(0,'ABC')];e.focused=true;e.caret.visible=false;
+  e.renderer={draw(){}};api.EditorProbe.prototype.drawNow.call(e);
+  assert.equal(e.caret.visible,false);assert.equal(e.caretLayoutHidden,false);
+});
+check('keyboard hiding during a pending far jump remains hidden after layout completes',()=>withLayoutTimers(timers=>{
+  context.inputMethod.KeyboardStatus={SHOW:1,HIDE:2};
+  const e=longNavigationEditor();e.registerImeCallbacks();e.moveCaretAnimated(e.doc.length);
+  e.ime.onSendKeyboardStatus(context.inputMethod.KeyboardStatus.HIDE);
+  timers.drain();assert.equal(e.caretLayoutPending,false);assert.equal(e.caret.visible,false);
+  e.moveCaretAnimated(0);assert.equal(e.caretLayoutHidden,false);assert.equal(e.caretLayoutRestoreVisible,true);
+}));
+check('visual navigation immediately after a far jump uses the destination line',()=>withLayoutTimers(timers=>{
+  for(const action of [api.KeyAction.MOVE_UP,api.KeyAction.MOVE_DOWN,api.KeyAction.MOVE_LINE_START,api.KeyAction.MOVE_LINE_END]) {
+    for(const shift of [false,true]) {
+      const actual=longNavigationEditor(),reference=longNavigationEditor();
+      for(const e of [actual,reference]) e.ensureCaretLayout=()=>{
+        e.lines=e.cache.ensureOffset(e.doc.text,e.doc.version,e.doc.formatVersion,e.doc.caretOffset);
+      };
+      reference.doc.moveCaret(reference.doc.length);reference.selMgr.collapse(reference.doc.length);
+      reference.ensureCaretLayout();
+      actual.moveCaretAnimated(actual.doc.length);assert.equal(actual.caretLayoutPending,true);
+      const command=new api.KeyboardEvent();command.action=action;command.shift=shift;
+      actual.applyKeyCommand(command);reference.applyKeyCommand(command);
+      assert.equal(actual.doc.caretOffset,reference.doc.caretOffset,action+' shift='+shift);
+      assert.equal(actual.selMgr.anchor,reference.selMgr.anchor);assert.equal(actual.selMgr.head,reference.selMgr.head);
+      assert.equal(actual.caretLayoutPending,false);assert.equal(timers.pending.size,0);
+    }
+  }
+}));
+check('deleting a collapsed composition to empty preserves its original caret',()=>{
+  const e=editor('ABCDE');e.doc.moveCaret(1);e.selMgr.collapse(1);
+  e.previewMgr.update('ni',-1,-1,1,1);e.refreshPreview();assert.equal(e.displayCaret(),3);
+  e.previewMgr.update('',-1,-1);e.refreshPreview();
+  assert.equal(e.displayText(),'ABCDE');assert.equal(e.displayCaret(),1);assert.equal(e.doc.caretOffset,1);
+});
+check('composition updates reuse an isolated preview cache and retain committed prefix lines',()=>{
+  const value='甲乙丙\n'.repeat(300)+'尾';const e=editor(value);
+  e.engineRef=new api.TextLayoutEngine(50,16,24,4,1);e.cache=new api.LayoutCache(e.engineRef);
+  e.lines=e.cache.ensureOffset(value,e.doc.version,e.doc.formatVersion,value.length);
+  const prefix=e.lines[0],committedCount=e.cache.lineCount();
+  e.previewMgr.update('ni',-1,-1,value.length,value.length);e.refreshPreview();
+  const preview=e.previewCache;assert.notEqual(preview,e.cache);
+  let lines=preview.ensureOffset(e.previewDoc.text,e.previewDoc.version,e.previewDoc.formatVersion,e.previewDoc.caretOffset);
+  assert.equal(lines[0],prefix);
+  for(const text of ['nin','你好','ni\nhao','n']) {
+    e.previewMgr.update(text,-1,-1);e.refreshPreview();assert.equal(e.previewCache,preview);
+    lines=preview.ensureOffset(e.previewDoc.text,e.previewDoc.version,e.previewDoc.formatVersion,e.previewDoc.caretOffset);
+    assert.equal(lines[0],prefix);assert.equal(e.doc.text,value);assert.equal(e.cache.lineCount(),committedCount);
+  }
+  e.insertExternalText('你好');assert.equal(e.doc.text,value+'你好');assert.equal(e.previewCache,null);
+  assert.equal(e.previewDoc,null);assert.equal(e.previewMgr.isComposing,false);
 });
 check('clampScroll never resets to top while the layout cache is still empty',()=>{
   const e=editor('x'.repeat(1000));e.viewHeightVp=50;e.scrollY=100;

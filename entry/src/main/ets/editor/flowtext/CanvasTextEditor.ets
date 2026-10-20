@@ -21,7 +21,7 @@ import { GraphemeUtil } from './model/GraphemeUtil';
 import { SelectionInfo, PreviewInfo, ViewportInfo, ScrollPolicy, StyleKind, FormatRun, CaretAffinity } from './model/EditorTypes';
 import { EditorTheme } from './theme/EditorTheme';
 import { TextLayoutEngine, LayoutLine } from './render/TextLayoutEngine';
-import { LayoutCache } from './render/LayoutCache';
+import { LayoutCache, LayoutProgress } from './render/LayoutCache';
 import { GlyphRenderer, RenderTheme, GlyphAnimRegistry, GlyphAnimState } from './render/GlyphRenderer';
 import { GlyphAnimator, GlyphDiffOptions } from './animation/GlyphAnimator';
 import { HitTester } from './interaction/HitTester';
@@ -359,6 +359,15 @@ export struct CanvasTextEditor {
   private engineKey: string = '';
   private previewDoc: TextDocument | null = null;
   private previewCache: LayoutCache | null = null;
+  private previewBaseVersion: number = -1;
+  private previewBaseFormatVersion: number = -1;
+  private previewLayoutStart: number = -1;
+  /** A far caret reveal yields between native lines instead of monopolizing the UI thread. */
+  private caretLayoutTimer: number = -1;
+  private caretLayoutRevision: number = 0;
+  private caretLayoutPending: boolean = false;
+  private caretLayoutHidden: boolean = false;
+  private caretLayoutRestoreVisible: boolean = true;
   private windowX: number = 0;
   private windowY: number = 0;
   private lastText: string = '';
@@ -563,6 +572,7 @@ export struct CanvasTextEditor {
 
   /** 三击选段（按段落边界） */
   private selectParagraphAt(x: number, y: number): void {
+    this.cancelCaretLayout();
     this.stopCaretAnimation();
     const offset: number = this.offsetAt(x, y);
     const text: string = this.doc.text;
@@ -593,11 +603,18 @@ export struct CanvasTextEditor {
   }
 
   private selectTo(head: number): void {
+    this.cancelCaretLayout();
+    this.caretLayoutRestoreVisible = true;
     // 扩展选区是即时状态；不能让点击留下的弹簧动画继续覆盖 caret
     this.stopCaretAnimation();
     this.selMgr.setSource(this.doc.text);
     this.selMgr.extendTo(head);
     this.doc.setSelection(this.selMgr.anchor, this.selMgr.head);
+    if (this.deferCaretLayout(this.selMgr.headAffinity)) {
+      this.emitSelection();
+      this.drawNow();
+      return;
+    }
     this.ensureCaretLayout();
     this.caret = HitTester.caretPositionFor(this.doc.caretOffset, this.lines, this.padLeftVp(), this.padTopVp(),
       this.theme.fontSize, this.selMgr.headAffinity);
@@ -699,14 +716,18 @@ export struct CanvasTextEditor {
   }
 
   private selectAllText(): void {
+    this.cancelCaretLayout();
+    this.caretLayoutRestoreVisible = true;
     this.stopCaretAnimation();
     this.selMgr.setSource(this.doc.text);
     this.selMgr.setSelection(0, this.doc.text.length);
     this.doc.setSelection(0, this.doc.text.length);
-    this.ensureCaretLayout();
-    this.caret = HitTester.caretPositionFor(this.selMgr.head, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
     this.ensureVisibleLayout();
+    // The logical selection is exact without laying out the offscreen document end.
+    if (this.hasCaretLayout(this.selMgr.head, this.selMgr.headAffinity)) {
+      this.caret = HitTester.caretPositionFor(this.selMgr.head, this.lines,
+        this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
+    } else { this.caret.visible = false; this.caretLayoutHidden = true; }
     this.emitSelection(true);
     this.hideSelectionMenu();
     this.drawNow();
@@ -736,6 +757,8 @@ export struct CanvasTextEditor {
   }
 
   aboutToDisappear(): void {
+    this.cancelCaretLayout();
+    this.clearPreviewLayout();
     this.documentGeneration++;
     this.cancelLongPress();
     if (this.controller !== null) { this.controller.unbind(this); }
@@ -825,6 +848,7 @@ export struct CanvasTextEditor {
       this.lastPointerAtMs = Date.now();
       if (event.button === MouseButton.Left && event.action === MouseAction.Press) {
         // 按下：锚点固定，不做弹簧动画（否则拖动时光标会先飞向旧目标）
+        this.cancelCaretLayout();
         this.stopCaretAnimation();
         this.stopScrollAnimation();
         this.stopFling();
@@ -901,6 +925,7 @@ export struct CanvasTextEditor {
       deviceProfile.notePointerActivity();
       const delta: number = event.getVerticalAxisValue();
       if (delta !== 0) {
+        this.cancelCaretLayout();
         this.stopFling();
         this.stopScrollAnimation();
         this.hideSelectionMenu();
@@ -955,6 +980,8 @@ export struct CanvasTextEditor {
   loadText(text: string): void { this.loadDocument(text, [], text.length); }
 
   loadDocument(text: string, runs: FormatRun[], caret: number, preserveView: boolean = false): void {
+    this.cancelCaretLayout();
+    this.clearPreviewLayout();
     this.documentGeneration++;
     this.echoGuard.reset();
     this.stopCaretAnimation();
@@ -1006,18 +1033,27 @@ export struct CanvasTextEditor {
 
   /** 光标移动（连贯动画：px/vp 对齐后动画不再乱飞；不重排/不生成字形动画） */
   private moveCaretAnimated(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+    this.cancelCaretLayout();
+    this.caretLayoutRestoreVisible = true;
+    this.stopCaretAnimation();
     this.stopScrollAnimation();
     const from: CursorState = this.caret;
     this.doc.moveCaret(offset);
     this.twDirty = true;
     this.selMgr.setSource(this.doc.text);
     this.selMgr.collapse(this.doc.caretOffset, affinity);
+    if (this.deferCaretLayout(affinity)) {
+      this.emitSelection();
+      this.drawNow();
+      return;
+    }
     this.ensureCaretLayout();
     const to: CursorState = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize, affinity);
     this.diag('moveCaret offset=' + offset.toString() + ' from=(' + from.x.toFixed(1) + ',' + from.y.toFixed(1) +
       ') to=(' + to.x.toFixed(1) + ',' + to.y.toFixed(1) + ')');
-    this.animateCaretMove(from, to);
+    if (this.caretLayoutHidden) { this.settleCaret(to); }
+    else { this.animateCaretMove(from, to); }
     this.emitSelection();
     if (this.onCaretChange !== null) {
       this.onCaretChange(this.doc.caretOffset);
@@ -1083,6 +1119,7 @@ export struct CanvasTextEditor {
   }
 
   requestEditorFocus(): void {
+    this.caretLayoutRestoreVisible = true;
     this.diag('requestEditorFocus ENTER focused(before)=' + this.focused.toString() +
       ' imeAttached=' + this.ime.attached.toString());
     this.focused = true;
@@ -1161,9 +1198,9 @@ export struct CanvasTextEditor {
   }
 
   releaseEditorFocus(): void {
+    this.cancelCaretLayout();
     this.previewMgr.cancel();
-    this.previewDoc = null;
-    this.previewCache = null;
+    this.clearPreviewLayout();
     // 失焦即请求落库（T028）：切走/后台/关闭编辑面时不丢最后一次编辑
     if (this.onRequestSave !== null) {
       this.onRequestSave();
@@ -1282,8 +1319,10 @@ export struct CanvasTextEditor {
     };
     this.ime.onSendKeyboardStatus = (status: inputMethod.KeyboardStatus): void => {
       if (status === inputMethod.KeyboardStatus.SHOW) {
+        this.caretLayoutRestoreVisible = true;
         this.caret.visible = true;
       } else if (status === inputMethod.KeyboardStatus.HIDE) {
+        this.caretLayoutRestoreVisible = false;
         this.caret.visible = false;
       }
       this.drawNow();
@@ -1334,18 +1373,39 @@ export struct CanvasTextEditor {
     return this.previewMgr.isComposing && this.previewDoc !== null ? this.previewDoc.caretOffset : this.doc.caretOffset;
   }
   private refreshPreview(): void {
+    this.cancelCaretLayout();
     this.twDirty = true;
     const info: PreviewInfo = this.previewMgr.previewInfo;
     const provisional: TextDocument = new TextDocument();
-    provisional.setText(this.doc.text);
+    provisional.setTextWithCaret(this.doc.text, info.startOffset);
     provisional.setRuns(this.doc.runs);
     provisional.delete(info.startOffset, info.endOffset);
     provisional.insert(info.startOffset, info.text);
-    this.previewDoc = provisional;
-    if (this.engineRef !== null) {
-      this.previewCache = new LayoutCache(this.engineRef);
+    const start: number = GraphemeUtil.snapToBoundary(this.doc.text, info.startOffset);
+    const sameBase: boolean = this.previewDoc !== null && this.previewCache !== null &&
+      this.previewBaseVersion === this.doc.version && this.previewBaseFormatVersion === this.doc.formatVersion;
+    if (sameBase && this.previewCache !== null) {
+      this.previewCache.applyEdit(provisional.text, provisional.version, provisional.formatVersion,
+        provisional.runs, Math.min(start, this.previewLayoutStart));
+    } else if (this.cache !== null && this.cache.version === this.doc.version) {
+      this.previewCache = this.cache.forkForEdit(provisional.text, provisional.version,
+        provisional.formatVersion, provisional.runs, start);
+    } else if (this.engineRef !== null) {
+      this.previewCache = new LayoutCache(this.engineRef.cloneConfiguration());
       this.previewCache.setRuns(provisional.runs);
     }
+    this.previewDoc = provisional;
+    this.previewBaseVersion = this.doc.version;
+    this.previewBaseFormatVersion = this.doc.formatVersion;
+    this.previewLayoutStart = start;
+  }
+
+  private clearPreviewLayout(): void {
+    this.previewDoc = null;
+    this.previewCache = null;
+    this.previewBaseVersion = -1;
+    this.previewBaseFormatVersion = -1;
+    this.previewLayoutStart = -1;
   }
 
   // ================= 物理键盘（PC / 外接键盘） =================
@@ -1469,6 +1529,17 @@ export struct CanvasTextEditor {
     if (cmd.action !== KeyAction.MOVE_UP && cmd.action !== KeyAction.MOVE_DOWN) { this.preferredX = -1; }
     const before: number = this.doc.caretOffset;
     const hadSelection: boolean = this.selMgr.selection.startOffset !== this.selMgr.selection.endOffset;
+
+    // Visual-line commands require the actual current line, including when a far
+    // reveal is still yielding. Never resolve them against the cached prefix.
+    if ((cmd.action === KeyAction.MOVE_UP || cmd.action === KeyAction.MOVE_DOWN ||
+      cmd.action === KeyAction.MOVE_LINE_START || cmd.action === KeyAction.MOVE_LINE_END) &&
+      !this.hasCaretLayout(before, this.selMgr.headAffinity)) {
+      this.cancelCaretLayout();
+      this.ensureCaretLayout();
+      this.settleCaret(HitTester.caretPositionFor(before, this.lines,
+        this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity));
+    }
 
     switch (cmd.action) {
       case KeyAction.INSERT:
@@ -1685,12 +1756,15 @@ export struct CanvasTextEditor {
 
   /** 格式变化收口：整体失效重排 + 重绘 + 上抛（T023） */
   private afterFormatChange(notify: boolean = true): void {
+    this.cancelCaretLayout();
     if (this.cache !== null) {
       // 必须把最新格式标注交给排版引擎：normalizeRuns 会替换 runsValue 数组，
       // 若不同步，引擎将一直沿用建引擎时的旧样式（标题/撤销重做都不会生效）
       this.cache.setRuns(this.doc.runs);
       this.cache.invalidate();
     }
+    if (this.previewMgr.isComposing) { this.refreshPreview(); }
+    else { this.clearPreviewLayout(); }
     this.relayout();
     if (notify && this.onEdit !== null) {
       this.onEdit(this.doc.text, this.doc.runs, this.doc.caretOffset);
@@ -1720,6 +1794,7 @@ export struct CanvasTextEditor {
     if (this.viewWidthVp <= 0) {
       return;
     }
+    this.cancelCaretLayout();
     const baseContentVp: number = Math.max(1,
       this.viewWidthVp - this.theme.paddingLeft - this.theme.paddingRight);
     // 打字机模式预留放大空间：文本列按 focusScale 收窄，当前段落放大后正好回到原列宽，
@@ -1749,7 +1824,8 @@ export struct CanvasTextEditor {
     engine.setRuns(this.doc.runs);
     this.engineRef = engine;
     // 旧预上屏排版属于旧引擎，丢弃；下一次预览回调会用新引擎重建
-    this.previewCache = this.previewMgr.isComposing && this.previewDoc !== null ? new LayoutCache(engine) : null;
+    this.previewCache = this.previewMgr.isComposing && this.previewDoc !== null
+      ? new LayoutCache(engine.cloneConfiguration()) : null;
     if (this.previewCache !== null && this.previewDoc !== null) {
       this.previewCache.setRuns(this.previewDoc.runs);
     }
@@ -1813,6 +1889,75 @@ export struct CanvasTextEditor {
     if (this.cache !== null) {
       this.lines = this.cache.ensureOffset(this.doc.text, this.doc.version, this.doc.formatVersion, this.doc.caretOffset);
     }
+  }
+
+  /** A downstream caret at the last soft-wrap offset needs the following line. */
+  private hasCaretLayout(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): boolean {
+    if (this.lines.length === 0) { return false; }
+    const lastEnd: number = this.lines[this.lines.length - 1].endIndex;
+    if (offset > lastEnd) { return false; }
+    if (offset < lastEnd || affinity === CaretAffinity.UPSTREAM) { return true; }
+    const active: LayoutCache | null = this.previewMgr.isComposing ? this.previewCache : this.cache;
+    return active === null || active.coversOffset(offset);
+  }
+
+  private cancelCaretLayout(): void {
+    this.caretLayoutRevision++;
+    if (this.caretLayoutTimer >= 0) {
+      clearTimeout(this.caretLayoutTimer);
+      this.caretLayoutTimer = -1;
+    }
+    if (this.caretLayoutPending) {
+      this.caret.visible = false;
+      this.caretLayoutHidden = true;
+    }
+    this.caretLayoutPending = false;
+  }
+
+  /** Returns true when only the visual reveal is deferred; document offsets are already current. */
+  private deferCaretLayout(affinity: CaretAffinity): boolean {
+    const cache: LayoutCache | null = this.cache;
+    if (cache === null || this.previewMgr.isComposing) { return false; }
+    cache.setRuns(this.doc.runs);
+    const progress: LayoutProgress = cache.ensureOffsetIncremental(this.doc.text, this.doc.version,
+      this.doc.formatVersion, this.doc.caretOffset, 32, 4);
+    this.lines = progress.lines;
+    if (progress.reached) { return false; }
+    this.caretLayoutPending = true;
+    this.caret.visible = false;
+    this.caretLayoutHidden = true;
+    const revision: number = this.caretLayoutRevision;
+    const generation: number = this.documentGeneration;
+    const version: number = this.doc.version;
+    const formatVersion: number = this.doc.formatVersion;
+    const offset: number = this.doc.caretOffset;
+    this.caretLayoutTimer = setTimeout(() => {
+      this.continueCaretLayout(revision, generation, cache, version, formatVersion, offset, affinity);
+    }, 16);
+    return true;
+  }
+
+  private continueCaretLayout(revision: number, generation: number, cache: LayoutCache,
+    version: number, formatVersion: number, offset: number, affinity: CaretAffinity): void {
+    if (revision !== this.caretLayoutRevision) { return; }
+    this.caretLayoutTimer = -1;
+    if (generation !== this.documentGeneration || this.cache !== cache || this.doc.version !== version ||
+      this.doc.formatVersion !== formatVersion || this.doc.caretOffset !== offset || this.previewMgr.isComposing) {
+      this.cancelCaretLayout();
+      return;
+    }
+    const progress: LayoutProgress = cache.ensureOffsetIncremental(this.doc.text, version, formatVersion, offset, 32, 4);
+    this.lines = progress.lines;
+    if (!progress.reached) {
+      this.caretLayoutTimer = setTimeout(() => {
+        this.continueCaretLayout(revision, generation, cache, version, formatVersion, offset, affinity);
+      }, 16);
+      return;
+    }
+    this.caretLayoutPending = false;
+    this.caret.visible = true;
+    this.settleCaret(HitTester.caretPositionFor(offset, this.lines,
+      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, affinity));
   }
 
   /**
@@ -1934,6 +2079,9 @@ export struct CanvasTextEditor {
 
   /** 编辑后：失效重排 + 字形动画 + 光标平滑移动动画 */
   private afterEdit(): void {
+    this.cancelCaretLayout();
+    this.caretLayoutRestoreVisible = true;
+    if (!this.previewMgr.isComposing) { this.clearPreviewLayout(); }
     this.preferredX = -1;
     // 正文/排版已变：旧弹簧动画的目标坐标已失效，必须先停，否则光标会被拉回旧位置
     this.stopCaretAnimation();
@@ -2044,7 +2192,10 @@ export struct CanvasTextEditor {
 
   /** 将光标落定到目标位置并上报 */
   private settleCaret(to: CursorState): void {
+    const visible: boolean = this.caretLayoutHidden ? this.caretLayoutRestoreVisible : to.visible;
+    this.caretLayoutHidden = false;
     this.caretAnimating = false;
+    this.caret.visible = visible;
     this.caret.x = to.x;
     this.caret.y = to.y;
     this.caret.height = to.height;
@@ -2147,6 +2298,15 @@ export struct CanvasTextEditor {
       this.twScaleInitialized = false;
     }
     this.ensureVisibleLayout();
+    if (this.caretLayoutPending || !this.hasCaretLayout(this.displayCaret(), this.selMgr.headAffinity)) {
+      this.caret.visible = false;
+      this.caretLayoutHidden = true;
+    } else if (this.caretLayoutHidden) {
+      this.caretLayoutHidden = false;
+      this.caret = HitTester.caretPositionFor(this.displayCaret(), this.lines,
+        this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
+      this.caret.visible = this.focused && this.caretLayoutRestoreVisible;
+    }
     // 上面的兜底同步会把 renderer 置空后重建；此处重新取一次并收窄类型，
     // 否则 TS 仍认为 this.renderer 可能为 null（10505001）。
     if (this.renderer === null) {
@@ -2192,12 +2352,10 @@ export struct CanvasTextEditor {
     if (sel.isEmpty() || this.lines.length === 0) {
       return [];
     }
-    const lastEnd: number = this.lines[this.lines.length - 1].endIndex;
-    if (this.selMgr.anchor > lastEnd || this.selMgr.head > lastEnd) {
-      return [];
-    }
     const anchorAffinity: CaretAffinity = this.selMgr.headAffinity === CaretAffinity.DOWNSTREAM
       ? CaretAffinity.UPSTREAM : CaretAffinity.DOWNSTREAM;
+    if (!this.hasCaretLayout(this.selMgr.anchor, anchorAffinity) ||
+      !this.hasCaretLayout(this.selMgr.head, this.selMgr.headAffinity)) { return []; }
     const a: CursorState = HitTester.caretPositionFor(this.selMgr.anchor, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize, anchorAffinity);
     const b: CursorState = HitTester.caretPositionFor(this.selMgr.head, this.lines,
@@ -2253,6 +2411,7 @@ export struct CanvasTextEditor {
    * 视觉上就是"高亮在动、光标不动"。
    */
   private syncSelectionToCaret(): void {
+    this.cancelCaretLayout();
     this.stopCaretAnimation();
     const anchor: number = this.selMgr.anchor;
     const head: number = this.selMgr.head;
@@ -2290,7 +2449,8 @@ export struct CanvasTextEditor {
    *   避免仅上报内容 y 造成键盘悬浮偏移；完整窗口绝对位置需组件在窗口中的坐标（后续扩展）。
    *   left 与绘制一致：以边界为中线居中（边界 - 半宽），保证 IME 悬浮元素与可视光标对齐。 */
   private reportCursor(): void {
-    if (!this.ime.attached) {
+    if (!this.ime.attached || this.caretLayoutPending || this.caretLayoutHidden ||
+      !this.hasCaretLayout(this.displayCaret(), this.selMgr.headAffinity)) {
       return;
     }
     const caret: CursorState = this.visualCaret(this.caret);
@@ -2354,6 +2514,7 @@ export struct CanvasTextEditor {
       return;
     }
     if (event.type === TouchType.Down) {
+      this.cancelCaretLayout();
       this.cancelLongPress();
       this.stopCaretAnimation();
       this.stopScrollAnimation();
@@ -2556,6 +2717,7 @@ export struct CanvasTextEditor {
 
   /** 无动画落光标（鼠标点击/触控板点击）：直接定位 + 上报 + 滚动跟随，不启动弹簧 */
   private placeCaretImmediately(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+    this.cancelCaretLayout();
     this.stopCaretAnimation();
     this.selMgr.collapse(offset, affinity);
     this.doc.moveCaret(offset);
@@ -3300,6 +3462,7 @@ export struct CanvasTextEditor {
 
   /** PageUp/PageDown：整屏滚动（只改滚动，不改光标） */
   private scrollByPage(direction: number): void {
+    this.cancelCaretLayout();
     this.stopFling();
     this.stopScrollAnimation();
     this.hideSelectionMenu();

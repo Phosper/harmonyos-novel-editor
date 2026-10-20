@@ -26,6 +26,14 @@ API 26 输入法切换语言时会发送空 `insertText`；无组字状态时空
 
 ## 本地逻辑测试
 
+2026-10-20 编辑器优化新增排版切片、预览缓存隔离、输入法同步与历史容量用例。本地 FlowText 121 项、数据 35 项、外壳与导出 20 项、窗口 38 项、导入 5 项、设备分流 28 项、排版性能 11 项、输入法 14 项、ArkTS 静态守卫 17 项，共 289 项通过，另含 766 个 Unicode 样例。5000 段缓存探针验证 20 次预览更新只重建受影响的尾段；这是受控替身下的工作量检查，不是实际设备延迟或帧率数据。
+
+最终优化源码使用上述 API 26 工具链重新构建主包与测试包，均成功。在 `WeaverMerge20261020` 同一独立实例分组执行编辑器与文件 32 项、跨窗口长文排版 1 项、桌面窗口 3 项，共 36 项通过，Failure、Error、Ignore 均为 0。新增原生用例验证预览与正式排版隔离、增量切片的字素与末尾索引、远跳后换稿的迟到回调保护，以及全选替换完整长文。旧同步长文探针曾触发 `THREAD_BLOCK_6S`，现保留相同文字量和断言并分片让出，最终完整复跑通过；测试耗时不作为输入延迟指标。
+
+新增行为检查覆盖：全选不强制排版文末、远跳分片且逻辑位置立即更新、后续跳转/换稿/输入取消旧回调、远跳后紧接上下与 Home/End 使用目标行、取消时软换行下游未排版则隐藏旧几何、键盘隐藏状态保持、空预上屏保留原光标。输入法检查覆盖 2000 次快速变更合并、失败重试与上限、最新状态优先、同步异常及脱离/重连后的迟到完成。历史检查覆盖正文和格式载荷共用容量、跨文稿撤销、分叉清理、撤销重做转移、重置及单条超大快照的恢复能力。
+
+切片每次最多 32 行或约 4ms 后让出，至少推进一行；原生窗口构建与单行调用不可中断，因此这个预算不是耗时硬上限。远跳后立即执行依赖视觉行的命令会先同步补齐当前行，避免误用前缀。历史的 16 MiB 为 UTF-16 字符串载荷估算而非进程内存硬上限；仅有一个恢复点且其自身超限时仍保留它。
+
 需要 Node.js 24 或以上，在工程根目录执行：
 
 ```powershell
@@ -35,6 +43,8 @@ node tools/shell-regression.cjs
 node tools/window-regression.cjs
 node tools/import-regression.cjs
 node tools/device-profile-regression.cjs
+node tools/layout-performance-regression.cjs
+node tools/ime-regression.cjs
 node tools/arkts-guard.cjs
 ```
 
@@ -58,7 +68,7 @@ node tools/arkts-guard.cjs
 ./tools/Test-FlowText.ps1 -DevEcoRoot 'D:/software/CommandLineTools-26.0.0.851' -JavaRoot 'D:/software/DevEco Studio/jbr' -Device '<hdc list targets 中的设备>'
 ```
 
-`DevEcoRoot` 可为 DevEco Studio 或 Command Line Tools 根目录，`Device` 换成实际设备；CLI 未带 JDK 时用 `JavaRoot` 指定本机 JDK 21。仅编译可加 `-BuildOnly`。脚本检查实际 SDK 不低于目标 API、设备 API 不低于最低兼容版本，条件不符时拒绝构建或安装。脚本分别构建主包和 `ohosTest`，安装后分组执行编辑器与窗口 Hypium 用例，每组从关闭应用的状态启动，异步单用例向框架传入 20 秒超时，每组命令最多等待 180 秒，以容纳长文同步原生排版探针。根据完整汇总判断 Failure、Error、Ignore 均为 0 且 Pass 等于 Tests run，避免误把系统命令退出码 0 当成全部通过。两组日志分别保存到 `tools/.test-results/device-tests.log`、`window-tests.log`。
+`DevEcoRoot` 可为 DevEco Studio 或 Command Line Tools 根目录，`Device` 换成实际设备；CLI 未带 JDK 时用 `JavaRoot` 指定本机 JDK 21。只运行本地回归与编译可加 `-BuildOnly`。脚本检查实际 SDK 不低于目标 API、设备 API 不低于最低兼容版本，条件不符时拒绝构建或安装。脚本先运行上述九组本地检查，再分别构建主包和 `ohosTest`，安装后分组执行编辑器、长文原生排版与窗口 Hypium 用例，每组从关闭应用的状态启动。编辑器与窗口异步单用例保持 20 秒超时；长文组为 120 秒，每组命令最多等待 180 秒。长文组保留跨 4000 码元窗口、所有字形范围及点击往返断言，按排版切片让出主线程，防止测试自身触发系统 6 秒冻结检测。根据完整汇总判断 Failure、Error、Ignore 均为 0 且 Pass 等于 Tests run，避免误把系统命令退出码 0 当成全部通过。本地、构建及设备日志保存到 `tools/.test-results/`，三组设备日志为 `device-tests.log`、`native-layout-tests.log`、`window-tests.log`。
 
 设备测试使用真实 ArkGraphics2D 排版、CanvasTextEditor 和系统键盘事件，覆盖混排索引、表情、复杂文字、标题度量、密度换算、空段落、换行、宽度变化、格式同步和键盘选择。实际手机需配置自己的调试签名。
 

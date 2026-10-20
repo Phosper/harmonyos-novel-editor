@@ -25,6 +25,8 @@ const SAVE_DEBOUNCE_MS: number = 1200
 const SAVE_SAFETY_MS: number = 30000
 /** 历史快照合并窗口：窗口内的连续输入合并为一条，避免逐键一条 */
 const HISTORY_MERGE_MS: number = 600
+/** 所有文稿的撤销 + 重做共用容量，避免长文/多标签按快照数成倍占用内存。 */
+const MAX_HISTORY_BYTES: number = 16 * 1024 * 1024
 const MAX_HISTORY: number = 120
 
 /** 导出时复制正文和格式，避免查询等待期间的编辑改变同一次快照。 */
@@ -60,6 +62,9 @@ export class EditorStore {
    */
   @Trace undoStack: HistoryEntry[] = []
   @Trace redoStack: HistoryEntry[] = []
+  /** 只在快照增删时记账，每次输入不扫描或编码正文。 */
+  private historyBytes: number = 0
+  private historyOrder: number = 0
   private debounceTimer: number = -1
   private safetyTimer: number = -1
   private lastHistoryAt: number = 0
@@ -337,16 +342,38 @@ export class EditorStore {
       return
     }
     const now: number = Date.now()
+    // 先释放当前文稿已分叉的 redo，避免它占预算并挤掉仍然有效的撤销历史。
+    this.removeHistoryForDoc(this.redoStack, doc.id)
     if (this.historyBoundary || this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1].docId !== doc.id ||
       now - this.lastHistoryAt > HISTORY_MERGE_MS) {
-      this.undoStack.push(new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson))
-      if (this.undoStack.length > MAX_HISTORY) {
-        this.undoStack.shift()
-      }
+      this.appendHistory(this.undoStack, doc)
       this.lastHistoryAt = now
     }
     this.historyBoundary = false
-    this.redoStack = this.redoStack.filter((entry: HistoryEntry): boolean => entry.docId !== doc.id)
+  }
+
+  private appendHistory(stack: HistoryEntry[], doc: OpenDoc): void {
+    const entry: HistoryEntry = new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson, ++this.historyOrder)
+    stack.push(entry)
+    this.historyBytes += entry.estimatedBytes
+    // 每个栈的头部都是该栈最早捕获的状态。按入栈顺序裁剪两栈的头部，
+    // 保留各文稿剩余步骤的原有顺序，不把别篇文稿的状态拿来回退。
+    // 最新恢复点永远保留：若单篇已超过预算，仅允许这一条超限，仍可撤销当前事务。
+    while (this.undoStack.length + this.redoStack.length > 1 &&
+      (this.historyBytes > MAX_HISTORY_BYTES || this.undoStack.length + this.redoStack.length > MAX_HISTORY)) {
+      const oldest: HistoryEntry[] = this.undoStack.length === 0 ? this.redoStack :
+        (this.redoStack.length === 0 || this.undoStack[0].order < this.redoStack[0].order ?
+          this.undoStack : this.redoStack)
+      this.historyBytes -= oldest.splice(0, 1)[0].estimatedBytes
+    }
+  }
+
+  private removeHistoryForDoc(stack: HistoryEntry[], id: string): void {
+    for (let i: number = stack.length - 1; i >= 0; i--) {
+      if (stack[i].docId === id) {
+        this.historyBytes -= stack.splice(i, 1)[0].estimatedBytes
+      }
+    }
   }
 
   undo(): void {
@@ -368,7 +395,8 @@ export class EditorStore {
     if (index < 0) { return }
     // V2 的 @Trace 数组可观测 push/splice 等原地改动，故 canUndo/canRedo 能随栈变化刷新
     const entry: HistoryEntry = from.splice(index, 1)[0]
-    to.push(new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson))
+    this.historyBytes -= entry.estimatedBytes
+    this.appendHistory(to, doc)
     this.restoring = true
     doc.draft = entry.text
     doc.caret = entry.caret
@@ -551,8 +579,8 @@ export class EditorStore {
 
   /** 文稿被删除/移出当前项目时，丢弃其内存草稿与历史，避免复活已删数据 */
   discard(id: string): void {
-    this.undoStack = this.undoStack.filter((e: HistoryEntry) => e.docId !== id)
-    this.redoStack = this.redoStack.filter((e: HistoryEntry) => e.docId !== id)
+    this.removeHistoryForDoc(this.undoStack, id)
+    this.removeHistoryForDoc(this.redoStack, id)
   }
 
   reset(): void {
@@ -561,6 +589,10 @@ export class EditorStore {
     this.activeId = ''
     this.undoStack = []
     this.redoStack = []
+    this.historyBytes = 0
+    this.historyOrder = 0
+    this.lastHistoryAt = 0
+    this.historyBoundary = false
     this.contentRev++
   }
 }

@@ -108,10 +108,11 @@ class StoreDouble {
   }
 }
 
-let store = new StoreDouble(), timerId = 0;
+let store = new StoreDouble(), timerId = 0, clockOffset = 0;
 const timers = new Map();
 const context = vm.createContext({
   console, Logger: {info() {}, warn() {}, error() {}},
+  Date: class extends Date { static now() { return Date.now() + clockOffset; } },
   relationalStore: {RdbPredicates: Predicates},
   dbHelper: {getStore() { return store; }, beginTransaction() { return store.beginTransaction(); }},
   UiStore: class { constructor() { this.mode = 'professional'; this.view = 0; } },
@@ -132,13 +133,13 @@ for (const file of [
   'repository/BookRepository', 'repository/ChapterRepository', 'repository/MaterialRepository', 'repository/RelationshipRepository',
   'store/Repos', 'store/StoreModels', 'store/EditorStore', 'store/ProjectStore', 'store/MaterialStore', 'store/RelationStore', 'store/AppStores'
 ]) load(file + '.ets');
-const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES, runInTransaction, chapterRepo})', context);
+const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, HistoryEntry, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES, MAX_HISTORY_BYTES, MAX_HISTORY, runInTransaction, chapterRepo})', context);
 function chapter(id = 'a', bookId = 'book-a', content = 'previous saved text') {
   return {id, book_id: bookId, title: 'Chapter ' + id, content, format: 'txt', format_runs: '', sort_order: 0,
     word_count: content.length, caret_offset: 0, is_fav: 0, is_inspiration: 0, is_trash: 0, created_at: 1, updated_at: 1};
 }
 function fixture() {
-  store = new StoreDouble(); timers.clear();
+  store = new StoreDouble(); timers.clear(); clockOffset = 0;
   const app = new api.AppStores();
   app.project.currentBookId = 'book-a';
   app.project.books = [{id: 'book-a', name: 'Book A', mode: api.BookMode.PROFESSIONAL}, {id: 'book-b', name: 'Book B', mode: api.BookMode.PROFESSIONAL}];
@@ -154,8 +155,118 @@ function fixture() {
 }
 let checks = 0;
 async function check(name, run) { await run(); checks++; console.log('PASS ' + name); }
+function editStep(editor, text, runs = '', caret = text.length) {
+  clockOffset += 700; // Separate user transactions, beyond the store's 600 ms typing merge window.
+  editor.setEditorState(text, runs, caret);
+}
+function historyEntries(editor) { return [...editor.undoStack, ...editor.redoStack]; }
+function assertHistoryBudget(editor) {
+  const entries = historyEntries(editor);
+  const bytes = entries.reduce((sum, entry) => sum + entry.estimatedBytes, 0);
+  assert.equal(editor.historyBytes, bytes, 'incremental accounting matches every retained snapshot');
+  assert.ok(entries.length <= api.MAX_HISTORY, 'undo and redo share the count ceiling');
+  assert.ok(bytes <= api.MAX_HISTORY_BYTES || entries.length === 1,
+    'only one oversized recovery point may exceed the shared byte budget');
+}
 
 (async () => {
+  await check('history estimates UTF-16 text and formatting without encoding or copying snapshots', () => {
+    const entry = new api.HistoryEntry('doc', '中😀a', '中😀a'.length, '[{"bold":true}]');
+    assert.equal(entry.estimatedBytes, ('doc'.length + '中😀a'.length + '[{"bold":true}]'.length) * 2 + 128);
+  });
+  await check('long formatted documents keep bounded history and the latest transaction remains reversible', () => {
+    const {app, doc} = fixture(); const editor = app.editor;
+    const body = '文'.repeat(350000), formatting = '格式'.repeat(140000);
+    let beforeText, beforeRuns, beforeCaret;
+    for (let i = 0; i < 40; i++) {
+      beforeText = doc.draft; beforeRuns = doc.runsJson; beforeCaret = doc.caret;
+      editStep(editor, body + i, formatting + i, i);
+      assertHistoryBudget(editor);
+    }
+    assert.ok(editor.undoStack.length < 20, 'byte budget trims before the snapshot count limit');
+    const latestText = doc.draft, latestRuns = doc.runsJson, latestCaret = doc.caret;
+    editor.undo(); assertHistoryBudget(editor);
+    assert.equal(doc.draft, beforeText); assert.equal(doc.runsJson, beforeRuns); assert.equal(doc.caret, beforeCaret);
+    editor.redo(); assertHistoryBudget(editor);
+    assert.equal(doc.draft, latestText); assert.equal(doc.runsJson, latestRuns); assert.equal(doc.caret, latestCaret);
+    assert.equal(doc.dirty, true);
+  });
+  await check('undo and redo share one budget while preserving cross-document isolation and redo order', () => {
+    const {app, doc} = fixture(); const editor = app.editor;
+    const other = new api.OpenDoc('b', 'B', api.ChapterFormat.TXT, '', 'B original', 0);
+    editor.openDocs.push(other);
+    const body = '文'.repeat(300000);
+    for (let i = 0; i < 18; i++) editStep(editor, body + 'A' + i);
+    for (let i = 0; i < 5; i++) { editor.undo(); assertHistoryBudget(editor); }
+    const aText = doc.draft;
+    editor.activeId = 'b';
+    for (let i = 0; i < 15; i++) { editStep(editor, body + 'B' + i); assertHistoryBudget(editor); }
+    assert.equal(doc.draft, aText);
+    for (let i = 14; i > 5; i--) {
+      editor.undo(); assert.equal(other.draft, body + 'B' + (i - 1)); assertHistoryBudget(editor);
+    }
+    editor.activeId = 'a';
+    const redo = editor.redoStack.filter(entry => entry.docId === 'a').map(entry => entry.text).reverse();
+    assert.equal(redo.length, 5, 'recent A redo steps survive while the older A undo steps are pruned');
+    for (const expected of redo) { editor.redo(); assert.equal(doc.draft, expected); assertHistoryBudget(editor); }
+    assert.equal(other.draft, body + 'B5');
+  });
+  await check('the shared count limit applies during undo and retains the nearest available user steps', () => {
+    const {app, doc} = fixture(); const editor = app.editor;
+    for (let i = 1; i <= 160; i++) editStep(editor, 'step ' + i);
+    assert.equal(editor.undoStack.length, api.MAX_HISTORY); assertHistoryBudget(editor);
+    for (let i = 159; i >= 100; i--) {
+      editor.undo(); assert.equal(doc.draft, 'step ' + i); assertHistoryBudget(editor);
+    }
+    assert.equal(historyEntries(editor).length, api.MAX_HISTORY);
+    for (let i = 101; i <= 160; i++) {
+      editor.redo(); assert.equal(doc.draft, 'step ' + i); assertHistoryBudget(editor);
+    }
+  });
+  await check('a single oversized recovery point is retained and a later small edit releases it', () => {
+    const {app, doc} = fixture(); const editor = app.editor;
+    const huge = 'x'.repeat(api.MAX_HISTORY_BYTES / 2 + 1);
+    doc.draft = huge;
+    editStep(editor, 'small'); assertHistoryBudget(editor);
+    assert.equal(historyEntries(editor).length, 1); assert.ok(editor.historyBytes > api.MAX_HISTORY_BYTES);
+    editor.undo(); assert.equal(doc.draft, huge); assertHistoryBudget(editor);
+    editor.redo(); assert.equal(doc.draft, 'small'); assertHistoryBudget(editor);
+    editStep(editor, 'new small'); assertHistoryBudget(editor);
+    assert.equal(historyEntries(editor).length, 1); assert.ok(editor.historyBytes < 1024);
+    editor.undo(); assert.equal(doc.draft, 'small');
+  });
+  await check('new edit branches release only the active document redo and keep undo recovery boundaries', () => {
+    const {app, doc} = fixture(); const editor = app.editor;
+    const other = new api.OpenDoc('b', 'B', api.ChapterFormat.TXT, '', 'B original', 0);
+    editor.openDocs.push(other);
+    editStep(editor, 'A1'); editStep(editor, 'A2'); editor.undo();
+    editor.activeId = 'b'; editStep(editor, 'B1'); editor.undo();
+    editor.activeId = 'a';
+    // No clock advance: the first edit after undo must still establish its own recovery point.
+    editor.setEditorState('A branch', 'format branch', 2); assertHistoryBudget(editor);
+    assert.equal(editor.redoStack.filter(entry => entry.docId === 'a').length, 0);
+    assert.equal(editor.redoStack.filter(entry => entry.docId === 'b').length, 1);
+    editor.undo(); assert.equal(doc.draft, 'A1'); assertHistoryBudget(editor);
+    editor.redo(); assert.equal(doc.draft, 'A branch'); assert.equal(doc.runsJson, 'format branch');
+    editor.setEditorState('after redo branch', '', 1); editor.undo();
+    assert.equal(doc.draft, 'A branch'); assertHistoryBudget(editor);
+    editor.activeId = 'b'; editor.redo(); assert.equal(other.draft, 'B1'); assertHistoryBudget(editor);
+  });
+  await check('switching, discarding and resetting documents keep history accounting exact', async () => {
+    const {app} = fixture(); const editor = app.editor;
+    const other = new api.OpenDoc('b', 'B', api.ChapterFormat.TXT, '', 'B original', 0);
+    editor.openDocs.push(other); store.seed('chapters', chapter('b'));
+    editStep(editor, 'A1'); editStep(editor, 'A2'); editor.undo();
+    const beforeSwitch = editor.historyBytes;
+    await editor.activate('b'); assert.equal(editor.historyBytes, beforeSwitch);
+    editStep(editor, 'B1'); editStep(editor, 'B2'); editor.undo(); assertHistoryBudget(editor);
+    editor.discard('a'); assert.ok(historyEntries(editor).every(entry => entry.docId === 'b')); assertHistoryBudget(editor);
+    editor.discard('a'); assertHistoryBudget(editor);
+    editor.reset(); assert.equal(editor.historyBytes, 0); assert.equal(historyEntries(editor).length, 0);
+    assert.equal(editor.canUndo, false); assert.equal(editor.canRedo, false);
+    await editor.openChapter({id: 'c', title: 'C', format: api.ChapterFormat.TXT, content: 'C original', caretOffset: 0});
+    editStep(editor, 'C1'); editor.undo(); assert.equal(editor.content, 'C original'); assertHistoryBudget(editor);
+  });
   await check('restore rollback cannot capture ordinary autosave, and the dirty draft retries afterward', async () => {
     const {app, doc} = fixture(); const entered = deferred(), resume = deferred();
     store.onTxInsert = async table => { if (table === 'books') { entered.resolve(); await resume.promise; } };

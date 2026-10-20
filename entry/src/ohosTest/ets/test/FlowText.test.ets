@@ -335,12 +335,81 @@ export default function flowTextTest(): void {
       m.setSelection(4, 1);
       expect(m.startOffset).assertEqual(1); expect(m.endOffset).assertEqual(4);
     });
-    // Keep the long synchronous native layout probe after UI input checks so it cannot starve their first frame.
-    it('nativeLayoutCrossesMultipleParagraphWindows', 0, () => {
+    it('nativePreviewForkRetainsCommittedParagraphsWithoutSharingTypesetState', 0, () => {
+      const value: string = '中英 A😀B\n'.repeat(12) + 'tail';
+      const cache: LayoutCache = new LayoutCache(new TextLayoutEngine(240, 16, 24, 4, 1));
+      const committed: LayoutLine[] = cache.ensureOffset(value, 1, 1, value.length);
+      const first: LayoutLine = committed[0];
+      const count: number = committed.length;
+      const preview: LayoutCache = cache.forkForEdit(value + '候选', 2, 2, [], value.length);
+      expect(preview.ensureOffset(value + '候选', 2, 2, value.length + 2)[0] === first).assertTrue();
+      preview.applyEdit(value + '中文预览', 3, 3, [], value.length);
+      const changed: LayoutLine[] = preview.ensureOffset(value + '中文预览', 3, 3, value.length + 4);
+      expect(changed[0] === first).assertTrue();
+      expect(cache.lineCount()).assertEqual(count);
+      expect(committed[committed.length - 1].endIndex).assertEqual(value.length);
+      expect(changed[changed.length - 1].endIndex).assertEqual(value.length + 4);
+    });
+    it('nativeLayoutSlicesKeepTheSameFinalOffsetsAndGlyphBoundaries', 0, () => {
+      const value: string = 'A😀中文 e\u0301\n'.repeat(12);
+      const cache: LayoutCache = new LayoutCache(new TextLayoutEngine(100, 16, 24, 4, 1));
+      let slices: number = 0;
+      let reached: boolean = false;
+      let lines: LayoutLine[] = [];
+      while (!reached && slices < 200) {
+        const progress = cache.ensureOffsetIncremental(value, 1, 1, value.length, 2, 0);
+        expect(progress.appendedLines <= 1).assertTrue();
+        lines = progress.lines;
+        reached = progress.reached;
+        slices++;
+      }
+      expect(reached).assertTrue();
+      expect(slices > 1).assertTrue();
+      expect(lines[lines.length - 1].endIndex).assertEqual(value.length);
+      for (const line of lines) {
+        expect(GraphemeUtil.isBoundary(value, line.startIndex)).assertTrue();
+        expect(GraphemeUtil.isBoundary(value, line.endIndex)).assertTrue();
+      }
+    });
+    it('canvasFarNavigationCannotRevealAnOlderDocumentAfterReload', 0, async () => {
+      const driver: Driver = Driver.create();
+      const value: string = '段落 A😀B\n'.repeat(80);
+      FlowTextFixture.controller.setDocument(value, [], 0);
+      FlowTextFixture.controller.setCaretPosition(value.length);
+      expect(FlowTextFixture.savedCaret).assertEqual(value.length);
+      FlowTextFixture.controller.setDocument('replacement😀', [], 2);
+      FlowTextFixture.controller.setCaretPosition(2);
+      await driver.delayMs(150);
+      expect(FlowTextFixture.controller.getText()).assertEqual('replacement😀');
+      expect(FlowTextFixture.savedCaret).assertEqual(2);
+    });
+    it('canvasSelectAllReplacesTheCompleteDocumentWithoutRequiringItsTailGeometry', 0, async () => {
+      const driver: Driver = Driver.create();
+      const value: string = '长文 A😀B\n'.repeat(80);
+      FlowTextFixture.controller.setDocument(value, [], 0);
+      FlowTextFixture.controller.focus();
+      expect(await driver.waitForIdle(200, 5000)).assertTrue();
+      await pressAndRelease(driver, KeyCode.KEYCODE_CTRL_LEFT, KeyCode.KEYCODE_A);
+      expect(FlowTextFixture.selectionStart).assertEqual(0);
+      expect(FlowTextFixture.selectionEnd).assertEqual(value.length);
+      expect(FlowTextFixture.savedCaret).assertEqual(value.length);
+      FlowTextFixture.controller.insertTextAtCaret('完整替换😀');
+      expect(FlowTextFixture.controller.getText()).assertEqual('完整替换😀');
+    });
+  });
+  // This group has its own timeout; yielding keeps the real UI watchdog active.
+  describe('FlowTextLongLayoutRegression', () => {
+    it('nativeLayoutCrossesMultipleParagraphWindows', 0, async () => {
       const paragraph: string = '中文 A😀B '.repeat(40) + '\n';
       const value: string = paragraph.repeat(15) + '尾段😀';
-      const lines: LayoutLine[] = layout(value, 240, 1,
-        [new FormatRun(value.length - 4, value.length, true)]);
+      const cache: LayoutCache = new LayoutCache(new TextLayoutEngine(240, 16, 24, 4, 1));
+      cache.setRuns([new FormatRun(value.length - 4, value.length, true)]);
+      let lines: LayoutLine[] = [];
+      while (!cache.isComplete()) {
+        const progress = cache.ensureOffsetIncremental(value, 1, 1, value.length, 8, 4);
+        lines = progress.lines;
+        if (!progress.reached) { await new Promise<void>((resolve) => { setTimeout(resolve, 1); }); }
+      }
       expect(lines[lines.length - 1].endIndex).assertEqual(value.length);
       const nextWindowStart: number = value.indexOf('\n', 4000) + 1;
       let sampledWrap: boolean = false;

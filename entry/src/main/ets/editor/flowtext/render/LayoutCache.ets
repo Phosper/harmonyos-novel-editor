@@ -20,6 +20,21 @@ import { GraphemeUtil } from '../model/GraphemeUtil';
  */
 const WINDOW_MIN_CHARS: number = 4000;
 
+/** One bounded layout slice. A native line/window remains an indivisible unit. */
+export class LayoutProgress {
+  lines: LayoutLine[];
+  reached: boolean;
+  complete: boolean;
+  appendedLines: number;
+
+  constructor(lines: LayoutLine[], reached: boolean, complete: boolean, appendedLines: number) {
+    this.lines = lines;
+    this.reached = reached;
+    this.complete = complete;
+    this.appendedLines = appendedLines;
+  }
+}
+
 export class LayoutCache {
   private engine: TextLayoutEngine;
   private textValue: string = '';
@@ -41,6 +56,16 @@ export class LayoutCache {
   isComplete(): boolean { return this.complete; }
   setRuns(runs: FormatRun[]): void { this.engine.setRuns(runs); }
 
+  /** At a soft-wrap boundary the following line is needed for the downstream caret. */
+  coversOffset(offset: number): boolean {
+    const at: number = Math.max(0, Math.min(offset, this.textValue.length));
+    return this.lines.length > 0 && (this.complete || this.nextStart > at);
+  }
+
+  coversY(y: number): boolean {
+    return this.lines.length > 0 && (this.complete || this.nextY >= y);
+  }
+
   ensureLayout(content: string, version: number, formatVersion: number, untilYVp: number): LayoutLine[] {
     this.synchronize(content, version, formatVersion);
     while (!this.complete && (this.lines.length === 0 || this.nextY < untilYVp)) { this.appendLine(); }
@@ -51,6 +76,56 @@ export class LayoutCache {
     this.synchronize(content, version, formatVersion);
     while (!this.complete && (this.lines.length === 0 || this.nextStart <= offset)) { this.appendLine(); }
     return this.lines;
+  }
+
+  ensureLayoutIncremental(content: string, version: number, formatVersion: number,
+    untilYVp: number, maxLines: number = 64, budgetMs: number = 6): LayoutProgress {
+    this.synchronize(content, version, formatVersion);
+    return this.appendWithinBudget(untilYVp, 0, false, maxLines, budgetMs);
+  }
+
+  ensureOffsetIncremental(content: string, version: number, formatVersion: number,
+    offset: number, maxLines: number = 64, budgetMs: number = 6): LayoutProgress {
+    this.synchronize(content, version, formatVersion);
+    return this.appendWithinBudget(0, offset, true, maxLines, budgetMs);
+  }
+
+  /**
+   * Fork for an edit without rebuilding unchanged paragraphs. The caller supplies
+   * the earliest possibly changed text/format offset; preceding paragraphs must
+   * be identical. Line objects retain identity, while the array and all mutable
+   * engine/window state belong to the fork. Repeated previews can call applyEdit
+   * on their existing fork rather than copying the committed cache again.
+   */
+  forkForEdit(content: string, version: number, formatVersion: number,
+    runs: FormatRun[], offset: number): LayoutCache {
+    const fork: LayoutCache = new LayoutCache(this.engine.cloneConfiguration());
+    fork.textValue = this.textValue;
+    fork.versionValue = this.versionValue;
+    fork.formatVersionValue = this.formatVersionValue;
+    fork.lines = this.lines.slice();
+    fork.nextStart = this.nextStart;
+    fork.nextY = this.nextY;
+    fork.complete = this.complete;
+    fork.applyEdit(content, version, formatVersion, runs, offset);
+    return fork;
+  }
+
+  /** Always make progress, then yield at either bound; callers schedule the next slice. */
+  private appendWithinBudget(untilYVp: number, offset: number, forOffset: boolean,
+    maxLines: number, budgetMs: number): LayoutProgress {
+    const limit: number = Number.isFinite(maxLines) ? Math.max(1, Math.floor(maxLines)) : 64;
+    const duration: number = Number.isFinite(budgetMs) ? Math.max(0, budgetMs) : 6;
+    const started: number = Date.now();
+    let appended: number = 0;
+    let reached: boolean = forOffset ? this.coversOffset(offset) : this.coversY(untilYVp);
+    while (!reached && appended < limit) {
+      this.appendLine();
+      appended++;
+      reached = forOffset ? this.coversOffset(offset) : this.coversY(untilYVp);
+      if (Date.now() - started >= duration) { break; }
+    }
+    return new LayoutProgress(this.lines, reached, this.complete, appended);
   }
 
   /** Accept content and shifted format runs atomically; retain unaffected paragraphs. */
