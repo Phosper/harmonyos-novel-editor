@@ -108,7 +108,7 @@ struct GuideSwiperPage {
   private usesDesktopChrome(): boolean {
     const free: boolean | undefined = AppStorage.get<boolean>('freeWindowMode')
     const pc: boolean | undefined = AppStorage.get<boolean>('isPcDevice')
-    return (free !== undefined && free) || (pc !== undefined && pc)
+    return free !== undefined ? free : pc === true
   }
 
   build() {

@@ -19,7 +19,7 @@ import { DeviceSnapshot, deviceProfile } from '../utils/DeviceProfile'
 import { Logger } from '../utils/Logger'
 import { WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
 import { app } from '../store/AppStores'
-import { ShellDialog } from '../store/UiStore'
+import { ShellDialog, UiStore } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
 import type { ChapterModel } from '../model/Chapter'
 import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportService'
@@ -46,6 +46,7 @@ enum ExportAction {
 
 @ComponentV2
 export struct AppShell {
+  @Local ui: UiStore = app.ui
   @Local loading: boolean = true
   @Local loadError: string = ''
   @Local dialogPending: boolean = false
@@ -87,7 +88,7 @@ export struct AppShell {
    * 退出沉浸后，确保宽屏第三栏仍停在编辑工作区（沉浸期间直接渲染 EditorPane，
    * 不依赖 Navigation 路由栈；若栈里没有 WORKSPACE，退出后要补回来）。
    */
-  @Monitor('app.ui.immersiveEditing')
+  @Monitor('ui.immersiveEditing')
   onImmersiveEditingChanged(): void {
     if (!app.ui.immersiveEditing && this.breakPoint === BreakPoint.LG && app.editor.hasDoc) {
       ensureWorkspace()
@@ -400,7 +401,7 @@ export struct AppShell {
             showHeader: true,
             onOpenDoc: (id: string) => this.openDoc(id),
             onRenameDoc: (id: string, current: string) =>
-              app.ui.requestDialog(ShellDialog.RENAME_DOC, id, current),
+              app.ui.requestDialog(ShellDialog.RENAME_DOC, id, current, '', app.project.currentBookId),
             onDeleteDoc: (id: string, title: string) =>
               app.ui.requestDialog(ShellDialog.DELETE_DOC, id, '', title)
           })
@@ -578,6 +579,13 @@ export struct AppShell {
     }
     const kind: ShellDialog = app.ui.dialog
     const target: string = app.ui.dialogTarget
+    const revision: number = app.ui.dialogRevision ?? 0
+    const ownerBookId: string = app.ui.dialogOwnerBookId ?? ''
+    if (kind === ShellDialog.RENAME_DOC && ownerBookId !== '' && ownerBookId !== app.project.currentBookId) {
+      app.ui.closeDialog()
+      this.toast('项目已切换，请重新选择要重命名的文稿')
+      return
+    }
     const trimmed: string = value.trim()
     if ((kind === ShellDialog.NEW_PROJECT || kind === ShellDialog.RENAME_DOC) && trimmed === '') {
       this.toast('请输入名称')
@@ -596,7 +604,9 @@ export struct AppShell {
         await app.hardDeleteChapter(target)
         this.toast('已删除')
       }
-      app.ui.closeDialog()
+      if ((app.ui.dialogRevision ?? 0) === revision) {
+        app.ui.closeDialog()
+      }
     } catch (e) {
       Logger.error('AppShell: dialog action failed: ' + String(e))
       this.toast('操作失败，请重试')

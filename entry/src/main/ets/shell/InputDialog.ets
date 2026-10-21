@@ -81,9 +81,8 @@ export struct InputDialog {
     }
     .width('100%').height('100%')
     .justifyContent(FlexAlign.Center)
-    // 遮罩：比原来的 #66000000 略浅，让玻璃卡片的"通透"更明显；
-    // 出现/消失统一 180ms / Curve.EaseOut（与既有动效规范一致）
-    .backgroundColor('#59000000')
+    // 与系统栏压暗保持同一蒙层强度，出现/消失使用统一动效。
+    .backgroundColor('#66000000')
     .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
     .onClick(() => this.onCancel())
   }

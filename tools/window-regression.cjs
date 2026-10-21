@@ -11,7 +11,7 @@ function compile(source) {
     .replace(/\bexport\s+default\s+/g, '').replace(/\bexport\s+/g, ''), { mode: 'transform' });
 }
 function method(source, name) {
-  const match = source.match(new RegExp('^  (?:private )?' + name + '\\([\\s\\S]*?^  }', 'm'));
+  const match = source.match(new RegExp('^  (?:(?:private|async) )*' + name + '\\([\\s\\S]*?^  }', 'm'));
   assert.ok(match, 'production method ' + name);
   return match[0];
 }
@@ -36,17 +36,22 @@ const profile = {
   refresh() { this.changes++; },
   notePointerActivity() { this.pointerCalls++; },
   emit(snapshot) { this.listeners.slice().forEach(cb => cb(snapshot)); },
+  detach() {},
   reset() { this.changes = 0; this.pointerCalls = 0; this.listeners.length = 0; }
 };
 const context = vm.createContext({
-  window: { WindowStatusType: statuses }, MouseAction: mouseActions, MouseButton: mouseButtons, TouchType: touchTypes,
-  AppStorage: { get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value) },
+  window: { WindowStatusType: statuses, WindowStageEventType: { ACTIVE: 1 } }, MouseAction: mouseActions, MouseButton: mouseButtons, TouchType: touchTypes,
+  AppStorage: { delete: key => storage.delete(key), get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value) },
   Logger: { info() {}, warn: message => warnings.push(message), error: message => errors.push(message) },
   deviceInfo, deviceProfile: profile, UIAbility: class {},
   ConfigurationConstant: { ColorMode: { COLOR_MODE_LIGHT: 0, COLOR_MODE_DARK: 1, COLOR_MODE_NOT_SET: -1 } },
   prefs: { async init() {}, async isDarkExplicit() { return true; }, async isFirstLaunch() { return false; } },
   app: { ui: { syncSystemBars() {}, async applySystemDarkMode() {} }, async flushAll() {}, destroy() {} },
-  setAppContext() {}
+  KeyboardAvoidMode: { RESIZE: 1 },
+  setAppContext() {},
+  DEFAULT_THEME_ID: 'paper',
+  tokensFor: () => ({ brand: '#0A59F7', textPrimary: '#1C1C1E', textSecondary: '#6E6E73',
+    textTertiary: '#A6A6AB', danger: '#E84026', divider: '#ECECEE', activeBg: '#0F1C1C1E' })
 });
 vm.runInContext(compile(read('utils/DesktopWindowChrome.ets')), context);
 const barSource = read('shell/PcWindowBar.ets');
@@ -55,14 +60,24 @@ vm.runInContext(compile('class WindowBarProbe {\n' + ['win', 'startMove', 'minim
 const titleBarSource = read('shell/DesktopTitleBar.ets');
 vm.runInContext(compile("const TITLE_FALLBACK: string = 'Weaver';\nclass TitleBarProbe {\n" + ['aboutToAppear', 'aboutToDisappear', 'win', 'applyChrome',
   'readStatus', 'refreshTitleButtonRect', 'bindWindowListeners', 'unbindWindowListeners', 'startMove', 'minimize',
-  'toggleMaximize', 'close', 'hostContext', 'terminate', 'onTitleTouch', 'onTitleMouse', 'barTitle', 'barHeight',
-  'maximized', 'maxGlyph', 'maxLabel'].map(name => method(titleBarSource, name)).join('\n') + '\n}'), context);
+  'toggleMaximize', 'close', 'showCloseBlockedDialog', 'exportDraftsBeforeClose', 'hostContext', 'terminate', 'onTitleTouch', 'onTitleMouse', 'barTitle', 'barHeight',
+  'maximized', 'maxGlyph', 'maxLabel', 'themeId', 'colors'].map(name => method(titleBarSource, name)).join('\n') + '\n}'), context);
 vm.runInContext(compile(read('entryability/EntryAbility.ets')), context);
-const api = vm.runInContext('({configureDesktopChrome, WindowBarProbe, TitleBarProbe, EntryAbility})', context);
+const editorPaneSource = read('shell/EditorPane.ets');
+vm.runInContext(compile('class EditorPaneProbe {\n' + ['onActiveDocChanged', 'aboutToDisappear']
+  .map(name => method(editorPaneSource, name)).join('\n') + '\n}'), context);
+const api = vm.runInContext('({configureDesktopChrome, WindowBarProbe, TitleBarProbe, EntryAbility, EditorPaneProbe})', context);
+vm.runInContext(compile(read('store/UiStore.ets').split('@ObservedV2')[0]), context);
+vm.runInContext(compile('class DialogProbe {\n' + method(read('shell/AppShell.ets'), 'handleDialogConfirm') + '\n}'), context);
+const DialogProbe = vm.runInContext('DialogProbe', context);
+const ShellDialog = vm.runInContext('ShellDialog', context);
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function nativeWindow(failures = {}) {
   const calls = [];
-  const native = { calls, status: statuses.FLOATING };
+  const native = { calls, status: statuses.FLOATING, free: deviceInfo.deviceType === '2in1' };
+  native.isInFreeWindowMode = () => native.free;
+  native.keyboardModes = [];
+  native.getUIContext = () => ({ setKeyboardAvoidMode(mode) { native.keyboardModes.push(mode); } });
   function invoke(name, args, asynchronous = true) {
     calls.push([name, ...args]);
     if (failures[name] === 'throw') throw new Error(name + ' sync failure');
@@ -111,7 +126,10 @@ function chromeCalls(native) {
   return native.calls.filter(call => ['setWindowDecorVisible', 'setWindowTitleButtonVisible', 'setWindowDecorHeight', 'setTitleAndDockHoverShown'].includes(call[0]));
 }
 function stage(native) {
-  return { loaded: [], callbacks: [], getMainWindowSync() { return native; },
+  return { loaded: [], callbacks: [], handlers: new Map(),
+    on(name, callback) { this.handlers.set(name, callback); },
+    off(name, callback) { if (this.handlers.get(name) === callback) this.handlers.delete(name); },
+    getMainWindowSync() { return native; },
     loadContent(url, callback) { this.loaded.push(url); this.callbacks.push(callback); } };
 }
 function ability() {
@@ -130,24 +148,24 @@ async function check(name, action) {
   console.log('PASS ' + name);
 }
 (async () => {
-  await check('custom chrome hides the title bar but keeps native window buttons and dock', async () => {
+  await check('custom chrome hides native title and buttons while keeping dock', async () => {
     const native = nativeWindow();
     api.configureDesktopChrome(native);
     await settle();
-    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
   });
   await check('a decor failure does not skip the separate title-hover configuration', async () => {
     const native = nativeWindow({ setWindowDecorVisible: 'throw' });
     api.configureDesktopChrome(native);
     await settle();
-    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
     assert.equal(warnings.length, 1);
   });
   await check('a native title-button failure does not skip title-hover configuration', async () => {
     const native = nativeWindow({ setWindowTitleButtonVisible: 'throw' });
     api.configureDesktopChrome(native);
     await settle();
-    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
     assert.equal(warnings.length, 1);
   });
   await check('both synchronous and asynchronous title-hover failures are contained', async () => {
@@ -174,7 +192,7 @@ async function check(name, action) {
       assert.deepEqual(native.calls.map(call => call[0]), ['getWindowStatus', expected,
         'setWindowDecorVisible', 'setWindowTitleButtonVisible', 'setTitleAndDockHoverShown']);
       assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false],
-        ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
+        ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
     }
   });
   await check('pending maximize and recover operations do not configure native chrome prematurely', async () => {
@@ -257,7 +275,7 @@ async function check(name, action) {
     assert.equal(chromeCalls(native).length, 0, 'starting loadContent is not successful loading');
     windowStage.callbacks[0]({ code: 0 });
     assert.equal(entry.contentReady, true);
-    assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
   });
   await check('failed UI content loading leaves desktop chrome unconfigured', async () => {
     deviceInfo.deviceType = '2in1';
@@ -337,7 +355,7 @@ async function check(name, action) {
     assert.equal(native.calls[1][0], 'setDecorButtonStyle');
     assert.equal(native.calls[1][1].buttonIconSize, 18);
     assert.deepEqual(native.calls[2], ['setWindowDecorVisible', false]);
-    assert.deepEqual(native.calls[3], ['setWindowTitleButtonVisible', true, true, true]);
+    assert.deepEqual(native.calls[3], ['setWindowTitleButtonVisible', false, false, false]);
     assert.deepEqual(native.calls[4], ['setTitleAndDockHoverShown', false, true]);
   });
   await check('desktop title bar dragging starts only from touch down or a left mouse press', () => {
@@ -424,7 +442,7 @@ async function check(name, action) {
     const log = [];
     const host = { terminateSelf() { log.push('terminate'); return Promise.resolve(); } };
     const probe = titleBar(nativeWindow(), {
-      app: { flushAll() { log.push('flush'); return Promise.resolve(); } },
+      app: { flushAllStrict() { log.push('flush'); return Promise.resolve(); } },
       getUIContext: () => ({ getHostContext: () => host })
     });
     probe.close();
@@ -432,17 +450,26 @@ async function check(name, action) {
     await settle();
     assert.deepEqual(log, ['flush', 'terminate']);
   });
-  await check('desktop title bar still terminates when the final flush fails', async () => {
+  await check('desktop title bar keeps the window open when the strict flush fails', async () => {
     const log = [];
     const host = { terminateSelf() { log.push('terminate'); return Promise.resolve(); } };
+    let dialog = null;
     const probe = titleBar(nativeWindow(), {
-      app: { flushAll() { log.push('flush'); return Promise.reject(new Error('disk full')); } },
-      getUIContext: () => ({ getHostContext: () => host })
+      app: { ui: { themeId: 'paper' }, flushAllStrict() { log.push('flush'); return Promise.reject(new Error('disk full')); } },
+      getUIContext: () => ({
+        getHostContext: () => host,
+        getPromptAction: () => ({
+          showDialog(options) { dialog = options; return new Promise(() => {}); },
+          showToast() {}
+        })
+      })
     });
     probe.close();
     await settle();
-    assert.deepEqual(log, ['flush', 'terminate'], 'a failed flush must not trap the user in the window');
-    assert.match(warnings.at(-1), /flushAll failed before close/);
+    assert.deepEqual(log, ['flush'], 'a failed save must NOT terminate the ability');
+    assert.ok(dialog !== null, 'the user must get retry/export/discard choices');
+    assert.equal(dialog.buttons.map(b => b.text).join(','), '重试保存,导出草稿,放弃并退出');
+    assert.match(warnings.at(-1), /flushAllStrict failed before close/);
   });
   await check('desktop title bar closes safely without a store or a host context', async () => {
     const log = [];
@@ -452,7 +479,7 @@ async function check(name, action) {
     assert.deepEqual(log, ['terminate'], 'no store means nothing to flush, but the ability still ends');
     const before = warnings.length;
     const missingHost = titleBar(nativeWindow(), {
-      app: { flushAll() { return Promise.resolve(); } },
+      app: { flushAllStrict() { return Promise.resolve(); } },
       getUIContext: () => ({ getHostContext: () => { throw new Error('no host context'); } })
     });
     missingHost.close();
@@ -512,6 +539,121 @@ async function check(name, action) {
     for (const name of ['win', 'startMove', 'minimize', 'toggleMaximize', 'close', 'onTitleTouch', 'onTitleMouse']) {
       method(source, name);
     }
+  });
+  await check('title bar disposes listeners on its original window even after AppStorage changes', () => {
+    const original = nativeWindow();
+    const probe = titleBar(original);
+    probe.aboutToAppear();
+    storage.set('mainWindow', nativeWindow());
+    probe.aboutToDisappear();
+    assert.equal(original.onCount('windowStatusChange'), 0);
+    assert.equal(original.onCount('windowTitleButtonRectChange'), 0);
+  });
+  await check('tablet free-window transitions configure and restore chrome after content is ready', async () => {
+    deviceInfo.deviceType = 'tablet';
+    const native = nativeWindow();
+    const windowStage = stage(native);
+    const entry = ability();
+    entry.onWindowStageCreate(windowStage);
+    await settle();
+    windowStage.callbacks[0]({ code: 0 });
+    assert.equal(entry.isDesktop, false);
+    native.free = true;
+    native.emit('freeWindowModeChange', true);
+    assert.equal(entry.isDesktop, true);
+    assert.deepEqual(chromeCalls(native).slice(-3), [['setWindowDecorVisible', false],
+      ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+    native.free = false;
+    native.emit('freeWindowModeChange', false);
+    assert.equal(entry.isDesktop, false);
+    assert.deepEqual(chromeCalls(native).slice(-3), [['setWindowDecorVisible', true],
+      ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', true, true]]);
+    entry.onWindowStageDestroy();
+    assert.equal(windowStage.handlers.size, 0);
+    assert.equal(native.onCount('freeWindowModeChange'), 0);
+    assert.equal(storage.has('mainWindow'), false);
+  });
+  await check('destroying a window before async initialization finishes does not load stale content', async () => {
+    const entry = ability();
+    const windowStage = stage(nativeWindow());
+    entry.onWindowStageCreate(windowStage);
+    entry.onWindowStageDestroy();
+    await settle();
+    assert.equal(windowStage.loaded.length, 0);
+    assert.equal(windowStage.handlers.size, 0);
+  });
+  await check('unmounting an old editor cannot erase the current editor controller', () => {
+    const old = {};
+    const current = {};
+    const probe = new api.EditorPaneProbe();
+    probe.editorController = old;
+    probe.app = { ui: { editorController: current } };
+    probe.aboutToDisappear();
+    assert.equal(probe.app.ui.editorController, current);
+    assert.equal(probe.editorController, null);
+  });
+  await check('successful content loading enables resize avoidance only after UI is ready', async () => {
+    deviceInfo.deviceType = 'phone';
+    const native = nativeWindow();
+    const entry = ability();
+    const windowStage = stage(native);
+    entry.onWindowStageCreate(windowStage);
+    await settle();
+    assert.deepEqual(native.keyboardModes, []);
+    windowStage.callbacks[0]({ code: 0 });
+    assert.deepEqual(native.keyboardModes, [1]);
+    entry.onWindowStageDestroy();
+  });
+  function renameDialog(ownerBookId = 'book-A', currentBookId = ownerBookId) {
+    const app = context.app;
+    const calls = [];
+    app.project = { currentBookId };
+    app.ui.dialog = ShellDialog.RENAME_DOC;
+    app.ui.dialogTarget = 'chapter-A';
+    app.ui.dialogRevision = 1;
+    app.ui.dialogOwnerBookId = ownerBookId;
+    app.ui.closeDialog = () => { calls.push(['close']); app.ui.dialog = ShellDialog.NONE; app.ui.dialogRevision++; };
+    app.renameChapter = async (id, title) => calls.push(['rename', id, title]);
+    const probe = new DialogProbe();
+    probe.dialogPending = false;
+    probe.toast = message => calls.push(['toast', message]);
+    return { app, calls, probe };
+  }
+  await check('list rename refuses a dialog owned by a project that is no longer selected', async () => {
+    const { calls, probe } = renameDialog('book-A', 'book-B');
+    await probe.handleDialogConfirm('New title');
+    assert.equal(calls.filter(call => call[0] === 'rename').length, 0);
+    assert.equal(calls.filter(call => call[0] === 'close').length, 1);
+    assert.match(calls.find(call => call[0] === 'toast')[1], /项目已切换/);
+  });
+  await check('list rename captures its document id before an asynchronous save completes', async () => {
+    const { app, calls, probe } = renameDialog();
+    let finish;
+    app.renameChapter = (id, title) => { calls.push(['rename', id, title]); return new Promise(resolve => { finish = resolve; }); };
+    const saving = probe.handleDialogConfirm('New title');
+    app.ui.dialogTarget = 'chapter-B';
+    finish();
+    await saving;
+    assert.deepEqual(calls.find(call => call[0] === 'rename'), ['rename', 'chapter-A', 'New title']);
+  });
+  await check('finishing an old rename cannot close a later dialog', async () => {
+    const { app, calls, probe } = renameDialog();
+    let finish;
+    app.renameChapter = () => new Promise(resolve => { finish = resolve; });
+    const saving = probe.handleDialogConfirm('New title');
+    app.ui.dialogRevision++;
+    app.ui.dialog = ShellDialog.NEW_PROJECT;
+    finish();
+    await saving;
+    assert.equal(app.ui.dialog, ShellDialog.NEW_PROJECT);
+    assert.equal(calls.filter(call => call[0] === 'close').length, 0);
+    assert.equal(probe.dialogPending, false);
+  });
+  await check('changing the active document dismisses a stale find panel', () => {
+    const probe = new api.EditorPaneProbe();
+    probe.showReplace = true;
+    probe.onActiveDocChanged();
+    assert.equal(probe.showReplace, false);
   });
   console.log(`Window regression: ${count} checks passed`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

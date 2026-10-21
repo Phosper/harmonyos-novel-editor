@@ -85,10 +85,12 @@ export struct TextEditorHost {
   aboutToAppear(): void {
     this.appliedRev = this.contentRev
     this.onControllerReady(this.flowController)
-    // 电脑模式从其他窗口/任务栏切回来时，框架焦点已不在编辑器上；
-    // 订阅 DeviceProfile 的窗口激活通知，重新聚焦编辑器（否则切回来敲字没反应）。
+    // Only restore an existing body focus. Search/rename inputs and replacement
+    // documents own their focus independently of this editor instance.
     this.unsubscribeActivated = deviceProfile.onWindowActivated(() => {
-      this.flowController.focus()
+      if (this.docId !== '' && this.loadedDocId === this.docId && this.flowController.ownsEditorFocus()) {
+        this.flowController.focus()
+      }
     })
     this.reload()
   }

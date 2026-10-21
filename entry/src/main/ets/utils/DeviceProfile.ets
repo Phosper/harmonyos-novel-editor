@@ -163,6 +163,9 @@ export class DeviceProfileService {
 
   /** 绑定 UIContext 与主窗口并立即产出一份快照；幂等，可重复调用 */
   attach(ui: UIContext, w: window.Window): void {
+    if (this.win !== null && this.win !== w) {
+      this.releaseWindow()
+    }
     this.ui = ui
     this.win = w
     try {
@@ -187,6 +190,13 @@ export class DeviceProfileService {
 
   /** 解绑全部窗口监听（窗口销毁时调用；页面级卸载只需释放自己拿到的 disposer） */
   detach(): void {
+    this.releaseWindow()
+    this.changeListeners = []
+    this.activeListeners = []
+  }
+
+  /** 切换窗口时保留页面订阅，仅释放旧窗口的监听。 */
+  private releaseWindow(): void {
     const w: window.Window | null = this.win
     if (w !== null && this.bound) {
       try {
@@ -221,8 +231,7 @@ export class DeviceProfileService {
     this.freeListener = null
     this.sizeListener = null
     this.statusListener = null
-    this.changeListeners = []
-    this.activeListeners = []
+    this.freeWindowProbeOk = true
   }
 
   /** 重读全部判据并广播一份新快照 */

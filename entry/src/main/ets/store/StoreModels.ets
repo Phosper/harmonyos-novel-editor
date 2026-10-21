@@ -98,11 +98,17 @@ export class HistoryEntry {
   readonly text: string
   readonly caret: number
   readonly runsJson: string
+  /** 字符串按 UTF-16 估算；固定余量覆盖条目/数组引用，不创建正文副本。 */
+  readonly estimatedBytes: number
+  /** 进入历史栈的先后顺序，用于两栈共用预算时淘汰最早的恢复点。 */
+  readonly order: number
 
-  constructor(docId: string, text: string, caret: number, runsJson: string = '') {
+  constructor(docId: string, text: string, caret: number, runsJson: string = '', order: number = 0) {
     this.docId = docId;
     this.text = text;
     this.caret = caret;
     this.runsJson = runsJson;
+    this.estimatedBytes = (docId.length + text.length + runsJson.length) * 2 + 128;
+    this.order = order;
   }
 }

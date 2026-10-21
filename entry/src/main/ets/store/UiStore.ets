@@ -87,6 +87,8 @@ export class UiStore {
   @Trace immersiveEditing: boolean = false
   /** 顶栏「查找」请求计数：EditorPane 监听后打开查找面板 */
   @Trace findRequestTick: number = 0
+  /** 选区/格式状态版本号：顶栏 B/I/H 态按它刷新（不携带具体坐标） */
+  @Trace selectionTick: number = 0
   /**
    * 当前编辑器控制器（顶栏/工具条共用）。
    * 由 EditorPane 在 onControllerReady 时注入；未打开文稿时为 null。
@@ -141,6 +143,9 @@ export class UiStore {
   @Trace dialogTarget: string = ''
   @Trace dialogInitial: string = ''
   @Trace dialogSubject: string = ''
+  /** 重命名所属项目与弹框代次：异步写入不能影响后来打开的项目或弹框。 */
+  @Trace dialogOwnerBookId: string = ''
+  @Trace dialogRevision: number = 0
 
   get isNarrow(): boolean {
     return this.breakPoint === BreakPoint.SM
@@ -207,7 +212,9 @@ export class UiStore {
   // ===== 对话框 =====
 
   requestDialog(kind: ShellDialog, target: string = '', initial: string = '',
-    subject: string = ''): void {
+    subject: string = '', ownerBookId: string = ''): void {
+    this.dialogRevision++
+    this.dialogOwnerBookId = ownerBookId
     this.dialogTarget = target
     this.dialogInitial = initial
     this.dialogSubject = subject
@@ -215,6 +222,8 @@ export class UiStore {
   }
 
   closeDialog(): void {
+    this.dialogRevision++
+    this.dialogOwnerBookId = ''
     this.dialog = ShellDialog.NONE
     this.dialogTarget = ''
     this.dialogInitial = ''

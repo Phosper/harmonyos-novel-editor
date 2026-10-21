@@ -152,6 +152,23 @@ export class TextLayoutEngine {
   }
 
   /**
+   * A cache fork needs its own window map and typeset origin. Sharing this engine
+   * would let preview layout change the offsets used by the committed cache.
+   * Native line objects remain self-contained and can safely be retained.
+   */
+  cloneConfiguration(): TextLayoutEngine {
+    const copy: TextLayoutEngine = new TextLayoutEngine(this.maxWidthPx / this.pxPerVp,
+      this.fontSizePx / this.pxPerVp, this.lineHeightPx / this.pxPerVp,
+      this.lineSpacingPx / this.pxPerVp, this.pxPerVp);
+    copy.textColor = { alpha: this.textColor.alpha, red: this.textColor.red,
+      green: this.textColor.green, blue: this.textColor.blue };
+    const runs: FormatRun[] = [];
+    for (const run of this.runsValue) { runs.push(run.clone()); }
+    copy.setRuns(runs);
+    return copy;
+  }
+
+  /**
    * 取 offset 处单词的 [start,end]（ICU 词边界，与 Android/iOS 双击选词同源）。
    * 段落对象懒建并按文本缓存；失败/无能力时返回空数组，由调用方回退启发式。
    */
@@ -316,25 +333,6 @@ export class TextLayoutEngine {
     return line;
   }
 
-  /**
-   * 行内某个 native scalar 索引对应的 x（vp，相对行左边缘）。
-   *
-   * `getOffsetForStringIndex` 返回 px 且相对行左边缘（不含对齐/缩进偏移）；
-   * 本项目段落对齐固定为 START，故可直接作为 run/光标的行内原点。
-   * 异常时退化为 0，宁可让该 run 回到行首也不要抛异常打断绘制。
-   */
-  private offsetXVp(line: text.TextLine, scalarIndex: number): number {
-    try {
-      const x: number = line.getOffsetForStringIndex(scalarIndex);
-      if (!Number.isFinite(x) || x <= 0) {
-        return 0;
-      }
-      return x / this.pxPerVp;
-    } catch (e) {
-      return 0;
-    }
-  }
-
   private buildLayoutLine(line: text.TextLine, textStart: number, count: number, yOffsetVp: number): LayoutLine {
     // textStart/count 是文档偏移；窗口内偏移 = 减去 typesetBase
     const localStart: number = textStart - this.typesetBase;
@@ -374,15 +372,7 @@ export class TextLayoutEngine {
       data.textEnd = textStart + layoutLine.indexMap.fromScalar(range.start + range.end - layoutLine.nativeStartIndex);
       data.glyphOffsets = indices.map((index: number): number =>
         layoutLine.indexMap.fromScalar(index - layoutLine.nativeStartIndex) - localRunStart);
-      // Run.getPositions() 的 x 语义随 OH 版本/切行方式变化：
-      //  - 整段塑形时含 run 的 fOffset（段落绝对坐标）；
-      //  - LineTypeset.createLine 裁剪后的行，可能已被 rebase 到行首。
-      // 唯一稳定的做法：run 原点 x 用行 API 反推（run 首字符的行内左边缘），
-      // 字形相对 x 用 positions[g].x - positions[0].x（纯 run 内位移）。
-      // 这样无论 positions 是"行内绝对"还是"run 局部/段落绝对"，绘制结果都是
-      // 行原点 + run 原点 + 字形位移，不会叠在行首，也不会被重复加偏移。
-      data.runOffsetX = this.offsetXVp(line, range.start);
-      const basePosX: number = positions.length > 0 ? positions[0].x : 0;
+      data.runOffsetX = this.localRunOriginVp(line, range, positions);
       const advances: common2D.Point[] = run.getAdvances({ start: 0, end: data.glyphs.length });
       for (let g: number = 0; g < data.glyphs.length; g++) {
         const adv: common2D.Point | null = g < advances.length ? advances[g] : null;
@@ -392,12 +382,29 @@ export class TextLayoutEngine {
           y: adv !== null ? adv.y / this.pxPerVp : 0
         });
         data.positions.push({
-          x: pos !== null ? (pos.x - basePosX) / this.pxPerVp : 0,
+          x: pos !== null ? pos.x / this.pxPerVp : 0,
           y: pos !== null ? pos.y / this.pxPerVp : 0
         });
       }
       layoutLine.runs.push(data);
     }
     return layoutLine;
+  }
+
+  /** Some API 26 devices rebase each run to x=0; line-positioned runs stay untouched. */
+  private localRunOriginVp(line: text.TextLine, range: text.Range, positions: common2D.Point[]): number {
+    if (positions.length === 0) { return 0; }
+    let minX: number = positions[0].x;
+    for (const point of positions) { minX = Math.min(minX, point.x); }
+    // Do not subtract the first glyph: that would discard shaping offsets and bidi placement.
+    if (Math.abs(minX) > 0.01) { return 0; }
+    try {
+      const start: number = line.getOffsetForStringIndex(range.start);
+      const end: number = line.getOffsetForStringIndex(range.start + range.end);
+      const origin: number = Math.min(start, end);
+      return Number.isFinite(origin) && origin > 0.01 ? origin / this.pxPerVp : 0;
+    } catch (error) {
+      return 0;
+    }
   }
 }

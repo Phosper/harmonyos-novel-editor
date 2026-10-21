@@ -55,19 +55,29 @@ export function shouldConsumePreIme(cmd: EditCommand, imeUsable: boolean): boole
  * ② 输入法随后又回调 insertText(同一字符) → claim() 命中并丢弃。
  * 仅"键盘兜底刚插入过同文本"才丢弃，正常连续两次输入同一字符（间隔 > 40ms 或来源为 IME）不受影响。
  */
+class PendingImeEcho {
+  text: string;
+  atMs: number;
+
+  constructor(text: string, atMs: number) {
+    this.text = text;
+    this.atMs = atMs;
+  }
+}
+
 export class ImeEchoGuard {
   /** 回声窗口（ms）；契约规定 40ms */
   private readonly windowMs: number = 40;
-  private armedText: string = '';
-  private armedAtMs: number = 0;
+  private pending: PendingImeEcho[] = [];
 
   /** 键盘兜底插入后登记：随后的同文本 IME 回调按回声处理 */
   recordKeyboardFallback(text: string, nowMs: number): void {
     if (text.length === 0) {
       return;
     }
-    this.armedText = text;
-    this.armedAtMs = nowMs;
+    this.prune(nowMs);
+    this.pending.push(new PendingImeEcho(text, nowMs));
+    if (this.pending.length > 32) { this.pending.shift(); }
   }
 
   /**
@@ -75,29 +85,30 @@ export class ImeEchoGuard {
    * @return true 表示这是键盘兜底的回声，应丢弃；命中后立即解除登记（一条兜底只吞一条回声）
    */
   claim(text: string, nowMs: number): boolean {
-    if (this.armedText.length === 0) {
-      return false;
+    this.prune(nowMs);
+    for (let i: number = 0; i < this.pending.length; i++) {
+      if (this.pending[i].text === text) {
+        this.pending.splice(i, 1);
+        return true;
+      }
     }
-    if (text !== this.armedText) {
-      return false;
-    }
-    const elapsed: number = nowMs - this.armedAtMs;
-    if (elapsed < 0 || elapsed > this.windowMs) {
-      return false;
-    }
-    this.armedText = '';
-    this.armedAtMs = 0;
-    return true;
+    return false;
   }
 
   /** 是否处于待回声窗口（诊断用） */
   get armed(): boolean {
-    return this.armedText.length > 0;
+    return this.pending.length > 0;
   }
 
   /** 文档切换/失焦时清空，避免跨文稿误吞输入 */
   reset(): void {
-    this.armedText = '';
-    this.armedAtMs = 0;
+    this.pending = [];
+  }
+
+  private prune(nowMs: number): void {
+    this.pending = this.pending.filter((item: PendingImeEcho): boolean => {
+      const elapsed: number = nowMs - item.atMs;
+      return elapsed >= 0 && elapsed <= this.windowMs;
+    });
   }
 }

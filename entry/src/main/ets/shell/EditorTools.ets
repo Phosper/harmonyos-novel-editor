@@ -7,6 +7,9 @@
 //   - compact 模式下折叠格式组，只保留撤销/重做/查找/打字机/沉浸。
 import { tokensFor, WeaverColorSet, WeaverRadii, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
+import { fireAndLog } from '../store/AppStores'
+import { promptAction } from '@kit.ArkUI'
+import { ChapterFormat } from '../model/Chapter'
 import { StyleKind } from '../editor/flowtext/model/EditorTypes'
 
 @ComponentV2
@@ -19,6 +22,117 @@ export struct EditorTools {
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
+  }
+
+  private hitSize(): number {
+    return this.app !== null && this.app.ui.pointerPrimary ? 32 : 48
+  }
+
+  private hasDoc(): boolean {
+    return this.app !== null && this.app.editor.hasDoc
+  }
+
+  private currentMask(): number {
+    if (this.app === null || this.app.ui.editorController === null) {
+      return 0
+    }
+    // 读取版本号以建立订阅；具体值只用于触发重新求值
+    const tick: number = this.app.ui.selectionTick
+    if (tick < 0) {
+      return 0
+    }
+    return this.app.ui.editorController.inlineStyleMask()
+  }
+
+  private openMenu(): void {
+    const stores: AppStores | null = this.app
+    if (stores === null || !stores.editor.hasDoc) {
+      return
+    }
+    const color: string = this.colors().textPrimary
+    const undo: promptAction.Button = { text: stores.editor.canUndo ? '撤销' : '撤销（不可用）', color: color }
+    const redo: promptAction.Button = { text: stores.editor.canRedo ? '重做' : '重做（不可用）', color: color }
+    const format: promptAction.Button = { text: '格式与文稿动作', color: color }
+    const find: promptAction.Button = { text: '查找替换', color: color }
+    const typewriter: promptAction.Button = { text: stores.ui.typewriter ? '关闭打字机模式' : '开启打字机模式', color: color }
+    const focus: promptAction.Button = { text: stores.ui.immersiveEditing ? '退出专注写作' : '专注写作', color: color }
+    this.getUIContext().getPromptAction().showActionMenu({
+      title: '编辑', buttons: [undo, redo, format, find, typewriter, focus]
+    }, (err, data) => {
+      if (err) {
+        return
+      }
+      if (data.index === 0 && stores.editor.canUndo) {
+        stores.editor.undo()
+      } else if (data.index === 1 && stores.editor.canRedo) {
+        stores.editor.redo()
+      } else if (data.index === 2) {
+        this.openFormatMenu()
+      } else if (data.index === 3) {
+        stores.ui.requestFind()
+      } else if (data.index === 4) {
+        this.toggleTypewriter()
+      } else if (data.index === 5) {
+        stores.ui.toggleImmersiveEditing()
+      }
+    })
+  }
+
+  private openFormatMenu(): void {
+    const stores: AppStores | null = this.app
+    if (stores === null) {
+      return
+    }
+    const color: string = this.colors().textPrimary
+    const bold: promptAction.Button = { text: '加粗', color: color }
+    const italic: promptAction.Button = { text: '斜体', color: color }
+    const heading: promptAction.Button = { text: '标题', color: color }
+    const txt: promptAction.Button = { text: '文稿格式 · TXT', color: color }
+    const md: promptAction.Button = { text: '文稿格式 · Markdown', color: color }
+    const more: promptAction.Button = { text: '更多文稿动作', color: color }
+    this.getUIContext().getPromptAction().showActionMenu({
+      title: '格式', buttons: [bold, italic, heading, txt, md, more]
+    }, (err, data) => {
+      if (err) {
+        return
+      }
+      if (data.index === 0) {
+        this.applyInline(StyleKind.BOLD)
+      } else if (data.index === 1) {
+        this.applyInline(StyleKind.ITALIC)
+      } else if (data.index === 2) {
+        this.applyHeading()
+      } else if (data.index === 3 || data.index === 4) {
+        fireAndLog(stores.setChapterFormat(data.index === 3 ? ChapterFormat.TXT : ChapterFormat.MD), 'setChapterFormat')
+      } else if (data.index === 5) {
+        this.openDocumentMenu()
+      }
+    })
+  }
+
+  private openDocumentMenu(): void {
+    const stores: AppStores | null = this.app
+    if (stores === null) {
+      return
+    }
+    const color: string = this.colors().textPrimary
+    const format: promptAction.Button = { text: '一键排版', color: color }
+    const fav: promptAction.Button = { text: '收藏 / 取消收藏', color: color }
+    const inspiration: promptAction.Button = { text: '移入 / 移出灵感池', color: color }
+    this.getUIContext().getPromptAction().showActionMenu({
+      title: '文稿动作', buttons: [format, fav, inspiration]
+    }, (err, data) => {
+      if (err) {
+        return
+      }
+      if (data.index === 0) {
+        stores.formatActiveDoc()
+      } else if (data.index === 1) {
+        fireAndLog(stores.toggleFav(stores.editor.activeId), 'toggleFav')
+      } else if (data.index === 2) {
+        fireAndLog(stores.toggleInspiration(stores.editor.activeId), 'toggleInspiration')
+      }
+    })
   }
 
   private canUndo(): boolean {
@@ -59,12 +173,12 @@ export struct EditorTools {
 
   build() {
     Row() {
-      this.toolButton('撤', '撤销', this.canUndo(), () => {
+      this.toolButton('撤', '撤销', false, this.canUndo(), () => {
         if (this.app !== null) {
           this.app.editor.undo()
         }
       }, false)
-      this.toolButton('重', '重做', this.canRedo(), () => {
+      this.toolButton('重', '重做', false, this.canRedo(), () => {
         if (this.app !== null) {
           this.app.editor.redo()
         }
@@ -74,9 +188,9 @@ export struct EditorTools {
         Divider()
           .vertical(true).height(14).color(this.colors().divider)
           .margin({ left: 4, right: 4 })
-        this.toolButton('B', '加粗', false, () => this.applyInline(StyleKind.BOLD), true)
-        this.toolButton('I', '斜体', false, () => this.applyInline(StyleKind.ITALIC), true)
-        this.toolButton('H', '标题', false, () => this.applyHeading(), true)
+        this.toolButton('B', '加粗', (this.currentMask() & 1) !== 0, this.hasDoc(), () => this.applyInline(StyleKind.BOLD), true)
+        this.toolButton('I', '斜体', (this.currentMask() & 2) !== 0, this.hasDoc(), () => this.applyInline(StyleKind.ITALIC), true)
+        this.toolButton('H', '标题', (this.currentMask() & 4) !== 0, this.hasDoc(), () => this.applyHeading(), true)
       }
 
       Divider()
@@ -92,7 +206,7 @@ export struct EditorTools {
           .fontSize(11)
           .fontColor(this.typewriterOn() ? this.colors().brand : this.colors().textSecondary)
       }
-      .height(26)
+      .height(this.hitSize())
       .padding({ left: 8, right: 9 })
       .borderRadius(13)
       .backgroundColor(this.typewriterOn() ? this.colors().activeBg : Color.Transparent)
@@ -101,36 +215,45 @@ export struct EditorTools {
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => this.toggleTypewriter())
 
-      this.toolButton('查', '查找', false, () => {
+      this.toolButton('查', '查找', false, this.hasDoc(), () => {
         if (this.app !== null) {
           this.app.ui.requestFind()
         }
       }, false)
 
       if (!this.immersive) {
-        this.toolButton('专', '专注写作（隐藏侧栏与列表）', false, () => {
+        this.toolButton('专', '专注写作（隐藏侧栏与列表）', false, this.hasDoc(), () => {
           if (this.app !== null) {
             this.app.ui.toggleImmersiveEditing()
           }
         }, false)
       }
+      this.toolButton('⋯', '更多编辑工具与文稿动作', false, this.hasDoc(), () => this.openMenu(), false)
     }
   }
 
   @Builder
-  toolButton(glyph: string, label: string, active: boolean, action: () => void, bold: boolean) {
+  toolButton(glyph: string, label: string, active: boolean, enabled: boolean, action: () => void, bold: boolean) {
     Row() {
       Text(glyph)
-        .fontSize(13)
+        .fontSize(glyph.length > 1 ? 12 : 13)
         .fontWeight(bold ? FontWeight.Bold : FontWeight.Regular)
-        .fontColor(active || bold ? this.colors().textPrimary : this.colors().textSecondary)
+        .fontColor(enabled
+          ? (active ? this.colors().brand : this.colors().textPrimary)
+          : this.colors().textTertiary)
     }
-    .width(28).height(26)
+    .width(glyph.length > 1 ? this.hitSize() + 12 : this.hitSize())
+    .height(this.hitSize())
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .borderRadius(WeaverRadii.XS)
-    .accessibilityText(label)
+    .backgroundColor(active ? this.colors().activeBg : Color.Transparent)
+    .opacity(enabled ? 1 : 0.45)
+    .enabled(enabled)
+    .accessibilityText(enabled ? label : label + '（不可用）')
     .hoverEffect(HoverEffect.Highlight)
+    .focusable(enabled)
+    .tabStop(enabled)
     .onClick(action)
   }
 }

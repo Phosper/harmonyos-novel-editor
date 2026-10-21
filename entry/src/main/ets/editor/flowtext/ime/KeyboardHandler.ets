@@ -219,7 +219,7 @@ export class KeyboardHandler {
     if (keyCode >= KeyCode.KEYCODE_NUMPAD_0 && keyCode <= KeyCode.KEYCODE_NUMPAD_9) {
       return true;
     }
-    if (keyCode === KeyCode.KEYCODE_SPACE) {
+    if (keyCode === KeyCode.KEYCODE_SPACE || keyCode === KeyCode.KEYCODE_COMMA || keyCode === KeyCode.KEYCODE_PERIOD) {
       return true;
     }
     // 标点类键位：` - = [ ] \\ ; ' / @ +（用范围判断，避免逐个列举遗漏）
@@ -229,7 +229,9 @@ export class KeyboardHandler {
     // 小键盘运算符（官方已确认的成员）
     if (keyCode === KeyCode.KEYCODE_NUMPAD_ADD || keyCode === KeyCode.KEYCODE_NUMPAD_SUBTRACT ||
       keyCode === KeyCode.KEYCODE_NUMPAD_MULTIPLY || keyCode === KeyCode.KEYCODE_NUMPAD_DIVIDE ||
-      keyCode === KeyCode.KEYCODE_NUMPAD_DOT) {
+      keyCode === KeyCode.KEYCODE_NUMPAD_DOT || keyCode === KeyCode.KEYCODE_NUMPAD_COMMA ||
+      keyCode === KeyCode.KEYCODE_NUMPAD_EQUALS || keyCode === KeyCode.KEYCODE_NUMPAD_LEFT_PAREN ||
+      keyCode === KeyCode.KEYCODE_NUMPAD_RIGHT_PAREN) {
       return true;
     }
     return false;

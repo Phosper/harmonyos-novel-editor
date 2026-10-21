@@ -54,6 +54,14 @@ try {
   $env:JAVA_HOME = $taskJavaRoot
   $env:NODE_HOME = Split-Path -Parent $taskNode
   $env:PATH = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:NODE_HOME + ';' + $taskOldPath
+  foreach ($script in @('flowtext-regression.cjs', 'data-regression.cjs', 'shell-regression.cjs',
+    'window-regression.cjs', 'import-regression.cjs', 'device-profile-regression.cjs',
+    'layout-performance-regression.cjs', 'ime-regression.cjs', 'arkts-guard.cjs')) {
+    $localLog = Join-Path $taskOutput ($script + '.log')
+    & $taskNode (Join-Path $PSScriptRoot $script) *> $localLog
+    if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath $localLog -Tail 30; throw "$script failed" }
+    Write-Output "PASS local checks: $script"
+  }
   foreach ($target in @('default', 'ohosTest')) {
     $log = Join-Path $taskOutput "$target-build.log"
     & $taskNode $taskHvigor --mode module -p product=default -p "module=entry@$target" assembleHap --no-daemon --info *> $log
@@ -78,12 +86,13 @@ try {
     }
     # Keep editor focus tests separate from tests that activate the real EntryAbility.
     foreach ($testGroup in @(
-      @{ Name = 'editor'; Classes = 'ActsAbilityTest,FlowTextRegression'; Log = 'device-tests.log' },
-      @{ Name = 'window'; Classes = 'WindowChromeRegression'; Log = 'window-tests.log' }
+      @{ Name = 'editor'; Classes = 'ActsAbilityTest,FlowTextRegression'; Log = 'device-tests.log'; Timeout = 20000 },
+      @{ Name = 'native-layout'; Classes = 'FlowTextLongLayoutRegression'; Log = 'native-layout-tests.log'; Timeout = 120000 },
+      @{ Name = 'window'; Classes = 'WindowChromeRegression'; Log = 'window-tests.log'; Timeout = 20000 }
     )) {
       $testLog = Join-Path $taskOutput $testGroup.Log
       & $taskHdc -t $Device shell aa force-stop com.chungu.weaver | Out-Null
-      & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -s class $testGroup.Classes -s timeout 20000 -w 60 *> $testLog
+      & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -s class $testGroup.Classes -s timeout $testGroup.Timeout -w 180 *> $testLog
       $result = Get-Content -Raw -LiteralPath $testLog
       # aa can exit 0 even when Hypium reports errors; inspect the actual test summary.
       if ($result -notmatch 'Tests run: ([1-9]\d*), Failure: 0, Error: 0, Pass: ([1-9]\d*), Ignore: 0' -or $Matches[1] -ne $Matches[2]) {

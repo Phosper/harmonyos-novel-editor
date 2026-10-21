@@ -1,3 +1,4 @@
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { CanvasTextEditor } from '../../../../main/ets/editor/flowtext/CanvasTextEditor';
 import { FormatRun } from '../../../../main/ets/editor/flowtext/model/EditorTypes';
 import { FlowTextFixture } from '../../test/FlowTextFixture';
@@ -9,6 +10,8 @@ struct FlowTextTestPage {
       Text('FlowText regression fixture').fontSize(16)
       CanvasTextEditor({
         controller: FlowTextFixture.controller,
+        desktopMode: deviceInfo.deviceType === '2in1',
+        pointerPrimary: deviceInfo.deviceType === '2in1',
         onCaretChange: (offset: number) => { FlowTextFixture.savedCaret = offset; },
         onSelectionChange: (start: number, end: number) => {
           FlowTextFixture.selectionStart = start;

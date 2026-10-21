@@ -44,6 +44,8 @@ function nativeWindow(options = {}) {
     rectWidth: options.rectWidth === undefined ? 0 : options.rectWidth,
     safeTopPx: options.safeTopPx === undefined ? 0 : options.safeTopPx,
     safeBottomPx: options.safeBottomPx === undefined ? 0 : options.safeBottomPx,
+    density: options.density === undefined ? 1 : options.density,
+    getUIContext() { return { px2vp: value => value / this.density }; },
     freeThrows: options.freeThrows === true,
     statusThrows: options.statusThrows === true,
     rectThrows: options.rectThrows === true,
@@ -401,4 +403,41 @@ check('detach clears subscribers so a stale page cannot react to later refreshes
   assert.equal(seen, 0);
 });
 
+check('replacing a bound window releases the old callbacks and preserves page subscribers', () => {
+  const { profile, binding } = attach({ free: false });
+  const seen = [];
+  profile.onChange(snapshot => seen.push(snapshot.freeWindow));
+  const replacement = nativeWindow({ free: true });
+  try {
+    profile.attach(uiContext(breakpoints.WIDTH_LG), replacement.win);
+    assert.deepEqual(binding.record.off.map(entry => entry[0]).sort(),
+      ['avoidAreaChange', 'freeWindowModeChange', 'windowSizeChange', 'windowStatusChange']);
+    assert.deepEqual(replacement.record.on.map(entry => entry[0]).sort(),
+      ['avoidAreaChange', 'freeWindowModeChange', 'windowSizeChange', 'windowStatusChange']);
+    assert.deepEqual(seen, [true]);
+  } finally { profile.detach(); }
+  assert.equal(replacement.record.off.length, 4);
+});
+check('a failed free-window capability probe is retried for a replacement window', () => {
+  storage.delete('freeWindowMode');
+  const { profile } = attach({ freeThrows: true });
+  try {
+    const replacement = nativeWindow({ free: true });
+    profile.attach(uiContext(breakpoints.WIDTH_MD), replacement.win);
+    assert.equal(profile.snapshot.freeWindow, true);
+  } finally { profile.detach(); }
+});
+check('safe-area conversion follows the current window density after a display change', () => {
+  const { profile, binding } = attach({ safeTopPx: 48, safeBottomPx: 24, density: 2 });
+  try {
+    assert.equal(profile.snapshot.safeTopVp, 24);
+    assert.equal(profile.snapshot.safeBottomVp, 12);
+    binding.win.density = 3;
+    const callback = binding.record.on.find(entry => entry[0] === 'avoidAreaChange')[1];
+    callback({ type: avoidTypes.TYPE_SYSTEM, area: { topRect: { height: 48 } } });
+    callback({ type: avoidTypes.TYPE_NAVIGATION_INDICATOR, area: { bottomRect: { height: 24 } } });
+    assert.equal(profile.snapshot.safeTopVp, 16);
+    assert.equal(profile.snapshot.safeBottomVp, 8);
+  } finally { profile.detach(); }
+});
 console.log(`Device profile regression: ${count} checks passed`);

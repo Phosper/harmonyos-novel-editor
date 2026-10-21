@@ -44,7 +44,7 @@ function isPrintableKeyCode(keyCode: number): boolean {
   if (keyCode >= KeyCode.KEYCODE_NUMPAD_0 && keyCode <= KeyCode.KEYCODE_NUMPAD_9) {
     return true;
   }
-  if (keyCode === KeyCode.KEYCODE_SPACE) {
+  if (keyCode === KeyCode.KEYCODE_SPACE || keyCode === KeyCode.KEYCODE_COMMA || keyCode === KeyCode.KEYCODE_PERIOD) {
     return true;
   }
   // 主键盘标点区：` - = [ ] \\ ; ' / @ +（2056..2066）
@@ -53,7 +53,9 @@ function isPrintableKeyCode(keyCode: number): boolean {
   }
   if (keyCode === KeyCode.KEYCODE_NUMPAD_ADD || keyCode === KeyCode.KEYCODE_NUMPAD_SUBTRACT ||
     keyCode === KeyCode.KEYCODE_NUMPAD_MULTIPLY || keyCode === KeyCode.KEYCODE_NUMPAD_DIVIDE ||
-    keyCode === KeyCode.KEYCODE_NUMPAD_DOT) {
+    keyCode === KeyCode.KEYCODE_NUMPAD_DOT || keyCode === KeyCode.KEYCODE_NUMPAD_COMMA ||
+    keyCode === KeyCode.KEYCODE_NUMPAD_EQUALS || keyCode === KeyCode.KEYCODE_NUMPAD_LEFT_PAREN ||
+    keyCode === KeyCode.KEYCODE_NUMPAD_RIGHT_PAREN) {
     return true;
   }
   return false;
@@ -85,6 +87,9 @@ function digitFromKeyCode(keyCode: number): string {
  * 否则回落到 digit，并对主键盘 Shift+数字做符号映射（1 → ! 等）。
  */
 function resolveDigitText(keyCode: number, digit: string, keyText: string, shift: boolean): string {
+  if (keyText.length === 1 && keyText.charCodeAt(0) >= 0x20 && keyText !== digit) {
+    return keyText;
+  }
   // Shift + 主键盘数字：无论 keyText 已是符号还是仍是数字，都归一到符号位（! @ # …）
   if (shift && keyCode >= KeyCode.KEYCODE_0 && keyCode <= KeyCode.KEYCODE_9) {
     return SHIFTED_DIGITS.charAt(digit.charCodeAt(0) - 0x30);
@@ -180,16 +185,16 @@ export function resolveShortcut(keyCode: number, keyText: string, isDown: boolea
   if (keyCode === KeyCode.KEYCODE_TAB) {
     return out;
   }
+  // AltGr commonly arrives as Ctrl+Alt. Leave these combinations to the keyboard layout/system.
+  if (mods.alt) {
+    return out;
+  }
   if (mods.primary) {
     if (resolvePrimaryChord(keyCode, mods, out)) {
       return out;
     }
     // 未识别的 Ctrl/Meta 组合交还系统（如 Ctrl+Shift+Esc），不要吞键
     return new EditCommand(EditCommandKind.NONE, '', EditorInputSource.KEYBOARD);
-  }
-  // Alt 组合留给系统（Alt+Tab / Alt+F4 等）
-  if (mods.alt) {
-    return out;
   }
   switch (keyCode) {
     case KeyCode.KEYCODE_DPAD_LEFT:

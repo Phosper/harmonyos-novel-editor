@@ -19,6 +19,7 @@ let bound: boolean = false
 let listener: ((data: window.AvoidAreaOptions) => void) | null = null
 let onAreaChange: (() => void) | null = null
 let cachedWin: window.Window | null = null
+let boundWin: window.Window | null = null
 
 /**
  * px → vp。
@@ -26,23 +27,20 @@ let cachedWin: window.Window | null = null
  * `px2vp()`；本模块是无 UIContext 的工具函数，因此按定义换算 `vp = px / densityPixels`。
  * 密度读取失败时按 1:1 退化，至少不会因为异常中断页面。
  */
-let cachedDensity: number = 0
-
-function density(): number {
-  if (cachedDensity > 0) {
-    return cachedDensity
+function toVp(px: number): number {
+  // 当前窗口的 UIContext 会随外接屏 / 显示密度变化更新，不能永久缓存默认屏密度。
+  if (cachedWin !== null) {
+    try {
+      return cachedWin.getUIContext().px2vp(px)
+    } catch (e) {
+    }
   }
   try {
-    const d: number = display.getDefaultDisplaySync().densityPixels
-    cachedDensity = d > 0 ? d : 1
+    const density: number = display.getDefaultDisplaySync().densityPixels
+    return px / (density > 0 ? density : 1)
   } catch (e) {
-    cachedDensity = 1
+    return px
   }
-  return cachedDensity
-}
-
-function toVp(px: number): number {
-  return px / density()
 }
 
 /**
@@ -55,7 +53,11 @@ export function readSafeArea(win?: window.Window): void {
   if (w === undefined) {
     return
   }
-  cachedWin = w
+  if (cachedWin !== w) {
+    cachedTopVp = 0
+    cachedBottomVp = 0
+    cachedWin = w
+  }
   try {
     const sys: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM)
     cachedTopVp = toVp(sys.topRect.height)
@@ -86,14 +88,24 @@ export function safeBottomVp(): number {
  */
 export function watchSafeArea(onChange: () => void, win?: window.Window): () => void {
   readSafeArea(win)
-  onAreaChange = onChange
   const w: window.Window | null = cachedWin
-  if (w === null || bound) {
-    return () => {
-      onAreaChange = null
+  if (w === null) {
+    return () => {}
+  }
+  if (boundWin !== null && listener !== null && bound) {
+    try {
+      boundWin.off('avoidAreaChange', listener)
+    } catch (e) {
+      Logger.warn('SafeArea: replace watch failed ' + String(e))
     }
   }
-  listener = (data: window.AvoidAreaOptions): void => {
+  bound = false
+  boundWin = w
+  onAreaChange = onChange
+  const nextListener: (data: window.AvoidAreaOptions) => void = (data: window.AvoidAreaOptions): void => {
+    if (boundWin !== w) {
+      return
+    }
     if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
       cachedTopVp = toVp(data.area.topRect.height)
     } else if (data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
@@ -103,21 +115,26 @@ export function watchSafeArea(onChange: () => void, win?: window.Window): () => 
       onAreaChange()
     }
   }
+  listener = nextListener
   try {
-    w.on('avoidAreaChange', listener)
+    w.on('avoidAreaChange', nextListener)
     bound = true
   } catch (e) {
     Logger.warn('SafeArea: watch failed ' + String(e))
   }
   return () => {
-    if (cachedWin !== null && listener !== null && bound) {
+    if (listener !== nextListener) {
+      return
+    }
+    if (bound) {
       try {
-        cachedWin.off('avoidAreaChange', listener)
+        w.off('avoidAreaChange', nextListener)
       } catch (e) {
         Logger.warn('SafeArea: unwatch failed ' + String(e))
       }
     }
     bound = false
+    boundWin = null
     listener = null
     onAreaChange = null
   }

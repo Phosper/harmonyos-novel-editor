@@ -20,6 +20,7 @@ export class SelectionManager {
   private anchorValue: number = 0;
   /** 选区活动端（光标所在端） */
   private headValue: number = 0;
+  private collapsedAffinity: CaretAffinity = CaretAffinity.DOWNSTREAM;
   /** 全文，用于把选区两端吸附到字符边界（未设置时退化为仅钳制范围） */
   private source: string = '';
   /** 拖选是否进行中 */
@@ -41,7 +42,8 @@ export class SelectionManager {
    * - 折叠光标默认 DOWNSTREAM（与"行尾接续输入"一致）。
    */
   get headAffinity(): CaretAffinity {
-    return this.anchorValue <= this.headValue ? CaretAffinity.DOWNSTREAM : CaretAffinity.UPSTREAM;
+    if (this.anchorValue === this.headValue) { return this.collapsedAffinity; }
+    return this.anchorValue < this.headValue ? CaretAffinity.UPSTREAM : CaretAffinity.DOWNSTREAM;
   }
 
   /** 当前选区（start<=end，派生自 anchor/head） */
@@ -63,7 +65,8 @@ export class SelectionManager {
   }
 
   /** 光标位置即选区（收起选区） */
-  collapse(offset: number): void {
+  collapse(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+    this.collapsedAffinity = affinity;
     const at: number = this.normalize(offset);
     this.anchorValue = at;
     this.headValue = at;
@@ -77,7 +80,8 @@ export class SelectionManager {
   }
 
   /** 开始拖选（anchor = 按下点） */
-  beginDrag(offset: number): void {
+  beginDrag(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+    this.collapsedAffinity = affinity;
     const at: number = this.normalize(offset);
     this.dragActive = true;
     this.anchorValue = at;

@@ -26,7 +26,11 @@ import { glassBarStyle } from './MaterialSurface'
 import { nav, Routes } from './Navigator'
 import { EditorTools } from './EditorTools'
 import { SaveState } from '../store/StoreModels'
+import { ExportService } from '../utils/ExportService'
 import type { AppStores } from '../store/AppStores'
+import { app as globalApp } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
+import type { EditorDraftSnapshot } from '../store/EditorStore'
 
 /** 书名尚未加载时的标题兜底 */
 const TITLE_FALLBACK: string = 'Weaver'
@@ -41,6 +45,7 @@ const TITLE_MAX_WIDTH: number = 340
 @ComponentV2
 export struct DesktopTitleBar {
   @Param app: AppStores | null = null
+  @Local ui: UiStore = globalApp.ui
   /** 顶部安全区（状态栏）高度 vp：由 AppShell 从 DeviceSnapshot.safeTopVp 传入 */
   @Param safeTop: number = 0
   /** 标题栏总高度（含安全区）vp：由 DeviceSnapshot.chromeHeightVp 传入，0 时按常量兜底 */
@@ -59,8 +64,12 @@ export struct DesktopTitleBar {
   private statusListener: ((status: window.WindowStatusType) => void) | null = null
   private rectListener: ((rect: window.TitleButtonRect) => void) | null = null
   private profileDisposer: (() => void) | null = null
+  private boundWindow: window.Window | undefined = undefined
 
   aboutToAppear(): void {
+    if (this.app !== null) {
+      this.ui = this.app.ui
+    }
     // 1) 先把窗口侧配置做实（原生装饰栏高度/三键样式/隐藏原生标题），再读状态
     this.applyChrome()
     this.windowStatus = this.readStatus()
@@ -77,7 +86,7 @@ export struct DesktopTitleBar {
   }
 
   /** 主题切换时同步原生三键的图标配色（深色主题给 DARK，浅色主题给 LIGHT） */
-  @Monitor('app.ui.themeId')
+  @Monitor('ui.themeId')
   onThemeIdChanged(): void {
     this.applyChrome()
   }
@@ -139,6 +148,7 @@ export struct DesktopTitleBar {
     if (w === undefined) {
       return
     }
+    this.boundWindow = w
     const status: (newStatus: window.WindowStatusType) => void = (newStatus: window.WindowStatusType): void => {
       this.windowStatus = newStatus
       this.applyChrome()
@@ -163,7 +173,7 @@ export struct DesktopTitleBar {
   }
 
   private unbindWindowListeners(): void {
-    const w: window.Window | undefined = this.win()
+    const w: window.Window | undefined = this.boundWindow
     const statusCb: ((status: window.WindowStatusType) => void) | null = this.statusListener
     const rectCb: ((rect: window.TitleButtonRect) => void) | null = this.rectListener
     if (w !== undefined) {
@@ -184,6 +194,7 @@ export struct DesktopTitleBar {
     }
     this.statusListener = null
     this.rectListener = null
+    this.boundWindow = undefined
   }
 
   // ===================== 三键 =====================
@@ -252,15 +263,70 @@ export struct DesktopTitleBar {
       this.terminate(host)
       return
     }
-    stores.flushAll()
+    // 关闭窗口必须确认所有草稿真正落库：flushAll 会吞掉单篇失败，不能用它判断结果。
+    stores.flushAllStrict()
       .then(() => {
         this.terminate(host)
       })
       .catch((e: Error) => {
-        // 落库失败也要能关窗（数据由 30 秒安全网/下次启动兜底），不能把用户困在窗口里
-        Logger.warn('DesktopTitleBar: flushAll failed before close: ' + String(e))
-        this.terminate(host)
+        Logger.warn('DesktopTitleBar: flushAllStrict failed before close: ' + String(e))
+        this.showCloseBlockedDialog(stores, host)
       })
+  }
+
+  private showCloseBlockedDialog(stores: AppStores, host: common.UIAbilityContext | undefined): void {
+    const retry: promptAction.Button = { text: '重试保存', color: this.colors().brand }
+    const exportDraft: promptAction.Button = { text: '导出草稿', color: this.colors().textPrimary }
+    const discard: promptAction.Button = { text: '放弃并退出', color: this.colors().danger }
+    try {
+      this.getUIContext().getPromptAction().showDialog({
+        title: '尚有未保存内容',
+        message: '保存到本地数据库失败，窗口已保持打开。可重试保存，先导出草稿，或明确放弃本次修改。',
+        buttons: [retry, exportDraft, discard]
+      }).then((res) => {
+        if (res.index === 0) {
+          this.close()
+        } else if (res.index === 1) {
+          this.exportDraftsBeforeClose(stores)
+        } else if (res.index === 2) {
+          this.terminate(host)
+        }
+      }).catch((e: Error) => {
+        Logger.warn('close-blocked dialog failed: ' + String(e))
+      })
+    } catch (e) {
+      Logger.warn('close-blocked dialog unavailable: ' + String(e))
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: '保存失败，窗口保持打开；请稍后重试' })
+      } catch (e2) {
+        Logger.warn('close-blocked toast failed: ' + String(e2))
+      }
+    }
+  }
+
+  private exportDraftsBeforeClose(stores: AppStores): void {
+    try {
+      const drafts: EditorDraftSnapshot[] = stores.editor.snapshotDrafts()
+      const payload: string = JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        reason: 'close-blocked-unsaved',
+        drafts: drafts
+      }, null, 2)
+      const name: string = 'Weaver-未保存草稿-' + Date.now().toString() + '.json'
+      ExportService.saveText(name, payload)
+        .then((ok: boolean) => {
+          if (ok) {
+            this.getUIContext().getPromptAction().showToast({ message: '草稿已导出，可重试保存后再关闭' })
+          } else {
+            this.getUIContext().getPromptAction().showToast({ message: '导出取消或失败，草稿仍在窗口中' })
+          }
+        })
+        .catch((e: Error) => {
+          Logger.warn('export drafts failed: ' + String(e))
+        })
+    } catch (e) {
+      Logger.warn('export drafts unavailable: ' + String(e))
+    }
   }
 
   private hostContext(): common.UIAbilityContext | undefined {
@@ -358,7 +424,20 @@ export struct DesktopTitleBar {
   }
 
   private titleMaxWidth(): number {
-    return this.compactTools() ? 210 : TITLE_MAX_WIDTH
+    const navigationWidth: number = this.isImmersive() ? 0 : 44
+    const actionWidth: number = this.isImmersive() ? 80 : (this.compactTools() ? 44 : 150)
+    const available: number = this.headerWidth - navigationWidth - this.editorToolsWidth() - actionWidth - 154
+    return Math.max(0, Math.min(this.compactTools() ? 210 : TITLE_MAX_WIDTH, available))
+  }
+
+  /** 窄窗仍保留 Jouko 的常用工具，横向滚动让位给窗口三键与可拖动标题。 */
+  private editorToolsWidth(): number {
+    if (!this.hasDoc() || this.isImmersive()) {
+      return 0
+    }
+    const desired: number = this.compactTools() ? 280 : 410
+    const actions: number = this.compactTools() ? 44 : 150
+    return Math.max(0, Math.min(desired, this.headerWidth - 44 - actions - 154 - 64))
   }
 
   private openMoreMenu(): void {
@@ -385,7 +464,7 @@ export struct DesktopTitleBar {
 
   /** 是否折叠工具组：非 lg 断点或顶栏自身过窄时折叠，避免标题被工具挤掉 */
   private compactTools(): boolean {
-    return this.app !== null && (this.app.ui.breakPoint !== BreakPoint.LG || this.headerWidth < 1080)
+    return this.app !== null && (this.app.ui.breakPoint !== BreakPoint.LG || this.headerWidth < 1280)
   }
 
   private hasDoc(): boolean {
@@ -498,11 +577,15 @@ export struct DesktopTitleBar {
         .alignItems(HorizontalAlign.Start)
         .constraintSize({ maxWidth: this.titleMaxWidth() })
         .margin({ left: 4, right: 8 })
+        .id('weaverWindowTitle')
+        .onTouch((event: TouchEvent) => this.onTitleTouch(event))
+        .onMouse((event: MouseEvent) => this.onTitleMouse(event))
 
         // ③ 可拖拽空白：占满剩余宽度；双击空白区切换最大化/还原
         Row() { }
           .layoutWeight(1)
           .height('100%')
+          .id('weaverWindowDragRegion')
           .onTouch((event: TouchEvent) => this.onTitleTouch(event))
           .onMouse((event: MouseEvent) => this.onTitleMouse(event))
           .gesture(TapGesture({ count: 2 }).onAction(() => {
@@ -511,7 +594,12 @@ export struct DesktopTitleBar {
 
         // ④ 常用工具上移到顶栏（文档级动作集中在这里，编辑器内部不再重复一条工具条）
         if (this.hasDoc() && !this.isImmersive()) {
-          EditorTools({ app: this.app, compact: this.compactTools(), immersive: false })
+          Scroll() {
+            EditorTools({ app: this.app, compact: this.compactTools(), immersive: false })
+          }
+          .width(this.editorToolsWidth()).height(DESKTOP_CHROME_HEIGHT_VP)
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off)
         }
 
         // ⑤ 沉浸退出 / 应用级动作；窄宽度时低频动作收进「⋯」
@@ -525,13 +613,13 @@ export struct DesktopTitleBar {
           this.headerAction('设置', () => this.openSettings())
         }
 
-        // ⑥ 窗口三键由系统原生绘制（见 DesktopWindowChrome.setWindowTitleButtonVisible）。
-        //    这里不再自绘字符按钮，只在右侧预留三键区宽度（getTitleButtonRect），
-        //    既保留华为原生外观，也避免动作区被三键遮挡。
+        // 自绘关闭入口先严格保存；保存失败时保持窗口与草稿打开。
+        this.windowButton('─', '最小化', 'weaverWindowMinimize', () => this.minimize())
+        this.windowButton(this.maxGlyph(), this.maxLabel(), 'weaverWindowMaximize', () => this.toggleMaximize())
+        this.windowButton('✕', '关闭窗口', 'weaverWindowClose', () => this.close())
       }
       .width('100%')
       .height(DESKTOP_CHROME_HEIGHT_VP)
-      .padding({ right: this.titleButtonWidth })
       .onAreaChange((oldValue: Area, newValue: Area) => {
         const w: number = Number(newValue.width)
         if (Math.abs(w - this.headerWidth) > 20) {
@@ -561,6 +649,23 @@ export struct DesktopTitleBar {
     .hoverEffect(HoverEffect.Highlight)
     .focusable(true)
     .tabStop(true)
+    .onClick(action)
+  }
+
+
+  @Builder
+  windowButton(glyph: string, label: string, controlId: string, action: () => void) {
+    Row() {
+      Text(glyph).fontSize(13).fontColor(this.colors().textSecondary)
+    }
+    .width(46).height(DESKTOP_CHROME_HEIGHT_VP)
+    .id(controlId)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .hoverEffect(HoverEffect.Highlight)
+    .focusable(true)
+    .tabStop(true)
+    .accessibilityText(label)
     .onClick(action)
   }
 

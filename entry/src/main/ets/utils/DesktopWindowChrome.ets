@@ -2,7 +2,7 @@
 //
 // 官方接口分工（API 22 / 26）：
 //   setWindowDecorVisible(false)               隐藏原生标题栏，页面延伸到标题栏区域
-//   setWindowTitleButtonVisible(true,true,true)   保留原生最小化/最大化/关闭三键（华为原生）
+//   setWindowTitleButtonVisible(false,false,false) 隐藏原生三键，由应用关闭入口先保护草稿
 //   setWindowDecorHeight(h)                    标题栏高度，取值 [37,112] vp
 //   setDecorButtonStyle({buttonIconSize})      原生三键图标尺寸（仅自由窗口生效）
 //   setTitleAndDockHoverShown(false, true)     禁用 hover 悬浮标题栏，保留系统 Dock
@@ -41,10 +41,8 @@ export function configureDesktopChrome(w: window.Window): void {
     Logger.warn('Desktop window decor config failed: ' + String(e))
   }
   try {
-    // 官方"窗口沉浸式"做法：只隐藏标题栏（装饰），**保留系统原生三键**。
-    // 这样右上角就是华为原生的最小化/最大化(还原)/关闭按钮（系统 hover、贴边、无障碍与
-    // 最大化还原语义都由系统负责）；自绘顶栏通过 getTitleButtonRect 右避让三键区。
-    w.setWindowTitleButtonVisible(true, true, true)
+    // 关闭统一由自绘按钮执行严格保存，避免原生关闭按钮绕过草稿保护。
+    w.setWindowTitleButtonVisible(false, false, false)
   } catch (e) {
     Logger.warn('Desktop native title buttons config failed: ' + String(e))
   }
@@ -54,6 +52,27 @@ export function configureDesktopChrome(w: window.Window): void {
     })
   } catch (e) {
     Logger.warn('Desktop title hover config threw: ' + String(e))
+  }
+}
+
+/** 离开自由窗口模式后归还系统装饰，避免遗留隐藏的标题栏。 */
+export function restoreDesktopChrome(w: window.Window): void {
+  try {
+    w.setWindowDecorVisible(true)
+  } catch (e) {
+    Logger.warn('Desktop window decor restore failed: ' + String(e))
+  }
+  try {
+    w.setWindowTitleButtonVisible(true, true, true)
+  } catch (e) {
+    Logger.warn('Desktop native title buttons restore failed: ' + String(e))
+  }
+  try {
+    w.setTitleAndDockHoverShown(true, true).catch((e: Error) => {
+      Logger.warn('Desktop title hover restore failed: ' + String(e))
+    })
+  } catch (e) {
+    Logger.warn('Desktop title hover restore threw: ' + String(e))
   }
 }
 

@@ -3,7 +3,9 @@ import { promptAction } from '@kit.ArkUI'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID, blendHexColor } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
-import { fireAndLog } from '../store/AppStores'
+import { app as globalApp, fireAndLog } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
+import { EditorStore } from '../store/EditorStore'
 import type { OpenDoc, DocItem } from '../store/StoreModels'
 import { SaveState } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
@@ -23,6 +25,8 @@ enum DocFlag {
 @ComponentV2
 export struct EditorPane {
   @Param app: AppStores | null = null
+  @Local ui: UiStore = globalApp.ui
+  @Local editor: EditorStore = globalApp.editor
   /** 查找替换浮层状态 */
   @Local showReplace: boolean = false
   /** 自绘编辑器控制器（格式命令用，T026） */
@@ -31,6 +35,25 @@ export struct EditorPane {
   @Local replaceText: string = ''
   /** 工具条可用宽度（vp）：窄列时收成精简工具条，避免动作被裁切 */
   @Local toolbarWidth: number = 999
+
+  aboutToAppear(): void {
+    if (this.app !== null) {
+      this.ui = this.app.ui
+      this.editor = this.app.editor
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.app !== null && this.app.ui.editorController === this.editorController) {
+      this.app.ui.editorController = null
+    }
+    this.editorController = null
+  }
+
+  @Monitor('editor.activeId')
+  onActiveDocChanged(): void {
+    this.showReplace = false
+  }
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
@@ -42,7 +65,7 @@ export struct EditorPane {
    * 深浅主题自动适配，不硬编码任何颜色。
    */
   /** 顶栏「查找」→ 打开查找替换面板（工具已上移到顶栏，避免编辑器内再放一条工具条） */
-  @Monitor('app.ui.findRequestTick')
+  @Monitor('ui.findRequestTick')
   onFindRequested(): void {
     this.showReplace = true
   }
@@ -93,11 +116,13 @@ export struct EditorPane {
               return d !== undefined ? FormatCodec.decode(d.runsJson) : []
             },
             onSelectionChange: (start: number, end: number) => {
-              // Phase A：仅承载选区态（工具栏态在 US2 使用）
+              if (this.app !== null) {
+                this.app.ui.selectionTick++
+              }
             },
             onFormatChange: (runs: FormatRun[]) => {
               if (this.app !== null) {
-                // onEdit persists text and format together.
+                this.app.ui.selectionTick++
               }
             },
             onScrollState: (state: number) => {
@@ -275,7 +300,7 @@ export struct EditorPane {
   }
 
   /** 分享所选文本：写入系统剪贴板（可跨应用粘贴）并提示 */
-  private shareText(text: string): void {
+  private async shareText(text: string): Promise<void> {
     if (text === '') {
       this.toast('无选中文本')
       return
@@ -283,11 +308,11 @@ export struct EditorPane {
     try {
       const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard()
       const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text)
-      board.setData(data).catch(() => {})
+      await board.setData(data)
+      this.toast('已复制所选文本到系统剪贴板')
     } catch (e) {
-      // 忽略：剪贴板不可用时仍给出提示
+      this.toast('复制失败，请重试或使用导出')
     }
-    this.toast('已复制所选文本，可粘贴分享')
   }
 
   /** 一键排版（编辑器无关：作用于 store 正文，可撤销） */

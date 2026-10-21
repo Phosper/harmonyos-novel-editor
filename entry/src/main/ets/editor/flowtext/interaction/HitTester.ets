@@ -123,8 +123,8 @@ export class HitTester {
    *
    * y/height 取该行的可见盒（与选区高亮、手柄完全一致）。
    * 软换行边界处同一个 offset 有两个视觉位置，由 affinity 选边：
-   *   - DOWNSTREAM：贴上一行行尾（正向选择 head / 折叠光标）；
-   *   - UPSTREAM：贴下一行行首（反向选择 head）。
+   *   - UPSTREAM：贴上一行行尾（正向选择 head）；
+   *   - DOWNSTREAM：贴下一行行首（反向选择 head / 默认折叠光标）。
    */
   static caretPositionFor(offset: number, lines: LayoutLine[], paddingLeftPx: number, paddingTopPx: number,
     fontSizeVp: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): CursorState {
@@ -148,7 +148,7 @@ export class HitTester {
    * 软换行边界（offset === line.endIndex === next.startIndex）由 affinity 决定；
    * 硬换行（next.startIndex !== offset）与末行一律落在当前行。
    */
-  private static caretLineFor(offset: number, lines: LayoutLine[], affinity: CaretAffinity): LayoutLine {
+  static caretLineFor(offset: number, lines: LayoutLine[], affinity: CaretAffinity): LayoutLine {
     for (let i: number = 0; i < lines.length; i++) {
       const line: LayoutLine = lines[i];
       if (offset < line.endIndex) {
@@ -159,7 +159,7 @@ export class HitTester {
         if (isLast || lines[i + 1].startIndex !== offset) {
           return line;
         }
-        return affinity === CaretAffinity.DOWNSTREAM ? line : lines[i + 1];
+        return affinity === CaretAffinity.UPSTREAM ? line : lines[i + 1];
       }
     }
     return lines[lines.length - 1];

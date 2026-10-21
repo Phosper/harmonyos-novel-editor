@@ -54,13 +54,14 @@ const keyCodes = {
   KEYCODE_0:2000, KEYCODE_1:2001, KEYCODE_2:2002, KEYCODE_3:2003, KEYCODE_4:2004,
   KEYCODE_5:2005, KEYCODE_6:2006, KEYCODE_7:2007, KEYCODE_8:2008, KEYCODE_9:2009,
   KEYCODE_DPAD_UP:2012, KEYCODE_DPAD_DOWN:2013, KEYCODE_DPAD_LEFT:2014, KEYCODE_DPAD_RIGHT:2015,
-  KEYCODE_TAB:2049, KEYCODE_SPACE:2050, KEYCODE_ENTER:2054, KEYCODE_DEL:2055,
+  KEYCODE_COMMA:2043, KEYCODE_PERIOD:2044, KEYCODE_TAB:2049, KEYCODE_SPACE:2050, KEYCODE_ENTER:2054, KEYCODE_DEL:2055,
   KEYCODE_GRAVE:2056, KEYCODE_MINUS:2057, KEYCODE_EQUALS:2058, KEYCODE_LEFT_BRACKET:2059,
   KEYCODE_RIGHT_BRACKET:2060, KEYCODE_BACKSLASH:2061, KEYCODE_SEMICOLON:2062, KEYCODE_APOSTROPHE:2063,
   KEYCODE_SLASH:2064, KEYCODE_AT:2065, KEYCODE_PLUS:2066, KEYCODE_PAGE_UP:2068, KEYCODE_PAGE_DOWN:2069,
   KEYCODE_ESCAPE:2070, KEYCODE_FORWARD_DEL:2071, KEYCODE_MOVE_HOME:2081, KEYCODE_MOVE_END:2082, KEYCODE_F11:2100,
-  KEYCODE_NUMPAD_ENTER:2116, KEYCODE_NUMPAD_ADD:2113, KEYCODE_NUMPAD_SUBTRACT:2112,
-  KEYCODE_NUMPAD_MULTIPLY:2111, KEYCODE_NUMPAD_DIVIDE:2110, KEYCODE_NUMPAD_DOT:2114
+  KEYCODE_NUMPAD_ENTER:2119, KEYCODE_NUMPAD_ADD:2116, KEYCODE_NUMPAD_SUBTRACT:2115,
+  KEYCODE_NUMPAD_MULTIPLY:2114, KEYCODE_NUMPAD_DIVIDE:2113, KEYCODE_NUMPAD_DOT:2117,
+  KEYCODE_NUMPAD_COMMA:2118, KEYCODE_NUMPAD_EQUALS:2120, KEYCODE_NUMPAD_LEFT_PAREN:2121, KEYCODE_NUMPAD_RIGHT_PAREN:2122
 };
 for (let i = 0; i < 26; i++) { keyCodes['KEYCODE_' + String.fromCharCode(65 + i)] = 2017 + i; }
 // 官方 js-apis-keycode：KEYCODE_NUMPAD_0=2103 … NUMPAD_9=2112（2100 是 F11，不能复用）
@@ -70,6 +71,7 @@ const context = vm.createContext({console, setTimeout() {return 1;}, clearTimeou
     FontWeight:{W700:700}, FontStyle:{ITALIC:1} },
   drawing: {Font, Brush, TextBlob: {makeFromRunBuffer(buffer, font) {return {buffer,font};}}},
   KeyCode: keyCodes, KeyType:{Down:0}, ChapterFormat:{TXT:0},
+  TouchType:{Down:0,Up:1,Move:2,Cancel:3},
   SourceTool: { UNKNOWN: 0, FINGER: 1, STYLUS: 2, MOUSE: 3, TOUCHPAD: 4, JOYSTICK: 5 },
   Logger:{info(){}}, inputMethod:{getController(){return controller;}}
 });
@@ -107,11 +109,11 @@ vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','g
   'selectTo','applyKeyCommand','afterCaretMove','afterEdit','emitSelection','setRuns','afterFormatChange',
   'handleKeyPreIme','handleKeyEvent','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
   'readEditorModifiers','adoptKeyFocus','dispatchCommand','editHost','insertFromKeyboard','hostInsertText','hostDismiss','handleMenuKey',
-  'pasteAtCaret','insertAtCaret','aboutToDisappear',
-  'stopCaretAnimation','stopScrollAnimation','stopGlyphAnimation','syncSelectionToCaret','handlePositions','selectAllText',
+  'pasteAtCaret','insertAtCaret','aboutToDisappear','hasCaretLayout','cancelCaretLayout','deferCaretLayout','continueCaretLayout','clearPreviewLayout','settleCaret','drawNow','reportCursor',
+  'affinityAt','inlineStyleMask','styleMaskAt','visualCaret','reportSelection','handleTouch','stopCaretAnimation','stopScrollAnimation','stopGlyphAnimation','syncSelectionToCaret','handlePositions','selectAllText',
   'captureViewAnchor','refreshDensity','ensureLayoutThroughY','engineSignature','extendWordSelection','clampScroll','tailPadVp','laidOutHeightVp',
   'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','placeCaretImmediately','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
-vm.runInContext(compile('class HostProbe {\n'+method(read('editor/TextEditorHost.ets'),'onContentRevChanged')+'\n}'),context);
+vm.runInContext(compile('class HostProbe {\n'+['onContentRevChanged','aboutToAppear','aboutToDisappear'].map(name=>method(read('editor/TextEditorHost.ets'),name)).join('\n')+'\n}'),context);
 const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionManager,FormatRun,StyleKind,LayoutLine,GlyphRunData,'+
   'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
   'PreviewTextManager,KeyAction,KeyboardEvent,KeyboardHandler,ImeBridge,CanvasTextEditorController,EditorProbe,HostProbe,EditorStore,OpenDoc,CaretAffinity,LineBox,PreviewInfo,'+
@@ -154,11 +156,13 @@ function editor(value) {
     lastText:value,preferredX:-1,anims:{clear(){}},lines:[],caret:new api.CursorState(),
     theme:{fontSize:16,typewriterScaleAnimated:false,typewriterScaleDurationMs:180},
     twAnimFirst:-1,twAnimLast:-1,twTargetFirst:-1,twTargetLast:-1,twScaleInitialized:false,twScaleAnimator:null,
-    cache:null,renderer:null,onEdit:null,onCaretChange:null,onTextChange:null,onFormatChange:null,onSelectionChange:null,
+    cache:null,engineRef:null,renderer:null,onEdit:null,onCaretChange:null,onTextChange:null,onFormatChange:null,onSelectionChange:null,
     documentGeneration:0,controller:null,ime:new api.ImeBridge(),caretAnimator:null,glyphAnimator:null,scrollAnimator:null,
     caretAnimating:false,viewHeightVp:600,scrollY:0,
     commandRouter:new api.EditorCommandRouter(),hostAdapter:null,echoGuard:new api.ImeEchoGuard(),
     imeUsable:false,focused:false,focusConfirmed:false,menuVisible:false,menuIndex:0,previewDoc:null,previewCache:null,
+    caretLayoutTimer:-1,caretLayoutRevision:0,caretLayoutPending:false,caretLayoutHidden:false,caretLayoutRestoreVisible:true,
+    previewBaseVersion:-1,previewBaseFormatVersion:-1,previewLayoutStart:-1,
     startBlink(){},
     padLeftVp(){return 0;},padTopVp(){return 0;},ensureCaretLayout(){},ensureVisibleLayout(){},ensureCaretVisible(){},effectivePolicy(){return 0;},
     relayout(){},drawNow(){},reportSelection(){},reportCursor(){},hideSelectionMenu(){},diag(){},
@@ -207,7 +211,21 @@ check('typing persists text, moved formats and caret in one transaction',()=>{co
 check('loading format does not report a user edit',()=>{const e=editor('abc');let events=0;e.onEdit=()=>events++;e.onFormatChange=()=>events++;e.setRuns([new api.FormatRun(0,3,true)]);assert.equal(events,0);});
 check('controller load preserves formats and saved caret before binding',()=>{const controller=new api.CanvasTextEditorController();controller.setDocument('abc',[new api.FormatRun(0,3,true)],1);const e=editor('');controller.bind(e);assert.equal(e.doc.text,'abc');assert.equal(e.doc.caretOffset,1);assert.equal(e.doc.runs[0].bold,true);});
 check('undo restores content before format',()=>{const e=editor('abcX');const host=new api.HostProbe();Object.assign(host,{docId:'a',contentRev:2,appliedRev:1,loadText(){return 'abc';},loadCaret(){return 2;},loadFormat(){return [new api.FormatRun(0,3,true)];},flowController:{getText(){return e.doc.text;},setDocument(value,runs,caret){e.loadDocument(value,runs,caret);},setText(v){e.loadText(v);},setRuns(r){e.setRuns(r);},setCaretPosition(n){e.moveCaretAnimated(n);}}});host.onContentRevChanged();assert.equal(e.doc.text,'abc');assert.equal(e.doc.runs[0].endOffset,3);});
+check('undo/redo availability follows the active document',()=>{const store=new api.EditorStore();store.scheduleFlush=()=>{};const a=new api.OpenDoc('a','A',0,'','a',0);const b=new api.OpenDoc('b','B',0,'','b',0);store.openDocs=[a,b];store.activeId='a';store.setEditorState('a1','',1);assert.equal(store.canUndo,true,'A has history');store.activeId='b';assert.equal(store.canUndo,false,'B has no history');assert.equal(store.canRedo,false);store.activeId='a';assert.equal(store.canUndo,true);store.undo();assert.equal(store.canUndo,false);assert.equal(store.canRedo,true);store.activeId='b';assert.equal(store.canRedo,false,'redo state must not leak into another document');});
 check('history preserves other documents and clears redo after new edits',()=>{const store=new api.EditorStore();store.scheduleFlush=()=>{};const a=new api.OpenDoc('a','A',0,'','a',0);const b=new api.OpenDoc('b','B',0,'','b',0);store.openDocs=[a,b];store.activeId='a';store.setEditorState('a1','0,1,1,0,0',2);store.activeId='b';store.setEditorState('b1','',2);store.activeId='a';store.undo();assert.equal(a.draft,'a');store.activeId='b';store.undo();assert.equal(b.draft,'b');store.activeId='a';store.setEditorState('a2','',2);store.redo();assert.equal(a.draft,'a2');});
+check('Jouko window activation restores only current body focus and unsubscribes on unmount',()=>{
+  const previous=context.deviceProfile;let activated,focuses=0,blurs=0,released=0,bodyFocus=true;
+  context.deviceProfile={onWindowActivated(callback){activated=callback;return ()=>released++;}};
+  try {
+    const host=new api.HostProbe();Object.assign(host,{docId:'a',loadedDocId:'a',contentRev:1,
+      onControllerReady(){},reload(){},flowController:{ownsEditorFocus(){return bodyFocus;},focus(){focuses++;},blur(){bodyFocus=false;blurs++;}}});
+    host.aboutToAppear();activated();assert.equal(focuses,1);
+    bodyFocus=false;activated();assert.equal(focuses,1,'search and rename inputs retain focus');
+    bodyFocus=true;host.docId='b';activated();assert.equal(focuses,1,'replacement document cannot focus the old canvas');
+    host.loadedDocId='';host.docId='';activated();assert.equal(focuses,1,'empty editor cannot focus');
+    host.aboutToDisappear();assert.equal(released,1);assert.equal(blurs,1);
+  } finally {context.deviceProfile=previous;}
+});
 check('heading at a collapsed paragraph start affects the current paragraph',()=>{
   const d=doc('abc\ndef');d.toggleHeading(1,4,4);
   assert.equal(d.headingAt(4),1);assert.equal(d.headingAt(0),0);
@@ -320,36 +338,46 @@ function animationOptions(oldText,newText,hintOffset=0) {const options=new api.G
 check('insert animation belongs to inserted glyph',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'XAB')],animationOptions('AB','XAB'));assert.deepEqual(Array.from(a.map.keys()),[0]);assert.equal(a.map.get(0).glyph,88);});
 check('removed glyph has independent exit animation',()=>{const a=api.GlyphAnimator.createEditAnimations([line(0,'AB')],[line(0,'B')],animationOptions('AB','B'));assert.equal(a.exits.length,1);assert.equal(a.exits[0].glyph,65);assert.equal(a.map.size,0);});
 check('scrolled caret and handles stay visible',()=>{const theme=new api.RenderTheme();const renderer=new api.GlyphRenderer(theme);const canvas={attachBrush(){},detachBrush(){},drawRect(r){draws.push(r);},drawCircle(...v){draws.push(v);}};const caret=new api.CursorState();Object.assign(caret,{x:12,y:1000,height:16});renderer.drawCaret(canvas,caret,new api.ViewportInfo(1000,200));renderer.drawHandles(canvas,[caret],new api.ViewportInfo(1000,200));assert.equal(draws.length,3);});
-check('multi-run lines get their own line-relative origin (no glyphs piled at line start)',()=>{
-  const engine=new api.TextLayoutEngine(400,16,24,4,1);
+check('native mixed-direction runs preserve positioned glyph bearings',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,2);
   engine.indexMap=new api.TextIndexMap('ABCD');
-  // 模拟两个 run：run1 [0,2) 从行首开始，run2 [2,4) 从行内 x=20 开始；positions 是 run 局部坐标
-  const run1={getStringRange(){return {start:0,end:2};},getStringIndices(){return [0,1];},getGlyphs(){return [65,66];},
-    getFont(){return new Font();},getAdvances(){return [{x:10,y:0},{x:10,y:0}];},getPositions(){return [{x:0,y:0},{x:10,y:0}];}};
-  const run2={getStringRange(){return {start:2,end:2};},getStringIndices(){return [2,3];},getGlyphs(){return [67,68];},
-    getFont(){return new Font();},getAdvances(){return [{x:10,y:0},{x:10,y:0}];},getPositions(){return [{x:0,y:0},{x:10,y:0}];}};
-  const native={getTextRange(){return {start:0,end:4};},getGlyphRuns(){return [run1,run2];},
-    getTypographicBounds(){return {ascent:-14,descent:4,leading:0,width:40};},
-    getOffsetForStringIndex(n){return [0,10,20,30,40][n];},
-    getStringIndexForPosition(p){return p.x < 20 ? 1 : 3;}};
+  const positions=[{x:72,y:2},{x:48,y:-1}];
+  const run={getStringRange(){return {start:2,end:2};},getStringIndices(){return [3,2];},
+    getGlyphs(){return [68,67];},getFont(){return new Font();},
+    getAdvances(){return [{x:20,y:0},{x:20,y:0}];},getPositions(){return positions;}};
+  const native={getTextRange(){return {start:0,end:4};},getGlyphRuns(){return [run];},
+    getTypographicBounds(){return {ascent:28,descent:8,leading:0,width:80};},
+    getOffsetForStringIndex(n){return [0,20,80,60,40][n];}};
   const l=engine.buildLayoutLineFrom(native,0,4,0);
   assert.equal(l.runs[0].runOffsetX,0);
-  assert.equal(l.runs[1].runOffsetX,20);
-  assert.equal(l.runs[1].textStart,2);
-  assert.equal(l.runs[1].textEnd,4);
-  // 点击 x=25 应落在 run2 内（旧实现 run2 从 0 起，会被判到 run1）
-  assert.equal(api.HitTester.hitTest(25,5,[l],0,0,'ABCD'),3);
-  // 另一种基准：positions 已是行内绝对坐标（常见于 createLine 裁剪行）。
-  // 归一化后 run2 的字形相对 x 仍应从 0 起，且 run 原点 20。
-  const run2Abs={getStringRange(){return {start:2,end:2};},getStringIndices(){return [2,3];},getGlyphs(){return [67,68];},
-    getFont(){return new Font();},getAdvances(){return [{x:10,y:0},{x:10,y:0}];},getPositions(){return [{x:20,y:0},{x:30,y:0}];}};
-  const nativeAbs={getTextRange(){return {start:0,end:4};},getGlyphRuns(){return [run1,run2Abs];},
-    getTypographicBounds(){return {ascent:-14,descent:4,leading:0,width:40};},
-    getOffsetForStringIndex(n){return [0,10,20,30,40][n];}};
-  const lAbs=engine.buildLayoutLineFrom(nativeAbs,0,4,0);
-  assert.equal(lAbs.runs[1].runOffsetX,20);
-  assert.equal(lAbs.runs[1].positions[0].x,0);
-  assert.equal(lAbs.runs[1].positions[1].x,10);
+  assert.deepEqual(json(l.runs[0].positions),[{x:36,y:1},{x:24,y:-0.5}]);
+  assert.deepEqual(json(l.runs[0].glyphOffsets),[1,0]);
+});
+check('Jouko native run guards tolerate shortened advance and position arrays',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,2);engine.indexMap=new api.TextIndexMap('AB');
+  const native={getTextRange(){return {start:0,end:2};},getGlyphRuns(){return [{
+    getStringRange(){return {start:0,end:2};},getStringIndices(){return [0,1];},getGlyphs(){return [65,66];},
+    getFont(){return new Font();},getAdvances(){return [{x:20,y:2}];},getPositions(){return [{x:0,y:2}];}}];},
+    getTypographicBounds(){return {ascent:28,descent:8,leading:0,width:40};},getOffsetForStringIndex(n){return n*20;}};
+  const run=engine.buildLayoutLineFrom(native,0,2,0).runs[0];
+  assert.deepEqual(json(run.advances),[{x:10,y:1},{x:0,y:0}]);
+  assert.deepEqual(json(run.positions),[{x:0,y:1},{x:0,y:0}]);assert.equal(run.glyphs.length,2);
+});
+check('Jouko multi-run origin probe retains the same drawn positions for local and absolute runs',()=>{
+  for(const absolute of [false,true]) {
+    const engine=new api.TextLayoutEngine(400,16,24,4,1);engine.indexMap=new api.TextIndexMap('ABCD');
+    const run=(start,positions)=>({getStringRange(){return {start,end:2};},getStringIndices(){return [start,start+1];},
+      getGlyphs(){return [65+start,66+start];},getFont(){return new Font();},
+      getAdvances(){return [{x:10,y:0},{x:10,y:0}];},getPositions(){return positions.map(x=>({x,y:0}));}});
+    const native={getTextRange(){return {start:0,end:4};},getGlyphRuns(){return [run(0,[0,10]),run(2,absolute?[20,30]:[0,10])];},
+      getTypographicBounds(){return {ascent:14,descent:4,leading:0,width:40};},
+      getOffsetForStringIndex(n){return n*10;},getStringIndexForPosition(p){return p.x<20?1:3;}};
+    const layout=engine.buildLayoutLineFrom(native,0,4,0),second=layout.runs[1];
+    assert.equal(second.textStart,2);assert.equal(second.textEnd,4);
+    assert.equal(second.runOffsetX+second.positions[0].x,20);
+    assert.equal(second.runOffsetX+second.positions[1].x,30);
+    assert.equal(api.HitTester.hitTest(25,5,[layout],0,0,'ABCD'),3);
+  }
 });
 check('undo/redo reload preserves scroll; document switch resets it',()=>{
   const e=editor('old');e.scrollY=120;
@@ -363,14 +391,14 @@ check('selection stores anchor/head; handle crossing never swaps identity',()=>{
   assert.equal(m.anchor,0);assert.equal(m.head,4);assert.equal(m.startOffset,0);
   m.updateHandleDrag(5);
   assert.equal(m.anchor,5);assert.equal(m.head,4);assert.equal(m.startOffset,4);assert.equal(m.endOffset,5);
-  assert.equal(m.headAffinity,api.CaretAffinity.UPSTREAM);
+  assert.equal(m.headAffinity,api.CaretAffinity.DOWNSTREAM);
   m.endHandleDrag();
-  m.setSelection(4,1);assert.equal(m.startOffset,1);assert.equal(m.endOffset,4);assert.equal(m.headAffinity,api.CaretAffinity.UPSTREAM);
+  m.setSelection(4,1);assert.equal(m.startOffset,1);assert.equal(m.endOffset,4);assert.equal(m.headAffinity,api.CaretAffinity.DOWNSTREAM);
 });
 check('caret affinity picks the same visual side as the selection highlight',()=>{
   const lines=[line(0,'ABC'),line(3,'DEF',28)];
-  const down=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.DOWNSTREAM);
-  const up=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.UPSTREAM);
+  const down=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.UPSTREAM);
+  const up=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.DOWNSTREAM);
   assert.equal(down.y,lines[0].baseline-lines[0].ascent);
   assert.equal(up.y,lines[1].baseline-lines[1].ascent);
   assert.equal(down.x,30);assert.equal(up.x,0);
@@ -390,6 +418,122 @@ check('Ctrl+A updates caret, callbacks and IME once',()=>{
   const cmd=new api.KeyboardEvent();cmd.action=api.KeyAction.SELECT_ALL;e.applyKeyCommand(cmd);
   assert.equal(e.doc.caretOffset,5);assert.deepEqual(json(changed),[0,5]);assert.ok(reported>0);
   assert.equal(e.selMgr.anchor,0);assert.equal(e.selMgr.head,5);
+});
+check('long-document Ctrl+A selects immediately without laying out its offscreen tail',()=>{
+  const value='甲乙丙\n'.repeat(5000)+'尾';const e=editor(value);
+  const cache=new api.LayoutCache(cacheEngine());
+  e.lines=cache.ensureLayout(value,e.doc.version,e.doc.formatVersion,56);e.cache=cache;
+  const countBefore=cache.lineCount();e.ensureCaretLayout=()=>{throw new Error('full selection must not force the tail');};
+  let selected;e.onSelectionChange=(start,end)=>selected=[start,end];e.selectAllText();
+  assert.deepEqual(selected,[0,value.length]);assert.equal(e.doc.caretOffset,value.length);
+  assert.equal(cache.lineCount(),countBefore);assert.equal(cache.isComplete(),false);
+  assert.equal(e.caret.visible,false);assert.deepEqual(Array.from(e.handlePositions()),[]);
+});
+function withLayoutTimers(action) {
+  const oldSet=context.setTimeout,oldClear=context.clearTimeout;let next=0;const pending=new Map(),all=[];
+  context.setTimeout=(fn)=>{const id=++next;pending.set(id,fn);all.push(fn);return id;};
+  context.clearTimeout=id=>pending.delete(id);
+  const timers={pending,all,drain(){let turns=0;while(pending.size){assert.ok(turns++<1000);const [id,fn]=pending.entries().next().value;pending.delete(id);fn();}}};
+  try {action(timers);} finally {context.setTimeout=oldSet;context.clearTimeout=oldClear;}
+}
+function longNavigationEditor() {
+  const value='甲乙丙\n'.repeat(5000)+'尾';const e=editor(value);
+  e.cache=new api.LayoutCache(cacheEngine());e.lines=e.cache.ensureLayout(value,e.doc.version,e.doc.formatVersion,56);
+  e.doc.moveCaret(0);e.selMgr.collapse(0);e.focused=true;return e;
+}
+check('far caret navigation yields in bounded slices while logical offsets update immediately',()=>withLayoutTimers(timers=>{
+  const e=longNavigationEditor();const before=e.cache.lineCount();e.moveCaretAnimated(e.doc.length);
+  assert.equal(e.doc.caretOffset,e.doc.length);assert.equal(e.selMgr.head,e.doc.length);
+  assert.ok(e.cache.lineCount()-before<=32);assert.equal(e.caretLayoutPending,true);assert.equal(e.caret.visible,false);
+  timers.drain();assert.equal(e.cache.isComplete(),true);assert.equal(e.caretLayoutPending,false);
+  assert.equal(e.caret.visible,true);assert.ok(e.caret.y>0);
+}));
+check('a newer caret request invalidates already queued layout callbacks',()=>withLayoutTimers(timers=>{
+  const e=longNavigationEditor();e.moveCaretAnimated(e.doc.length);const stale=timers.all[0];
+  e.moveCaretAnimated(0);const lines=e.cache.lineCount();stale();
+  assert.equal(e.doc.caretOffset,0);assert.equal(e.cache.lineCount(),lines);assert.equal(timers.pending.size,0);
+}));
+check('document reload and typing cancel pending navigation without moving or editing the replacement',()=>withLayoutTimers(timers=>{
+  for(const replace of [false,true]) {
+    const e=longNavigationEditor();e.moveCaretAnimated(e.doc.length);const stale=timers.all.at(-1);
+    if(replace){e.loadDocument('B',[],1);}else{e.insertExternalText('X');}
+    const text=e.doc.text,caret=e.doc.caretOffset,lines=e.cache.lineCount();stale();
+    assert.equal(e.doc.text,text);assert.equal(e.doc.caretOffset,caret);assert.equal(e.cache.lineCount(),lines);
+    assert.equal(e.caretLayoutPending,false);assert.equal(timers.pending.size,0);
+  }
+}));
+check('Shift far navigation keeps its selection direction while the visual reveal is pending',()=>withLayoutTimers(timers=>{
+  const e=longNavigationEditor();e.selectTo(e.doc.length);
+  assert.equal(e.selMgr.anchor,0);assert.equal(e.selMgr.head,e.doc.length);assert.equal(e.caretLayoutPending,true);
+  timers.drain();assert.equal(e.selMgr.anchor,0);assert.equal(e.selMgr.head,e.doc.length);
+}));
+check('cancelling at an unfinished soft-wrap boundary keeps stale caret and handles hidden',()=>withLayoutTimers(timers=>{
+  const e=editor('A'.repeat(2000));e.doc.moveCaret(0);e.selMgr.collapse(0);e.focused=true;
+  e.cache=new api.LayoutCache(cacheEngine());e.moveCaretAnimated(160);
+  assert.equal(e.lines.at(-1).endIndex,160);assert.equal(e.caretLayoutPending,true);
+  e.cancelCaretLayout();assert.equal(e.caret.visible,false);
+  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.DOWNSTREAM),false);
+  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.UPSTREAM),true);
+  e.selMgr.setSelection(170,160);assert.deepEqual(Array.from(e.handlePositions()),[]);
+  e.ime.isAttached=true;let reports=0;e.ime.updateCursor=()=>reports++;
+  api.EditorProbe.prototype.reportCursor.call(e);assert.equal(reports,0);
+  e.renderer={draw(){}};api.EditorProbe.prototype.drawNow.call(e);assert.equal(e.caret.visible,false);
+  e.lines=e.cache.ensureOffset(e.doc.text,e.doc.version,e.doc.formatVersion,160);
+  api.EditorProbe.prototype.drawNow.call(e);assert.equal(e.caret.visible,true);
+  assert.equal(e.caretLayoutHidden,false);assert.ok(e.caret.y>0);assert.equal(timers.pending.size,0);
+}));
+check('drawing a covered caret respects keyboard-hide visibility',()=>{
+  const e=editor('ABC');e.lines=[line(0,'ABC')];e.focused=true;e.caret.visible=false;
+  e.renderer={draw(){}};api.EditorProbe.prototype.drawNow.call(e);
+  assert.equal(e.caret.visible,false);assert.equal(e.caretLayoutHidden,false);
+});
+check('keyboard hiding during a pending far jump remains hidden after layout completes',()=>withLayoutTimers(timers=>{
+  context.inputMethod.KeyboardStatus={SHOW:1,HIDE:2};
+  const e=longNavigationEditor();e.registerImeCallbacks();e.moveCaretAnimated(e.doc.length);
+  e.ime.onSendKeyboardStatus(context.inputMethod.KeyboardStatus.HIDE);
+  timers.drain();assert.equal(e.caretLayoutPending,false);assert.equal(e.caret.visible,false);
+  e.moveCaretAnimated(0);assert.equal(e.caretLayoutHidden,false);assert.equal(e.caretLayoutRestoreVisible,true);
+}));
+check('visual navigation immediately after a far jump uses the destination line',()=>withLayoutTimers(timers=>{
+  for(const action of [api.KeyAction.MOVE_UP,api.KeyAction.MOVE_DOWN,api.KeyAction.MOVE_LINE_START,api.KeyAction.MOVE_LINE_END]) {
+    for(const shift of [false,true]) {
+      const actual=longNavigationEditor(),reference=longNavigationEditor();
+      for(const e of [actual,reference]) e.ensureCaretLayout=()=>{
+        e.lines=e.cache.ensureOffset(e.doc.text,e.doc.version,e.doc.formatVersion,e.doc.caretOffset);
+      };
+      reference.doc.moveCaret(reference.doc.length);reference.selMgr.collapse(reference.doc.length);
+      reference.ensureCaretLayout();
+      actual.moveCaretAnimated(actual.doc.length);assert.equal(actual.caretLayoutPending,true);
+      const command=new api.KeyboardEvent();command.action=action;command.shift=shift;
+      actual.applyKeyCommand(command);reference.applyKeyCommand(command);
+      assert.equal(actual.doc.caretOffset,reference.doc.caretOffset,action+' shift='+shift);
+      assert.equal(actual.selMgr.anchor,reference.selMgr.anchor);assert.equal(actual.selMgr.head,reference.selMgr.head);
+      assert.equal(actual.caretLayoutPending,false);assert.equal(timers.pending.size,0);
+    }
+  }
+}));
+check('deleting a collapsed composition to empty preserves its original caret',()=>{
+  const e=editor('ABCDE');e.doc.moveCaret(1);e.selMgr.collapse(1);
+  e.previewMgr.update('ni',-1,-1,1,1);e.refreshPreview();assert.equal(e.displayCaret(),3);
+  e.previewMgr.update('',-1,-1);e.refreshPreview();
+  assert.equal(e.displayText(),'ABCDE');assert.equal(e.displayCaret(),1);assert.equal(e.doc.caretOffset,1);
+});
+check('composition updates reuse an isolated preview cache and retain committed prefix lines',()=>{
+  const value='甲乙丙\n'.repeat(300)+'尾';const e=editor(value);
+  e.engineRef=new api.TextLayoutEngine(50,16,24,4,1);e.cache=new api.LayoutCache(e.engineRef);
+  e.lines=e.cache.ensureOffset(value,e.doc.version,e.doc.formatVersion,value.length);
+  const prefix=e.lines[0],committedCount=e.cache.lineCount();
+  e.previewMgr.update('ni',-1,-1,value.length,value.length);e.refreshPreview();
+  const preview=e.previewCache;assert.notEqual(preview,e.cache);
+  let lines=preview.ensureOffset(e.previewDoc.text,e.previewDoc.version,e.previewDoc.formatVersion,e.previewDoc.caretOffset);
+  assert.equal(lines[0],prefix);
+  for(const text of ['nin','你好','ni\nhao','n']) {
+    e.previewMgr.update(text,-1,-1);e.refreshPreview();assert.equal(e.previewCache,preview);
+    lines=preview.ensureOffset(e.previewDoc.text,e.previewDoc.version,e.previewDoc.formatVersion,e.previewDoc.caretOffset);
+    assert.equal(lines[0],prefix);assert.equal(e.doc.text,value);assert.equal(e.cache.lineCount(),committedCount);
+  }
+  e.insertExternalText('你好');assert.equal(e.doc.text,value+'你好');assert.equal(e.previewCache,null);
+  assert.equal(e.previewDoc,null);assert.equal(e.previewMgr.isComposing,false);
 });
 check('clampScroll never resets to top while the layout cache is still empty',()=>{
   const e=editor('x'.repeat(1000));e.viewHeightVp=50;e.scrollY=100;
@@ -487,8 +631,10 @@ check('printable keys become INSERT_TEXT with Shift casing, composing releases e
 check('unrecognised Ctrl/Alt chords and key-up events are handed back to the system', () => {
   assert.equal(shortcut(K('KEYCODE_Q'), 'q', modsOf(true)).kind, KIND.NONE, 'an unknown Ctrl chord must not be swallowed');
   assert.equal(shortcut(K('KEYCODE_A'), 'a', modsOf(false, false, true)).kind, KIND.NONE, 'Alt is left to the system');
-  // Ctrl 优先于 Alt：Ctrl+Alt+A 仍是全选（系统级 Ctrl+Alt 组合在应用内不承担语义）
-  assert.equal(shortcut(K('KEYCODE_A'), 'a', modsOf(true, false, true)).kind, KIND.SELECT_ALL);
+  // AltGr may be reported as Ctrl+Alt: never trigger destructive shortcuts.
+  for (const key of ['A','C','X','V','S','F','B','I']) {
+    assert.equal(shortcut(K('KEYCODE_'+key), key.toLowerCase(), modsOf(true,false,true)).kind, KIND.NONE, 'AltGr '+key);
+  }
   assert.equal(shortcut(K('KEYCODE_X'), 'x', modsOf(), false).kind, KIND.NONE, 'key-up must not repeat an edit');
 });
 check('pre-Ime consumption intercepts caret, chord and Esc commands in both IME states', () => {
@@ -547,14 +693,15 @@ check('typewriter is a two-state toggle wired from the toolbar down to the V1 ed
   const canvasSource = read('editor/flowtext/CanvasTextEditor.ets');
   const hostSource = read('editor/TextEditorHost.ets');
   const paneSource = read('shell/EditorPane.ets');
+  const toolsSource = read('shell/EditorTools.ets');
   assert.match(canvasSource, /@Prop @Watch\('onTypewriterPropChanged'\) typewriter/, 'prop watch so toggling takes effect immediately');
   assert.match(canvasSource, /private typewriterOverride: number = -1;/, 'controller override wins over a stale prop');
   assert.match(canvasSource, /applyTypewriter\(on: boolean\): void/, 'editor applies the toggle and re-centers');
   assert.match(canvasSource, /setTypewriter\(on: boolean\): void/, 'controller exposes setTypewriter');
   assert.match(hostSource, /typewriter: this\.typewriter/, 'host forwards the prop');
-  assert.match(paneSource, /editorController\.setTypewriter\(/, 'toolbar pushes the state to the controller');
-  assert.match(paneSource, /ui\.setTypewriter\(/, 'store stays the single source of truth');
-  assert.match(paneSource, /typewriterButton\(\)/, 'toolbar renders the two-state button');
+  assert.match(toolsSource, /editorController\.setTypewriter\(/, 'toolbar pushes the state to the controller');
+  assert.match(toolsSource, /ui\.setTypewriter\(/, 'store stays the single source of truth');
+  assert.match(paneSource, /typewriter: this\.app\.ui\.typewriter/, 'pane forwards the state');
 });
 check('NONE commands are never consumed in pre-Ime', () => {
   assert.equal(api.shouldConsumePreIme(new api.EditCommand(KIND.NONE, ''), false), false);
@@ -897,6 +1044,118 @@ check('scaled text, caret and selection share the left-edge pivot', () => {
   // 光标同样围绕左轴心：12 + (100-12)*1.08 - halfW(1) ≈ 106
   const left = rects[rects.length - 1].left;
   assert.ok(Math.abs(left - 106.04) < 0.2, 'caret must share the same pivot (got ' + left + ')');
+});
+check('Shift digit fallback preserves the active keyboard layout symbols',()=>{
+  assert.equal(shortcut(K('KEYCODE_2'), '"', modsOf(false,true)).text, '"');
+  assert.equal(shortcut(K('KEYCODE_3'), '£', modsOf(false,true)).text, '£');
+  assert.equal(shortcut(K('KEYCODE_2'), '', modsOf(false,true)).text, '@');
+});
+check('Meta uses the supported KeyEvent field without querying an unsupported modifier',()=>{
+  const queried=[];const e=editor('');
+  const mods=e.readEditorModifiers({metaKey:1,getModifierKeyState(names){
+    assert.ok(['Ctrl','Shift','Alt'].includes(names[0]));queried.push(names[0]);return names[0]==='Shift';
+  }});
+  assert.equal(mods.meta,true);assert.equal(mods.shift,true);assert.equal(mods.ctrl,false);
+  assert.deepEqual(queried,['Ctrl','Shift','Alt']);
+});
+check('rapid keyboard fallbacks retain each pending IME echo once',()=>{
+  const guard=new api.ImeEchoGuard();
+  guard.recordKeyboardFallback('a',100);guard.recordKeyboardFallback('b',110);
+  assert.equal(guard.claim('a',120),true);assert.equal(guard.claim('b',120),true);
+  guard.recordKeyboardFallback('x',200);guard.recordKeyboardFallback('x',205);
+  assert.equal(guard.claim('x',210),true);assert.equal(guard.claim('x',211),true);
+  assert.equal(guard.claim('x',212),false);
+  guard.recordKeyboardFallback('old',300);guard.recordKeyboardFallback('new',345);
+  assert.equal(guard.claim('old',346),false);assert.equal(guard.claim('new',346),true);
+  guard.recordKeyboardFallback('z',400);guard.reset();assert.equal(guard.claim('z',401),false);
+});
+check('document replacement cancels pending IME echoes and obsolete drag identity',()=>{
+  const e=editor('A');e.echoGuard.recordKeyboardFallback('x',Date.now());
+  e.selMgr.beginDrag(0);e.selMgr.beginHandleDrag(1);e.mouseSelecting=true;e.dragging=true;
+  e.loadDocument('B',[],1);assert.equal(e.echoGuard.armed,false);
+  assert.equal(e.selMgr.draggingHandle,0);assert.equal(e.dragging,false);assert.equal(e.mouseSelecting,false);
+});
+check('IME reports every changed preview including same-length replacements',()=>{
+  const e=editor('A');const reports=[];
+  e.ime={attached:true,changeSelection(...args){reports.push(args);}};e.engineRef=null;
+  e.reportSelection=api.EditorProbe.prototype.reportSelection;e.registerImeCallbacks();
+  e.ime.onPreviewText('ni',-1,-1);e.ime.onPreviewText('ha',-1,-1);e.ime.onPreviewText('hao',-1,-1);
+  assert.deepEqual(reports.map(v=>v[0]),['Ani','Aha','Ahao']);
+  e.reportSelection();assert.equal(reports.length,3);
+  e.previewMgr.cancel();e.selMgr.collapse(0);e.reportSelection();
+  e.selMgr.collapse(1);e.reportSelection();assert.deepEqual(reports.at(-1),['A',1,1]);
+});
+check('format state requires the entire selection and matches the character before a caret',()=>{
+  const e=editor('abc');e.doc.setRuns([new api.FormatRun(0,1,true),new api.FormatRun(2,3,true)]);
+  e.selMgr.setSelection(0,3);assert.equal(e.inlineStyleMask(),0);
+  e.selMgr.collapse(1);e.doc.moveCaret(1);assert.equal(e.inlineStyleMask(),1);
+  e.selMgr.collapse(2);e.doc.moveCaret(2);assert.equal(e.inlineStyleMask(),0);
+});
+check('Home and End retain their visual line at a soft-wrap boundary',()=>{
+  const e=editor('ABCDEF');e.lines=[line(0,'ABC'),line(3,'DEF',28)];e.moveCaretAnimated(1);
+  const end=new api.KeyboardEvent();end.action=api.KeyAction.MOVE_LINE_END;
+  e.applyKeyCommand(end);assert.equal(e.doc.caretOffset,3);assert.equal(e.caret.x,30);assert.equal(e.caret.y,4);
+  e.applyKeyCommand(end);assert.equal(e.doc.caretOffset,3);assert.equal(e.caret.x,30);
+  const home=new api.KeyboardEvent();home.action=api.KeyAction.MOVE_LINE_START;e.applyKeyCommand(home);
+  assert.equal(e.doc.caretOffset,0);e.moveCaretAnimated(3);assert.equal(e.caret.x,0);assert.equal(e.caret.y,32);
+});
+check('scaled pointer hits, handles and IME caret use the rendered text coordinates',()=>{
+  const theme=new api.RenderTheme();theme.paddingLeftVp=12;theme.paddingTopVp=8;
+  theme.viewWidthVp=1000;theme.textColumnWidthVp=500;theme.typewriterScale.focusScale=1.2;
+  const renderer=new api.GlyphRenderer(theme);const lines=[line(0,'ABCDEFGHIJ')];
+  const caret=api.HitTester.caretPositionFor(9,lines,12,8,16);
+  const visual=renderer.visualCaret(caret,lines,true,0,0);
+  assert.equal(visual.x,120);assert.equal(visual.height,caret.height*1.2);
+  assert.equal(renderer.hitTest(visual.x,8+visual.y+visual.height/2,lines,'ABCDEFGHIJ',true,0,0),9);
+  const e=editor('ABCDEFGHIJ');e.lines=lines;e.renderer=renderer;e.effectivePolicy=()=>1;e.padLeftVp=()=>12;
+  e.twAnimFirst=0;e.twAnimLast=0;e.refreshTypewriterFocus=()=>{};e.selMgr.setSelection(1,9);
+  assert.equal(e.handlePositions()[1].x,120);
+});
+check('coordinate-free touch cancellation clears drag and handle state',()=>{
+  const e=editor('ABCDE');e.selMgr.setSelection(1,4);e.selMgr.beginHandleDrag(1);
+  e.dragging=true;e.scrollMode=true;e.onScrollState=null;
+  e.handleTouch({type:3,touches:[],changedTouches:[]});
+  assert.equal(e.dragging,false);assert.equal(e.scrollMode,false);assert.equal(e.selMgr.draggingHandle,0);
+});
+check('comma, period and numeric keypad punctuation reach the fallback input path',()=>{
+  for (const [name,text] of [['COMMA',','],['PERIOD','.'],['NUMPAD_ADD','+'],['NUMPAD_DIVIDE','/'],
+    ['NUMPAD_MULTIPLY','*'],['NUMPAD_SUBTRACT','-'],['NUMPAD_DOT','.'],['NUMPAD_COMMA',','],
+    ['NUMPAD_EQUALS','='],['NUMPAD_LEFT_PAREN','('],['NUMPAD_RIGHT_PAREN',')']]) {
+    const e=editor('');assert.equal(e.handleKeyPreIme(keyEvent(K('KEYCODE_'+name),text)),true,name);
+    assert.equal(e.doc.text,text,name);
+  }
+  assert.equal(shortcut(2119).text,'\n');assert.equal(shortcut(2116,'+').text,'+');
+});
+check('pointer clicks retain either visual side of a shared soft-wrap offset',()=>{
+  const e=editor('ABCDEF');e.lines=[line(0,'ABC'),line(3,'DEF',28)];
+  const upper=e.affinityAt(10,3),lower=e.affinityAt(40,3);
+  assert.equal(upper,api.CaretAffinity.UPSTREAM);assert.equal(lower,api.CaretAffinity.DOWNSTREAM);
+  e.placeCaretImmediately(3,upper);assert.equal(e.caret.x,30);assert.equal(e.caret.y,4);
+  e.placeCaretImmediately(3,lower);assert.equal(e.caret.x,0);assert.equal(e.caret.y,32);
+});
+check('run-local and line-absolute native glyphs render at the same distinct positions',()=>{
+  for (const local of [true,false]) {
+    const engine=new api.TextLayoutEngine(400,16,24,4,2);engine.indexMap=new api.TextIndexMap('AB中文');
+    const makeRun=(start,glyphs,positions)=>({getStringRange(){return {start,end:2};},getStringIndices(){return [start,start+1];},
+      getGlyphs(){return glyphs;},getFont(){return new Font();},getAdvances(){return [{x:20,y:0},{x:20,y:0}];},
+      getPositions(){return positions.map(x=>({x,y:0}));}});
+    const native={getTextRange(){return {start:0,end:4};},getGlyphRuns(){return [makeRun(0,[65,66],[0,20]),
+      makeRun(2,[20013,25991],local?[0,20]:[40,60])];},
+      getTypographicBounds(){return {ascent:28,descent:8,leading:0,width:80};},
+      getOffsetForStringIndex(n){return n*20;}};
+    const layout=engine.buildLayoutLineFrom(native,0,4,0);
+    assert.equal(layout.runs[1].runOffsetX,local?20:0);
+    assert.deepEqual(json(layout.runs[1].positions),local?[{x:0,y:0},{x:10,y:0}]:[{x:20,y:0},{x:30,y:0}]);
+    const theme=new api.RenderTheme();theme.pxPerVp=2;theme.paddingLeftVp=0;theme.paddingTopVp=0;
+    const renderer=new api.GlyphRenderer(theme);const painted=[];
+    const canvas={clear(){},save(){},restore(){},clipRect(){},attachBrush(){},detachBrush(){},
+      drawTextBlob(blob,x,y){for(const glyph of blob.buffer)painted.push([glyph.glyph,x+glyph.positionX]);}};
+    renderer.draw({canvas,invalidate(){}},[layout],null,null,null,new api.ViewportInfo(0,100),null,[]);
+    assert.deepEqual(painted,[[65,0],[66,20],[20013,40],[25991,60]],'cached '+local);
+    const preview=new api.PreviewInfo();preview.startOffset=2;preview.text='中';preview.endOffset=3;painted.length=0;
+    renderer.draw({canvas,invalidate(){}},[layout],null,null,preview,new api.ViewportInfo(0,100),null,[]);
+    assert.deepEqual(painted.sort((a,b)=>a[1]-b[1]),[[65,0],[66,20],[20013,40],[25991,60]],'preview '+local);
+  }
 });
 (async()=>{
   for(const failed of [false,true]) {

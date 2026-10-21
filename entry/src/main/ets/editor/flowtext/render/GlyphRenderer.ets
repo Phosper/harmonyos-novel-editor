@@ -136,6 +136,48 @@ export class GlyphRenderer {
     return v * this.opts.pxPerVp;
   }
 
+  /** Match pointer/IME/handle geometry to the transform used to draw each line. */
+  visualCaret(caret: CursorState, lines: LayoutLine[], scaleEnabled: boolean,
+    first: number, last: number): CursorState {
+    const visual: CursorState = caret.clone();
+    if (!scaleEnabled || lines.length === 0) { return visual; }
+    let index: number = 0;
+    let distance: number = Number.MAX_VALUE;
+    for (let i: number = 0; i < lines.length; i++) {
+      const delta: number = Math.abs(HitTester.lineBox(lines[i]).top - caret.y);
+      if (delta < distance) { index = i; distance = delta; }
+    }
+    const line: LayoutLine = lines[index];
+    const scale: number = this.fittedScale(index, line, true, first, last);
+    visual.x = this.opts.paddingLeftVp + (caret.x - this.opts.paddingLeftVp) * scale;
+    visual.y = line.baseline + (caret.y - line.baseline) * scale;
+    visual.height = caret.height * scale;
+    return visual;
+  }
+
+  hitTest(x: number, y: number, lines: LayoutLine[], source: string,
+    scaleEnabled: boolean, first: number, last: number): number {
+    if (!scaleEnabled || lines.length === 0) {
+      return HitTester.hitTest(x, y, lines, this.opts.paddingLeftVp, this.opts.paddingTopVp, source);
+    }
+    let index: number = 0;
+    let distance: number = Number.MAX_VALUE;
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: LayoutLine = lines[i];
+      const box = HitTester.lineBox(line);
+      const scale: number = this.fittedScale(i, line, true, first, last);
+      const top: number = this.opts.paddingTopVp + line.baseline + (box.top - line.baseline) * scale;
+      const bottom: number = top + box.height * scale;
+      const delta: number = y < top ? top - y : y > bottom ? y - bottom : 0;
+      if (delta < distance) { index = i; distance = delta; }
+    }
+    const line: LayoutLine = lines[index];
+    const scale: number = this.fittedScale(index, line, true, first, last);
+    const logicalX: number = this.opts.paddingLeftVp + (x - this.opts.paddingLeftVp) / scale;
+    return HitTester.hitTest(logicalX, this.opts.paddingTopVp + line.yOffset + line.height / 2,
+      [line], this.opts.paddingLeftVp, this.opts.paddingTopVp, source);
+  }
+
   /** 完整重绘（先清空再绘制） */
   draw(ctx: DrawingRenderingContext,
     lines: LayoutLine[],

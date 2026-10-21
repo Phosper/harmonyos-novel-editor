@@ -1,11 +1,11 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
-import { window } from '@kit.ArkUI';
+import { KeyboardAvoidMode, window } from '@kit.ArkUI';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { prefs } from '../utils/PreferenceHelper';
 import { setAppContext } from '../utils/AppContext';
 import { Logger } from '../utils/Logger';
 import { app } from '../store/AppStores';
-import { configureDesktopChrome } from '../utils/DesktopWindowChrome';
+import { configureDesktopChrome, restoreDesktopChrome } from '../utils/DesktopWindowChrome';
 import { deviceProfile } from '../utils/DeviceProfile';
 
 export default class EntryAbility extends UIAbility {
@@ -17,6 +17,7 @@ export default class EntryAbility extends UIAbility {
   private contentReady: boolean = false;
   private freeWindowListener: ((isFree: boolean) => void) | null = null;
   private stageListener: ((event: window.WindowStageEventType) => void) | null = null;
+  private windowStage: window.WindowStage | null = null;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     setAppContext(this.context)
@@ -45,17 +46,30 @@ export default class EntryAbility extends UIAbility {
     } catch (e) {
       // API < 22 / 非自由窗口能力设备：降级为设备类型判据（只影响 chrome，不影响布局）
       Logger.warn('isInFreeWindowMode unavailable: ' + String(e));
+      free = deviceInfo.deviceType === '2in1' || deviceInfo.deviceType === 'pc';
     }
     this.freeWindow = free;
     AppStorage.setOrCreate<boolean>('freeWindowMode', free);
-    return deviceInfo.deviceType === '2in1' || free;
+    return free;
   }
 
   /** 自由窗口模式变化：写入 AppStorage 并让 DeviceProfile 重算快照（API 22，配 off） */
   private bindFreeWindowMode(win: window.Window): void {
     const listener: (isFree: boolean) => void = (isFree: boolean): void => {
+      if (this.mainWindow !== win) {
+        return;
+      }
+      const wasDesktop: boolean = this.isDesktop;
       this.freeWindow = isFree;
+      this.isDesktop = isFree;
       AppStorage.setOrCreate<boolean>('freeWindowMode', isFree);
+      if (this.contentReady) {
+        if (isFree) {
+          configureDesktopChrome(win);
+        } else if (wasDesktop) {
+          restoreDesktopChrome(win);
+        }
+      }
       deviceProfile.refresh();
     };
     this.freeWindowListener = listener;
@@ -72,7 +86,11 @@ export default class EntryAbility extends UIAbility {
    * 由它转成订阅回调（AppStorage 不是响应式的，编辑器无法用 @StorageProp 监听）。
    */
   private bindStageEvents(windowStage: window.WindowStage): void {
+    this.windowStage = windowStage;
     const listener: (event: window.WindowStageEventType) => void = (event: window.WindowStageEventType): void => {
+      if (this.windowStage !== windowStage) {
+        return;
+      }
       if (event === window.WindowStageEventType.ACTIVE) {
         AppStorage.setOrCreate<number>('windowActiveTick', Date.now());
         deviceProfile.notifyWindowActivated();
@@ -89,6 +107,10 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     Logger.info('Ability onWindowStageCreate');
 
+    if (this.mainWindow !== null) {
+      this.onWindowStageDestroy();
+    }
+
     const mainWin: window.Window = windowStage.getMainWindowSync()
     this.mainWindow = mainWin
     this.contentReady = false
@@ -98,7 +120,7 @@ export default class EntryAbility extends UIAbility {
     // 电脑形态判据：PC 或 window.isInFreeWindowMode()（平板电脑模式 = 自由窗口）。
     // **不再**用 deviceInfo.deviceType 决定布局与断点，只用于 DeviceClass 归类。
     this.isDesktop = this.readDesktopMode(mainWin)
-    AppStorage.setOrCreate<boolean>('isPcDevice', deviceInfo.deviceType === '2in1')
+    AppStorage.setOrCreate<boolean>('isPcDevice', deviceInfo.deviceType === '2in1' || deviceInfo.deviceType === 'pc')
     this.bindFreeWindowMode(mainWin)
     this.bindStageEvents(windowStage)
 
@@ -111,7 +133,13 @@ export default class EntryAbility extends UIAbility {
     app.ui.syncSystemBars()
 
     const loadPage = (url: string): void => {
+      if (this.mainWindow !== mainWin) {
+        return;
+      }
       windowStage.loadContent(url, (err: BusinessError) => {
+        if (this.mainWindow !== mainWin) {
+          return;
+        }
         if (err.code) {
           Logger.error('Failed to load the content: ' + JSON.stringify(err));
           return;
@@ -122,6 +150,12 @@ export default class EntryAbility extends UIAbility {
         // 这里只做"隐藏原生标题 + 保留 Dock"这一组（旧回归对调用序列有精确断言）。
         if (this.mainWindow === mainWin) {
           this.contentReady = true
+          // 内容就绪后使用窗口压缩避让，编辑器按真实可用高度重排。
+          try {
+            mainWin.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE)
+          } catch (e) {
+            Logger.warn('Keyboard resize avoidance unavailable: ' + String(e))
+          }
           if (this.isDesktop) {
             configureDesktopChrome(mainWin)
           }
@@ -176,7 +210,21 @@ export default class EntryAbility extends UIAbility {
       }
     }
     this.freeWindowListener = null
+    const stage: window.WindowStage | null = this.windowStage
+    const stageCb: ((event: window.WindowStageEventType) => void) | null = this.stageListener
+    if (stage !== null && stageCb !== null) {
+      try {
+        stage.off('windowStageEvent', stageCb)
+      } catch (e) {
+        Logger.warn('off windowStageEvent failed: ' + String(e))
+      }
+    }
     this.stageListener = null
+    this.windowStage = null
+    deviceProfile.detach()
+    if (AppStorage.get<window.Window>('mainWindow') === win) {
+      AppStorage.delete('mainWindow')
+    }
     this.mainWindow = null
     Logger.info('Ability onWindowStageDestroy');
   }
@@ -197,7 +245,12 @@ export default class EntryAbility extends UIAbility {
     Logger.info('Ability onForeground');
     // 窗口可能在被切到后台期间进出自由窗口模式（如平板插拔键盘进入电脑模式）：前台重读一次
     if (this.mainWindow !== null) {
+      const wasDesktop: boolean = this.isDesktop
       this.isDesktop = this.readDesktopMode(this.mainWindow)
+      if (wasDesktop && !this.isDesktop && this.contentReady) {
+        restoreDesktopChrome(this.mainWindow)
+      }
+      deviceProfile.refresh()
     }
     if (this.isDesktop && this.contentReady && this.mainWindow !== null) {
       configureDesktopChrome(this.mainWindow)

@@ -185,7 +185,7 @@ export struct MobileShell {
       app: app,
       showHeader: true,
       onOpenDoc: (id: string) => this.openDoc(id),
-      onRenameDoc: (id: string, current: string) => app.ui.requestDialog(ShellDialog.RENAME_DOC, id, current),
+      onRenameDoc: (id: string, current: string) => app.ui.requestDialog(ShellDialog.RENAME_DOC, id, current, '', app.project.currentBookId),
       onDeleteDoc: (id: string, title: string) => app.ui.requestDialog(ShellDialog.DELETE_DOC, id, '', title)
     })
   }
