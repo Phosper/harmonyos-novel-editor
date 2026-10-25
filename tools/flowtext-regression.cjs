@@ -125,12 +125,14 @@ const canvas = read('editor/flowtext/CanvasTextEditor.ets').split('export struct
 vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','getRuns','moveCaretTo','moveCaretAnimated','insertExternalText','extendSelection',
   'selectTo','applyKeyCommand','afterCaretMove','afterEdit','emitSelection','setRuns','afterFormatChange',
   'paragraphKind','setParagraphKind','toggleTodoAt','toggleTodoAtMarker',
+  'updateAutoScrollSelection','stopAutoScrollSelection','autoScrollDir','onAutoScrollSelectionTick','ensureVisibleLayout','dispatchLegacy',
+  'emitSelectionDuringDrag','requestDraw','flushDraw','placeholderColorFor','animateCaretMove','shouldHandleTapUp','isSyntheticTouch','placeCaretImmediately',
   'handleKeyPreIme','handleKeyEvent','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
   'readEditorModifiers','adoptKeyFocus','dispatchCommand','editHost','insertFromKeyboard','hostInsertText','hostDismiss','handleMenuKey',
   'pasteAtCaret','insertAtCaret','aboutToDisappear','insertPlainText','insertNewline','beginInsert','endInsert',
   'stopCaretAnimation','stopScrollAnimation','stopGlyphAnimation','syncSelectionToCaret','handlePositions','selectAllText',
   'captureViewAnchor','refreshDensity','ensureLayoutThroughY','engineSignature','extendWordSelection','clampScroll','tailPadVp','laidOutHeightVp',
-  'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','placeCaretImmediately','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
+  'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
 vm.runInContext(compile('class HostProbe {\n'+method(read('editor/TextEditorHost.ets'),'onContentRevChanged')+'\n}'),context);
 const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionManager,FormatRun,StyleKind,LayoutLine,GlyphRunData,'+
   'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
@@ -1303,6 +1305,187 @@ check('tapping the bullet of an unordered list never turns it into a todo',()=>{
   e.padLeftVp=()=>0; e.padTopVp=()=>0;
   assert.equal(e.toggleTodoAtMarker(10,12),false);
   assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.BULLET,'列表符号不响应点击');
+});
+
+// ===== 组字态让位给输入法 / 拖选自动滚动 =====
+check('composing releases arrow keys and Esc to the IME for candidate navigation',()=>{
+  for(const kind of [KIND.MOVE_LEFT,KIND.MOVE_RIGHT,KIND.MOVE_UP,KIND.MOVE_DOWN,KIND.MOVE_LINE_START,
+    KIND.MOVE_LINE_END,KIND.MOVE_DOC_START,KIND.MOVE_DOC_END,KIND.PAGE_UP,KIND.PAGE_DOWN]) {
+    assert.equal(api.shouldConsumePreIme(new api.EditCommand(kind,''),true,true),false,
+      'composing must hand '+kind+' to the IME');
+    assert.equal(api.shouldConsumePreIme(new api.EditCommand(kind,''),true,false),true,
+      'idle keeps '+kind+' so the caret still moves');
+  }
+  assert.equal(api.shouldConsumePreIme(new api.EditCommand(KIND.DISMISS,''),true,true),false,
+    'composing: Esc cancels the composition, not the editor overlay');
+  const chord=new api.EditCommand(KIND.MOVE_WORD_LEFT,'');
+  chord.mods.ctrl=true;
+  assert.equal(api.shouldConsumePreIme(chord,true,true),true,
+    'Ctrl+arrow is not for the IME, the editor keeps it even while composing');
+});
+check('desktop arrow keys prefer the IME so candidates can be navigated',()=>{
+  for (const kind of [KIND.MOVE_LEFT,KIND.MOVE_RIGHT,KIND.MOVE_UP,KIND.MOVE_DOWN]) {
+    assert.equal(api.shouldConsumePreIme(new api.EditCommand(kind,''),true,false,true),false,
+      'pointer/desktop must let the IME see '+kind+' (candidate navigation)');
+    assert.equal(api.shouldConsumePreIme(new api.EditCommand(kind,''),true,false,false),true,
+      'touch keeps consuming arrows so the caret moves immediately');
+  }
+  for (const kind of [KIND.MOVE_LINE_START,KIND.MOVE_LINE_END,KIND.PAGE_UP,KIND.PAGE_DOWN]) {
+    assert.equal(api.shouldConsumePreIme(new api.EditCommand(kind,''),true,false,true),true,
+      'Home/End/PgUp/PgDn are not candidate keys, the editor keeps '+kind);
+  }
+  const chord=new api.EditCommand(KIND.MOVE_WORD_LEFT,'');
+  chord.mods.ctrl=true;
+  assert.equal(api.shouldConsumePreIme(chord,true,false,true),true,
+    'Ctrl+arrow is word movement, never handed to the IME');
+});
+check('released arrows still move the caret through the late key path',()=>{
+  const e=editor('abc');
+  e.imeUsable=true; e.desktopMode=true; e.pointerPrimary=true;
+  e.moveCaretAnimated(2);
+  const left=keyEvent(K('KEYCODE_DPAD_LEFT'),'');
+  assert.equal(e.handleKeyPreIme(left),false,'pre-Ime must not swallow the arrow on desktop');
+  assert.equal(e.doc.caretOffset,2,'the IME path alone must not move the caret by itself');
+  assert.equal(e.handleKeyEvent(left),true,'when the IME ignores it, onKeyEvent still moves the caret');
+  assert.equal(e.doc.caretOffset,1);
+});
+check('composing keeps the caret still until the IME finishes',()=>{
+  const e=editor('abc'); e.imeUsable=true; e.moveCaretAnimated(1);
+  e.previewMgr.update('ni',-1,-1,1,1);           // 进入组字态
+  assert.equal(e.previewMgr.isComposing,true);
+  const left=keyEvent(K('KEYCODE_DPAD_LEFT'),'');
+  assert.equal(e.handleKeyPreIme(left),false,'composing arrows are released to the IME');
+  assert.equal(e.doc.caretOffset,1,'caret must not move while composing');
+  e.previewMgr.cancel();
+  assert.equal(e.handleKeyPreIme(left),true,'idle arrows are consumed by the editor again');
+  assert.equal(e.doc.caretOffset,0);
+});
+check('dragging a selection past the edge keeps scrolling and extending it',()=>{
+  const e=editor('a\nb\nc\nd\ne\nf');
+  e.theme.lineHeight=24;
+  e.dragging=true;
+  e.viewHeightVp=120; e.scrollY=0;
+  e.lines=[
+    line(0,'a',0),line(2,'b',28),line(4,'c',56),line(6,'d',84),
+    line(8,'e',112),line(10,'f',140)
+  ];
+  // 手指停在底部边缘：命中点随 scrollY 变化（真实实现里 offsetAt 就是这么算的）
+  e.offsetAt=(x,y)=>{ const idx=Math.min(5,Math.max(0,Math.floor((y+e.scrollY)/28))); return idx*2; };
+  e.padLeftVp=()=>0; e.padTopVp=()=>0;
+  e.selMgr.beginDrag(0); e.selMgr.updateDrag(0);
+  e.selScrollY=118; e.selScrollX=10;
+  assert.equal(e.autoScrollDir(118),1,'底部边缘要自动滚动');
+  assert.equal(e.autoScrollDir(60),0,'中间区域不滚');
+  e.onAutoScrollSelectionTick();
+  assert.ok(e.scrollY>0,'手指停住也要继续滚（定时器驱动，不靠 Move 事件）');
+  const afterFirst=e.selMgr.selection.endOffset;
+  assert.ok(afterFirst>0,'选区要跟着长出去');
+  e.onAutoScrollSelectionTick();
+  assert.ok(e.selMgr.selection.endOffset>=afterFirst,'继续滚时选区只增不减');
+  e.dragging=false;
+  e.stopAutoScrollSelection();
+  const frozen=e.scrollY;
+  e.onAutoScrollSelectionTick();
+  assert.equal(e.scrollY,frozen,'松开后不再滚动');
+});
+
+// ===== 桌面/触摸交互差异与拖选性能 =====
+check('drag drawing is coalesced and selection reporting is rate limited',()=>{
+  const e=editor('abc');
+  let emitted=0;
+  e.onSelectionChange=()=>emitted++;
+  e.requestDraw();
+  const first=e.drawPendingTimer;
+  assert.ok(first!==-1,'first drag frame schedules a draw');
+  e.requestDraw();
+  assert.equal(e.drawPendingTimer,first,'subsequent moves reuse the pending frame (one draw per 16ms)');
+  e.flushDraw();
+  assert.equal(e.drawPendingTimer,-1,'finishing flushes the pending frame immediately');
+  e.selMgr.setSelection(0,2);
+  e.emitSelectionDuringDrag();
+  assert.equal(emitted,1,'drag reports the selection once');
+  e.emitSelectionDuringDrag();
+  assert.equal(emitted,1,'a second move inside 60ms is suppressed (store/toolbar would recompute)');
+  e.lastDragEmitAt=0;
+  e.emitSelectionDuringDrag();
+  assert.equal(emitted,2,'after the window the selection is reported again');
+});
+check('a pointer release never re-runs the touch tap logic (selection must not collapse)',()=>{
+  const e=editor('abc');
+  // 纯触摸单击：要落光标
+  assert.equal(e.shouldHandleTapUp(false,false),true);
+  // 触摸拖动：由拖选逻辑收口，不能再当点按
+  assert.equal(e.shouldHandleTapUp(true,false),false);
+  // 长按选词/双击/三击后：由选词逻辑收口
+  e.longPressed=true;
+  assert.equal(e.shouldHandleTapUp(false,false),false);
+  e.longPressed=false;
+  // 指针设备的 Up 是 onMouse 拖选的合成副本：一律让位，否则选区被收回按下点
+  assert.equal(e.shouldHandleTapUp(false,true),false,'pointer up must not collapse the dragged selection');
+  assert.equal(e.shouldHandleTapUp(true,true),false);
+});
+check('synthetic touch copies stay recognisable for the whole pointer drag',()=>{
+  const e=editor('abc');
+  assert.equal(e.isSyntheticTouch(),false,'no pointer activity yet');
+  e.pointerPressed=true;
+  e.lastPointerPressAt=Date.now();
+  assert.equal(e.isSyntheticTouch(),true,'mouse button is down');
+  // 长时间拖动：按下时间早已超过 300ms，但按钮仍按着
+  e.lastPointerPressAt=Date.now()-5000;
+  assert.equal(e.isSyntheticTouch(),true,'a long drag is still a pointer interaction');
+  e.pointerPressed=false;
+  e.lastPointerReleaseAt=Date.now();
+  assert.equal(e.isSyntheticTouch(),true,'the touch Up that follows the mouse release is still a copy');
+  e.lastPointerReleaseAt=Date.now()-5000;
+  e.lastPointerPressAt=Date.now()-5000;
+  assert.equal(e.isSyntheticTouch(),false,'after the window a real finger touch is touch again');
+});
+check('a caret move onto its own position skips the spring entirely',()=>{
+  const e=editor('abc');
+  e.moveCaretAnimated(1);
+  const at=e.caret;
+  const from=new api.CursorState();
+  from.x=at.x; from.y=at.y; from.height=at.height;
+  e.caretAnimating=false;
+  e.animateCaretMove(from, at);
+  assert.equal(e.caretAnimating,false,'no spring is started for a zero-distance move');
+  assert.equal(e.caret.x,at.x);
+  assert.equal(e.caret.y,at.y);
+});
+check('placeholder colour is parsed once and refreshed when the theme changes',()=>{
+  const e=editor('');
+  e.placeholderColor='#9AA0A6';
+  const first=e.placeholderColorFor();
+  const second=e.placeholderColorFor();
+  assert.equal(first,second,'the parsed colour object is reused across frames');
+  e.placeholderColor='#FF0000';
+  const third=e.placeholderColorFor();
+  assert.notEqual(third,first,'a changed theme colour is re-parsed');
+  assert.equal(third.red,255);
+  assert.equal(third.green,0);
+});
+check('auto-scroll prefers the near edge for a mouse and a fat edge for a finger',()=>{
+  const e=editor('abc');
+  e.viewHeightVp=600; e.theme.lineHeight=24;
+  // 触摸：边缘带 = 1.5 行（36vp）
+  e.pointerPrimary=false;
+  assert.equal(e.autoScrollDir(30),-1);
+  assert.equal(e.autoScrollDir(120),0);
+  assert.equal(e.autoScrollDir(590),1);
+  // 鼠标：边缘带只有 14vp，最后一行上横向拖选不会误触发滚动
+  e.pointerPrimary=true;
+  assert.equal(e.autoScrollDir(120),0,'a pointer inside the last line must not scroll the view');
+  assert.equal(e.autoScrollDir(590),1,'pointer at the very bottom still auto-scrolls');
+  // 鼠标要"停留"才起滚：第一次进入边缘只排 dwell 定时器，不立刻滚
+  // （探针只抽取方法、不含字段初始化，这里显式补上真实组件里的初值）
+  e.dragging=true; e.scrollY=0;
+  e.selScrollTimer=-1; e.selScrollDwellTimer=-1;
+  e.updateAutoScrollSelection(10,592);
+  assert.equal(e.selScrollTimer,-1,'pointer waits for the dwell before scrolling');
+  assert.ok(e.selScrollDwellTimer!==-1,'dwell timer is armed');
+  e.stopAutoScrollSelection();
+  assert.equal(e.selScrollDwellTimer,-1);
+  assert.equal(e.selScrollTimer,-1,'leaving the edge cancels both timers');
 });
 
 (async()=>{

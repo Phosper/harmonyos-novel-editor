@@ -148,3 +148,50 @@ Unicode 数据可用 `python tools/generate-grapheme-data.py` 从已保存数据
 - 项目符号/✓/删除线是 Canvas 自绘（几何图形，不依赖字体），读屏目前读不到"列表/已勾选"语义（无 `accessibilityVirtualNode`）。真机上圆环线宽（0.085em）与对勾比例是否符合 HarmonyOS Symbol 观感，需要截图确认。
 - 本地回归脚本的 `EditorStore` 落库路径没有真正执行：`compile()` 会剥掉 import，`exceedsContentLimit` / `chapterRepo` 在 vm 里缺失，`flushActive` 每次都走进 catch。因此本地用例验证的是内存态历史栈与格式侧车，**不是入库**；落库仍需 `ohosTest` 原生用例。
 - 未在真机验证：符号在真实字体的落位与大小（默认字体缺 `✓`/`○` 会显示豆腐块）、手指点符号的手感、24vp 缩进与删除线粗细的观感、多设备（手机/平板/折叠）下的显示效果。设备侧执行方式同上一节 `tools/Test-FlowText.ps1`。
+
+## 输入法与选择滚动修正（2026-10-25）
+
+**A. 电脑模式：方向键让位给输入法**
+
+- 现象：中文输入时按 ↑/↓，正文光标在跳，输入法候选词不动。
+- 根因：`shouldConsumePreIme`（`interaction/InputArbiter.ets`）对**所有**走位键无条件 `return true`（① onKeyPreIme 阶段先于输入法）；而"组字态"只认 `previewMgr.isComposing`——部分桌面输入法把候选窗画在自己的窗口里、不回传预上屏文本，于是组字态被判定为 false，方向键在 ① 就被编辑器吃掉。
+- 修法：`shouldConsumePreIme` 增加第 4 个参数 `imeFirstArrows`；键鼠形态（`desktopMode || pointerPrimary`）下四个方向键不在 ① 消费，交给输入法移动候选词；输入法不消费时按键会继续走到 ③ `onKeyEvent`，由编辑器移动光标（与字符键/数字键同一套兜底）。Home/End/PgUp/PgDn 仍由编辑器在 ① 截获；Ctrl+方向是词移动，不会被让出。组字态（`composing`）下所有走位键与 Esc 都放行，触摸形态行为不变。
+
+**B. 拖选 / 长按扩选：贴边自动滚动**
+
+- 现象：长按选到屏幕边缘后，手指停住就不再滚，选不到视口外的文字。
+- 修法：`updateAutoScrollSelection` 在拖选/长按扩选时检测是否进入上下边缘带（`max(36vp, 1.5×行高)`），进入后用 60ms 定时器持续滚动；每个 tick 都用**滚动后的坐标**重新命中并扩展选区，所以手指不动也能一直选下去。离开边缘、抬手、Cancel、鼠标收口、组件卸载都会停表。手柄拖拽保留原有 1:1 跟随。
+
+**本轮本地回归**：`flowtext-regression` 132 项（新增 5：组字态让位、键鼠方向键让位、③ 兜底移动光标、贴边滚动持续滚/松手停）；其余套件数字不变。
+
+**未验证**：真机桌面输入法在"未组字态"是否会消费方向键（不消费时靠 ③ 兜底移动光标，这条依赖平台按键派发顺序）；Shift+方向扩选在键鼠形态下同样先经输入法；贴边滚动速度（60ms/步、约 0.8 行）与长按选词边界的交互；候选窗整页翻页手感。
+
+## 交互卡顿与桌面/触摸适配（2026-10-25 第二轮）
+
+**1. 拖选/滚动卡顿**
+- 根因：鼠标（120Hz）与触控板的每个 Move / axis 事件都直接 `drawNow`（清屏 + 整个视口重画），并且每次都 `emitSelection` 写 store（caret / `selectionTick` / 输入法 `changeSelection`），工具栏与列表跟着每秒上百次重算。
+- 修法：新增 `requestDraw()` 把高频重绘合并到 16ms 一帧（手势收口 `flushDraw()` 立即补齐）；拖选期间选区/光标上报按 60ms 限频、滚轮按 32ms 限频，抬手仍 `emitSelection(true)`。
+
+**2. 动画互相叠加**
+- 根因：光标呼吸定时器在光标弹簧 / 惯性滚动 / 平滑滚动期间也会重绘（同一帧画两次）；波形两端 alpha 变化 <0.02 的帧也照画。
+- 修法：`caretAnimating / scrollAnimating / flingTimer` 期间呼吸不重绘；alpha 变化 <0.02 跳过；`scrollToAnimated` 加 `scrollAnimating` 标记。
+- 另外：零距离光标移动（IME 回声 / 选区同步）不再跑整段弹簧，直接落定；占位文字颜色的十六进制解析按字符串缓存，不再每帧 `parseColor`。
+
+**3. 桌面与触摸的差异**
+- 鼠标拖选时轻微上下移动会把视图滚走 → 桌面边缘带由 1.5 行收窄到 **14vp**，并要求在边缘**停留 180ms** 才起滚；触摸保持 36vp 宽边带（手指抖动需要容错）。
+- 桌面此前没有双击选词（触摸有双击/三击，鼠标只有右键）→ 鼠标 Press 单独做连击判定（400ms / 6vp），双击按词选中并弹出操作浮层；触摸的连击计数与鼠标互不干扰。
+
+**本轮本地回归**：`flowtext-regression` 136 项（新增 6：重绘合并/上报限频、鼠标/触摸边缘带、鼠标停留 dwell、零距离弹簧跳过、占位色缓存）。
+
+**未验证**：真机帧率（无 Profiler 数据，无法量化"卡顿"改善幅度）；180ms 停留等待的手感；双击选词与右键选词的叠加行为；触控板 axis 事件的 32ms 上报限频是否影响光标跟随感。
+
+## 指针拖选松手后选区回跳（2026-10-25 第三轮）
+
+- 现象：鼠标（含触控板）拖动选中超出原选区的文字，松手瞬间选区又跳回按下点/最初的词。
+- 根因：PC/2in1 上一次鼠标拖动会**同时**派发 `onMouse`（Move/Release，真正做拖选）与合成的 `onTouch(Up)`；而触摸 Up 分支的 `wasDragging` 只由**触摸** Move 置位，恒为 false，于是又走了一遍"点按落光标"→ `selMgr.collapse(pressOffset)`，把刚拖出来的选区收回按下点。
+- 修法：
+  - `handleTouch` 在识别出"鼠标操作的合成副本"时整体让位（`isSyntheticTouch()`：鼠标按下进行中，或按下/抬起在 300ms 内），按下/拖动/抬起/长按/选词全部由 `onMouse` 负责；
+  - 触摸 Up 的点按分支再加一道 `shouldHandleTapUp(wasDragging, pointerUp)` 守卫（纯触摸才落光标，且保留弹簧动画）；
+  - `onMouse Press` 复用 `placeCaretImmediately()`（指针点击立即落位、不跑弹簧），并清掉可能在触摸 Down 阶段残留的长按定时器与词选区锚点。
+- 回归：`flowtext-regression` 138 项（新增 3：合成副本识别跨长按拖动、Up 点按守卫、指针点击立即落位原有断言保留）。
+- 未验证：真机上"触摸屏 + 鼠标"混用（鼠标悬停后立刻用手点）是否会在 300ms 窗口内被误判为合成副本。

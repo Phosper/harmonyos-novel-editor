@@ -440,6 +440,30 @@ export struct CanvasTextEditor {
   private documentGeneration: number = 0;
   /** 本次插入开始时是否处于组字态（endInsert 用它决定是否提前对齐 lastText） */
   private insertWasComposing: boolean = false;
+  /** 拖选/长按扩选的贴边自动滚动：定时器 + 最后一次手指坐标（手指停在边缘不动也要继续滚） */
+  private selScrollTimer: number = -1;
+  private selScrollDwellTimer: number = -1;
+  private selScrollX: number = 0;
+  private selScrollY: number = 0;
+  /** 合并重绘的待执行标记（-1 = 没有排队） */
+  private drawPendingTimer: number = -1;
+  /** 平滑滚动动画进行中（呼吸光标要避让，避免一帧画两次） */
+  private scrollAnimating: boolean = false;
+  /** 占位文字颜色的解析缓存：drawNow 每帧调用，不能每帧重新解析 #RRGGBB */
+  private placeholderColorKey: string = '';
+  private placeholderColorParsed: common2D.Color = { alpha: 255, red: 154, green: 160, blue: 166 };
+  /** 上一次为呼吸光标真正重绘时的 alpha（变化太小就不重绘） */
+  private breathDrawnAlpha: number = 1;
+  /** 拖选期间选区上报的限频时间戳 */
+  private lastDragEmitAt: number = 0;
+  /** 桌面双击选词：鼠标 Press 不走触摸的连击判定，这里单独记时间与位置 */
+  /** 鼠标按下进行中（松手前一直为 true）：据此识别整个拖动期间的合成触摸事件 */
+  private pointerPressed: boolean = false;
+  private lastPointerPressAt: number = 0;
+  private lastPointerReleaseAt: number = 0;
+  private lastMouseClickAt: number = 0;
+  private lastMouseClickX: number = 0;
+  private lastMouseClickY: number = 0;
   /**
    * 最近一次"点符号切换完成态"的目标与时间。
    *
@@ -861,6 +885,8 @@ export struct CanvasTextEditor {
   aboutToDisappear(): void {
     this.documentGeneration++;
     this.cancelLongPress();
+    // 卸载时必须停掉贴边自动滚动的定时器，否则它会继续改 scrollY/drawNow（画布已没了）
+    this.stopAutoScrollSelection();
     if (this.controller !== null) { this.controller.unbind(this); }
     this.stopBlink();
     this.stopFling();
@@ -950,11 +976,21 @@ export struct CanvasTextEditor {
       // 输入形态校正 + 指针点击判定：真的收到鼠标事件才把当前点击视为指针操作
       deviceProfile.notePointerActivity();
       this.lastPointerAtMs = Date.now();
+      if (event.action === MouseAction.Press) {
+        this.pointerPressed = true;
+        this.lastPointerPressAt = Date.now();
+      } else if (event.action === MouseAction.Release) {
+        this.pointerPressed = false;
+        this.lastPointerReleaseAt = Date.now();
+      }
       if (event.button === MouseButton.Left && event.action === MouseAction.Press) {
         // 按下：锚点固定，不做弹簧动画（否则拖动时光标会先飞向旧目标）
         this.stopCaretAnimation();
         this.stopScrollAnimation();
         this.stopFling();
+        this.cancelLongPress();
+        this.wordSelStart = -1;
+        this.wordSelEnd = -1;
         this.hideSelectionMenu();
         this.requestEditorFocus();
         // 项目符号/待办圆点优先命中：点 ○ 直接切换完成态，而不是把光标挪到段首
@@ -962,8 +998,23 @@ export struct CanvasTextEditor {
           this.mouseSelecting = false;
           return;
         }
+        // 桌面双击选词：鼠标 Press 不走触摸的连击判定（那是 Up 分支的逻辑），
+        // 单独记时间与位置，否则 PC 上双击只能落光标、选不了词。
+        const clickNow: number = Date.now();
+        const doubleClick: boolean = (clickNow - this.lastMouseClickAt) <= this.DOUBLE_TAP_MS &&
+          Math.abs(event.x - this.lastMouseClickX) <= 6 && Math.abs(event.y - this.lastMouseClickY) <= 6;
+        this.lastMouseClickAt = clickNow;
+        this.lastMouseClickX = event.x;
+        this.lastMouseClickY = event.y;
         const offset: number = this.offsetAt(event.x, event.y);
         const handle: number = this.handleAt(event.x, event.y);
+        if (doubleClick && handle === 0) {
+          // 双击：按词选中并直接弹出操作浮层（与右键选词同一个收口）
+          this.mouseSelecting = false;
+          this.selectWordAt(event.x, event.y, 'doubleClick');
+          this.flushDraw();
+          return;
+        }
         if (handle !== 0) {
           // PC 也能拖手柄：身份固定（1=anchor / 2=head）
           // 拖手柄必须 1:1 跟手：先停掉光标弹簧，拖动期间不做动画
@@ -973,19 +1024,14 @@ export struct CanvasTextEditor {
           this.drawNow();
           return;
         }
+        // 指针点击：落光标立即生效（触屏点按才用弹簧），并挂上拖选锚点
         this.selMgr.beginDrag(offset);
-        this.doc.moveCaret(offset);
-        this.ensureCaretLayout();
-        this.caret = HitTester.caretPositionFor(offset, this.lines, this.padLeftVp(), this.padTopVp(),
-          this.theme.fontSize, CaretAffinity.DOWNSTREAM);
+        this.placeCaretImmediately(offset);
         this.mouseSelecting = true;
-        this.caret.visible = true;
-        this.caret.alpha = 1;
-        this.twDirty = true;
-        this.followTypewriter();
-        this.drawNow();
       } else if (event.action === MouseAction.Move && this.mouseSelecting) {
         // 鼠标拖选与触摸共用同一套 anchor/head；caret 必须跟随 head
+        // 拖到上下边缘同样自动滚动（鼠标停在边缘不动时也能继续选视口外的文字）
+        this.updateAutoScrollSelection(event.x, event.y);
         const off: number = this.offsetAt(event.x, event.y);
         if (this.selMgr.draggingHandle !== 0) {
           this.selMgr.updateHandleDrag(off);
@@ -993,9 +1039,9 @@ export struct CanvasTextEditor {
           this.selMgr.updateDrag(off);
         }
         this.syncSelectionToCaret();
-        this.emitSelection(false);
+        this.emitSelectionDuringDrag();
         this.hideSelectionMenu();
-        this.drawNow();
+        this.requestDraw();
       } else if (event.action === MouseAction.Release && this.mouseSelecting) {
         this.finishMouseSelection();
       }
@@ -1040,8 +1086,14 @@ export struct CanvasTextEditor {
         this.scrollY += delta;
         this.ensureVisibleLayout();
         this.clampScroll();
-        this.drawNow();
-        this.reportCursor();
+        // 触控板一次滑动会连发几十个 axis 事件：合并到一帧画一次，
+        // 光标位置也按 32ms 限频上报（否则滚动时每秒数十次 store 写入）
+        this.requestDraw();
+        const now: number = Date.now();
+        if (now - this.lastDragEmitAt >= 32) {
+          this.lastDragEmitAt = now;
+          this.reportCursor();
+        }
       }
     })
     // 方向键必须走 onKeyPreIme：官方按键三次派发顺序为
@@ -1632,7 +1684,10 @@ export struct CanvasTextEditor {
     if (this.menuVisible && this.handleMenuKey(cmd)) {
       return true;
     }
-    if (!shouldConsumePreIme(cmd, this.imeUsable)) {
+    // 组字态要把方向键 / Esc 留给输入法（移动候选词、取消组字）；
+    // 键鼠形态下方向键即使不在组字态也优先给输入法（候选窗可能不回报预上屏）
+    const imeFirstArrows: boolean = this.desktopMode || this.pointerPrimary;
+    if (!shouldConsumePreIme(cmd, this.imeUsable, this.previewMgr.isComposing, imeFirstArrows)) {
       return false;
     }
     const handled: boolean = this.dispatchCommand(cmd);
@@ -2394,6 +2449,13 @@ export struct CanvasTextEditor {
     this.caret.y = from.y;
     this.caret.height = from.height;
     const distVp: number = this.caretDistanceVp(from, to);
+    if (distVp < 0.01 && Math.abs(to.height - from.height) < 0.01) {
+      // 目标与当前位置重合（IME 回声、选区同步等）：没必要跑一整段弹簧，
+      // 直接落定，省掉 ~10 帧整屏重绘
+      this.stopCaretAnimation(to);
+      this.drawNow();
+      return;
+    }
     const duration: number = distVp < 70 ? 160 : (distVp < 180 ? 180 : 200);
     this.diag('caretSpring from=(' + from.x.toFixed(1) + ',' + from.y.toFixed(1) + ')' +
       ' to=(' + to.x.toFixed(1) + ',' + to.y.toFixed(1) + ') dist=' + distVp.toFixed(1) +
@@ -2490,6 +2552,40 @@ export struct CanvasTextEditor {
   }
 
   /** 全量重绘 */
+  /**
+   * 合并重绘：拖选 / 鼠标移动 / 贴边滚动这类高频路径一帧最多画一次。
+   *
+   * 直接用 drawNow 时，鼠标以 120Hz 派发 Move 就会把"清屏 + 整个视口重画"压满，
+   * 表现为选区拖动/滚动时掉帧。这里合并到 16ms，最多延迟一帧，手感无差别。
+   */
+  private requestDraw(): void {
+    if (this.drawPendingTimer !== -1) {
+      return;
+    }
+    this.drawPendingTimer = setTimeout(() => {
+      this.drawPendingTimer = -1;
+      this.drawNow();
+    }, 16);
+  }
+
+  /** 占位文字颜色（解析结果按字符串缓存，热路径只做一次引用比较） */
+  private placeholderColorFor(): common2D.Color {
+    if (this.placeholderColorKey !== this.placeholderColor) {
+      this.placeholderColorKey = this.placeholderColor;
+      this.placeholderColorParsed = parseColor(this.placeholderColor);
+    }
+    return this.placeholderColorParsed;
+  }
+
+  /** 手势收口时立刻补画，避免最后一帧停在旧位置 */
+  private flushDraw(): void {
+    if (this.drawPendingTimer !== -1) {
+      clearTimeout(this.drawPendingTimer);
+      this.drawPendingTimer = -1;
+    }
+    this.drawNow();
+  }
+
   private drawNow(): void {
     if (this.renderer === null) {
       this.diag('drawNow renderer=null (skip)');
@@ -2546,7 +2642,7 @@ export struct CanvasTextEditor {
     renderer.draw(this.ctx, this.lines, this.caret,
       preview === null ? this.selMgr.selection : null, preview, viewport, this.anims, this.handlePositions(),
       dimEnabled, focusFirst, focusLast, typewriterOn, caretLine,
-      (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', parseColor(this.placeholderColor));
+      (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', this.placeholderColorFor());
   }
 
   /**
@@ -2593,6 +2689,22 @@ export struct CanvasTextEditor {
   }
 
   /** 上抛选区变化（供工具栏态；无外部监听则忽略） */
+  /**
+   * 拖选期间的选区上报限频（60ms）。
+   *
+   * emitSelection 会写 store（caret / selectionTick / 输入法 changeSelection），
+   * 每帧调用会让工具栏与列表跟着 120Hz 重算，是拖选卡顿的主要来源。
+   * 收口（抬手/松手）仍走 emitSelection(true)，保证最终状态一定同步。
+   */
+  private emitSelectionDuringDrag(): void {
+    const now: number = Date.now();
+    if (now - this.lastDragEmitAt < 60) {
+      return;
+    }
+    this.lastDragEmitAt = now;
+    this.emitSelection(false);
+  }
+
   private emitSelection(force: boolean = false): void {
     const active: SelectionInfo = this.selMgr.selection;
     if (active.isEmpty()) { this.doc.moveCaret(active.startOffset); }
@@ -2724,6 +2836,17 @@ export struct CanvasTextEditor {
     } else {
       return;
     }
+    // 指针设备（鼠标/触控板）的按下/拖动/抬起/长按/选词全部由 onMouse 处理；
+    // 框架同时合成的这批触摸事件只是同一次输入的副本，继续走触摸状态机会与鼠标拖选
+    // 互相覆盖（松手后选区被 collapse 回按下点）。
+    if (this.isSyntheticTouch()) {
+      if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.cancelLongPress();
+        this.stopAutoScrollSelection();
+        this.flushDraw();
+      }
+      return;
+    }
     if (event.type === TouchType.Down) {
       this.cancelLongPress();
       this.stopCaretAnimation();
@@ -2786,15 +2909,19 @@ export struct CanvasTextEditor {
           }
         }
       }
+      if (this.dragging && !this.scrollMode && this.selMgr.draggingHandle === 0) {
+        // 拖选 / 长按扩选：贴边时开定时滚动（手指停住也继续滚）
+        this.updateAutoScrollSelection(x, y);
+      }
       if (this.dragging && this.selMgr.draggingHandle !== 0) {
         // 边缘自动滚动：先滚，再用滚动后的坐标命中，避免选区落后一帧
         this.autoScrollForHandleDrag(y);
         const offH: number = this.offsetAt(x, y);
         this.selMgr.updateHandleDrag(offH);
         this.syncSelectionToCaret();
-        this.emitSelection(false);
+        this.emitSelectionDuringDrag();
         this.hideSelectionMenu();
-        this.drawNow();
+        this.requestDraw();
       } else if (this.dragging && this.scrollMode) {
         this.scrollY = this.pressScrollY - dy;
         this.clampScroll();
@@ -2811,13 +2938,14 @@ export struct CanvasTextEditor {
         if (this.onScrollState !== null) {
           this.onScrollState(dy < 0 ? 1 : -1);
         }
-        this.drawNow();
+        this.requestDraw();
       } else if (this.dragging) {
         if (this.longPressed && this.wordSelStart >= 0) {
           this.extendWordSelection(x, y);
         } else {
           this.selMgr.updateDrag(this.offsetAt(x, y));
         }
+        this.updateAutoScrollSelection(x, y);
         this.syncSelectionToCaret();
         this.emitSelection(false);
         this.hideSelectionMenu();
@@ -2828,8 +2956,10 @@ export struct CanvasTextEditor {
       const wasDragging: boolean = this.dragging;
       // 兜底：部分场景 Down 事件被系统消费，Up 时确保已 attach 输入法
       this.cancelLongPress();
+      this.stopAutoScrollSelection();
       this.requestEditorFocus();
-      if (!wasDragging && !this.longPressed) {
+      const pointerUp: boolean = this.isSyntheticTouch();
+      if (this.shouldHandleTapUp(wasDragging, pointerUp)) {
         // 用 Down（手指按下）坐标定位，而非 Up（抬起）坐标：真机上手指抬起位置常比按下位置偏左上。
         const now: number = Date.now();
         const tapDx: number = this.pressX - this.lastTapX;
@@ -2854,22 +2984,13 @@ export struct CanvasTextEditor {
           this.selectWordAt(this.pressX, this.pressY, 'doubleTap');
           this.longPressed = true;
         } else {
-          // 项目符号 / 待办圆点优先命中：单指点 ○ = 切换完成态。
-          // 指针设备（PC/2in1）上这一步由 onMouse(Press) 负责，触摸事件只是同一次点击的
-          // 合成副本，这里必须让开，否则一次单击会被切成两次（5→6→5）。
-          const pointerInput: boolean = this.isPointerInput(event);
-          if (pointerInput || !this.toggleTodoAtMarker(this.pressX, this.pressY)) {
+          // 单指点按（这里只剩纯触摸：指针设备的 Up 已在上面整体让位给 onMouse）：
+          // 命中待办圆点则切换完成态，否则落光标并保留平滑移动动画。
+          if (!this.toggleTodoAtMarker(this.pressX, this.pressY)) {
             this.selMgr.collapse(this.pressOffset);
             this.emitSelection(false);
-            this.diag('UP tap offset=' + this.pressOffset.toString() + ' lines=' + this.lines.length.toString() +
-              ' pointer=' + pointerInput.toString());
-            if (pointerInput) {
-              // 鼠标/触控板点击：立即落位，不播放光标移动动画
-              this.placeCaretImmediately(this.pressOffset);
-            } else {
-              // 手指点按：保留平滑移动动画
-              this.moveCaretAnimated(this.pressOffset);
-            }
+            this.diag('UP tap offset=' + this.pressOffset.toString() + ' lines=' + this.lines.length.toString());
+            this.moveCaretAnimated(this.pressOffset);
           } else {
             // 符号已消费这次点按：清掉连击计数，避免下一次点符号被当成双击选词
             this.tapStreak = 0;
@@ -2904,6 +3025,7 @@ export struct CanvasTextEditor {
       }
       this.dragging = false;
       this.scrollMode = false;
+      this.flushDraw();
       if (!wasScroll && this.keyboardSuppressed) {
         this.keyboardSuppressed = false;
         this.ime.showKeyboard();
@@ -2911,6 +3033,7 @@ export struct CanvasTextEditor {
     } else if (event.type === TouchType.Cancel) {
       // 系统抢走手势（来电/返回手势/多指）时必须复位，否则后续 Move 会继续拖一个已不存在的手势
       this.cancelLongPress();
+      this.stopAutoScrollSelection();
       this.stopFling();
       this.stopScrollAnimation();
       this.selMgr.endHandleDrag();
@@ -2926,7 +3049,7 @@ export struct CanvasTextEditor {
       if (this.onScrollState !== null) {
         this.onScrollState(0);
       }
-      this.drawNow();
+      this.flushDraw();
     }
   }
 
@@ -2934,6 +3057,34 @@ export struct CanvasTextEditor {
    * 是否为指针设备（鼠标/触控板）产生的触摸事件。
    * 指针点击光标应"立即落位"，不播放弹簧移动动画；手指点按保留动画。
    */
+  /**
+   * 这次触摸事件是不是"鼠标操作的合成副本"。
+   *
+   * 只认**刚刚发生过鼠标按下**（300ms 内），不用 800ms 的 isPointerInput：
+   * 那个窗口也包含悬停，触屏用户刚移过鼠标就用手点一下会被误判成指针事件。
+   */
+  private isSyntheticTouch(): boolean {
+    if (this.pointerPressed) {
+      return true;
+    }
+    const now: number = Date.now();
+    return (this.lastPointerPressAt > 0 && (now - this.lastPointerPressAt) < 300) ||
+      (this.lastPointerReleaseAt > 0 && (now - this.lastPointerReleaseAt) < 300);
+  }
+
+  /**
+   * 触摸 Up 是否还要执行"点按"逻辑。
+   *
+   * 指针设备（鼠标/触控板）上一次拖动会同时派发 onMouse 与合成的 onTouch(Up)：
+   * - 拖选由 onMouse 的 Move/Release 完成，`dragging` 只由触摸 Move 置位，所以这里是 false；
+   * - 若再执行点按分支，会把刚拖出来的选区 collapse 回按下点
+   *   —— 用户看到的就是"松手后选区跳回初始位置"。
+   * 因此指针输入的 Up 一律让位给 onMouse（光标、记号切换、双击选词都在那边）。
+   */
+  private shouldHandleTapUp(wasDragging: boolean, pointerInput: boolean): boolean {
+    return !wasDragging && !this.longPressed && !pointerInput;
+  }
+
   private isPointerInput(event: TouchEvent): boolean {
     // 鼠标/触控板在 ArkUI 里可能同时合成 onTouch 与 onMouse；
     // 用"最近 800ms 内收到过鼠标事件"判定指针点击，避免依赖各版本不一定导出的 sourceTool 枚举。
@@ -2941,22 +3092,7 @@ export struct CanvasTextEditor {
     return this.lastPointerAtMs > 0 && (Date.now() - this.lastPointerAtMs) < 800;
   }
 
-  /** 无动画落光标（鼠标点击/触控板点击）：直接定位 + 上报 + 滚动跟随，不启动弹簧 */
-  private placeCaretImmediately(offset: number): void {
-    this.stopCaretAnimation();
-    this.selMgr.collapse(offset);
-    this.doc.moveCaret(offset);
-    this.twDirty = true;
-    this.ensureCaretLayout();
-    this.caret = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.DOWNSTREAM);
-    this.caret.visible = true;
-    this.caret.alpha = 1;
-    this.emitSelection(false);
-    this.followTypewriter();
-    this.drawNow();
-    this.reportCursor();
-  }
+
 
   /** 长按选词后继续拖动：选区 = 词区间 ∪ [手指, 词]，方向自然翻转，anchor 不重置 */
   private extendWordSelection(x: number, y: number): void {
@@ -2971,6 +3107,100 @@ export struct CanvasTextEditor {
     } else {
       this.selMgr.setSelection(this.wordSelStart, this.wordSelEnd);
     }
+  }
+
+  /**
+   * 拖选 / 长按扩选的贴边自动滚动。
+   *
+   * 只按 Move 事件滚是不够的：用户把手指停在边缘不动时就不再派发 Move，
+   * 选区永远停在可视区边界（表现为"选不到屏幕外的文字"）。这里用定时器
+   * 持续滚动，每 tick 用**滚动后的坐标**重新命中，选区自然跟着长出去。
+   */
+  private updateAutoScrollSelection(x: number, y: number): void {
+    this.selScrollX = x;
+    this.selScrollY = y;
+    if (this.autoScrollDir(y) === 0) {
+      this.stopAutoScrollSelection();
+      return;
+    }
+    if (this.selScrollTimer !== -1 || this.selScrollDwellTimer !== -1) {
+      return;
+    }
+    if (this.pointerPrimary) {
+      // 鼠标：先在边缘停留 180ms 再开始滚。否则"在最后一行里横向拖选"时
+      // 手一抖进入边缘带就会把视图滚走，看起来像界面自己在动。
+      this.selScrollDwellTimer = setTimeout(() => {
+        this.selScrollDwellTimer = -1;
+        if (this.dragging && this.autoScrollDir(this.selScrollY) !== 0) {
+          this.selScrollTimer = setTimeout(() => this.onAutoScrollSelectionTick(), 16);
+        }
+      }, 180);
+      return;
+    }
+    this.selScrollTimer = setTimeout(() => this.onAutoScrollSelectionTick(), 60);
+  }
+
+  private stopAutoScrollSelection(): void {
+    if (this.selScrollDwellTimer !== -1) {
+      clearTimeout(this.selScrollDwellTimer);
+      this.selScrollDwellTimer = -1;
+    }
+    if (this.selScrollTimer !== -1) {
+      clearTimeout(this.selScrollTimer);
+      this.selScrollTimer = -1;
+    }
+  }
+
+  /** -1 = 顶部边缘 / 1 = 底部边缘 / 0 = 不需要滚动 */
+  private autoScrollDir(y: number): number {
+    if (this.viewHeightVp <= 0) {
+      return 0;
+    }
+    // 边缘带随行高放大；lineHeight 尚未初始化时退回 24vp，避免算出 NaN 导致永不滚动。
+    // 鼠标（指针优先）只用很窄的边距：鼠标能精确停在边角，宽边距反而会误触发滚动。
+    const lineHeight: number = this.theme.lineHeight > 0 ? this.theme.lineHeight : 24;
+    const edge: number = this.pointerPrimary ? 14 : Math.max(36, lineHeight * 1.5);
+    if (y < edge) {
+      return -1;
+    }
+    if (y > this.viewHeightVp - edge) {
+      return 1;
+    }
+    return 0;
+  }
+
+  private onAutoScrollSelectionTick(): void {
+    this.selScrollTimer = -1;
+    if (!this.dragging) {
+      return;
+    }
+    const dir: number = this.autoScrollDir(this.selScrollY);
+    if (dir === 0) {
+      return;
+    }
+    const lineHeight: number = this.theme.lineHeight > 0 ? this.theme.lineHeight : 24;
+    const before: number = this.scrollY;
+    this.scrollY += dir * Math.max(14, lineHeight * 0.8);
+    this.clampScroll();
+    if (Math.abs(this.scrollY - before) < 0.01) {
+      // 已经到文档头/尾：停掉，避免空转
+      return;
+    }
+    this.ensureLayoutThroughY(this.scrollY + this.viewHeightVp);
+    this.ensureVisibleLayout();
+    const offset: number = this.offsetAt(this.selScrollX, this.selScrollY);
+    if (this.longPressed && this.wordSelStart >= 0) {
+      this.extendWordSelection(this.selScrollX, this.selScrollY);
+    } else if (this.selMgr.draggingHandle !== 0) {
+      this.selMgr.updateHandleDrag(offset);
+    } else {
+      this.selMgr.updateDrag(offset);
+    }
+    this.syncSelectionToCaret();
+    this.emitSelectionDuringDrag();
+    this.hideSelectionMenu();
+    this.requestDraw();
+    this.selScrollTimer = setTimeout(() => this.onAutoScrollSelectionTick(), 16);
   }
 
   /** 手柄拖到视口上下边缘时按比例自动滚动；滚动后再由调用方重新命中 */
@@ -2992,11 +3222,31 @@ export struct CanvasTextEditor {
     }
   }
 
+  /**
+   * 无动画落光标：指针点击（鼠标/触控板）立即定位 + 上报，不启动光标弹簧。
+   * 触屏点按仍走 moveCaretAnimated，两者的差异只在这里。
+   */
+  private placeCaretImmediately(offset: number): void {
+    this.stopCaretAnimation();
+    this.doc.moveCaret(offset);
+    this.twDirty = true;
+    this.ensureCaretLayout();
+    this.caret = HitTester.caretPositionFor(offset, this.lines, this.padLeftVp(), this.padTopVp(),
+      this.theme.fontSize, CaretAffinity.DOWNSTREAM);
+    this.caret.visible = true;
+    this.caret.alpha = 1;
+    this.emitSelection(false);
+    this.followTypewriter();
+    this.drawNow();
+    this.reportCursor();
+  }
+
   /** 鼠标拖选收口（组件内 Release 与拖出组件后的 onHover(false) 共用） */
   private finishMouseSelection(): void {
     if (!this.mouseSelecting) {
       return;
     }
+    this.stopAutoScrollSelection();
     this.mouseSelecting = false;
     this.selMgr.endHandleDrag();
     this.selMgr.endDrag();
@@ -3007,7 +3257,7 @@ export struct CanvasTextEditor {
     } else {
       this.hideSelectionMenu();
     }
-    this.drawNow();
+    this.flushDraw();
   }
 
   /** 视口坐标 → 字符偏移（考虑滚动；结果已吸附到字符边界） */
@@ -3431,6 +3681,7 @@ export struct CanvasTextEditor {
 
   /** 停止滚动跟随动画 */
   private stopScrollAnimation(): void {
+    this.scrollAnimating = false;
     if (this.scrollAnimator !== null) {
       this.scrollAnimator.stop();
     }
@@ -3451,6 +3702,7 @@ export struct CanvasTextEditor {
     this.stopFling();
     this.stopScrollAnimation();
     const from: number = this.scrollY;
+    this.scrollAnimating = true;
     this.scrollAnimator.animate(160, 'ease-out', (p: number) => {
       const t: number = Math.min(1, Math.max(0, p));
       const eased: number = 1 - Math.pow(1 - t, 3);
@@ -3458,7 +3710,8 @@ export struct CanvasTextEditor {
       this.ensureVisibleLayout();
       this.drawNow();
     }, () => {
-        this.scrollY = target;
+      this.scrollAnimating = false;
+      this.scrollY = target;
       this.clampScroll();
       this.ensureVisibleLayout();
       this.drawNow();
@@ -3477,7 +3730,9 @@ export struct CanvasTextEditor {
     this.caret.alpha = 1;
     this.breathPhase = 0;
     this.blinkTimer = setInterval(() => {
-      if (!this.focused || this.caretAnimating) {
+      // 光标弹簧 / 惯性滚动 / 平滑滚动期间不额外画：那些路径每帧本来就会重绘，
+      // 呼吸再插一脚等于同一帧画两次（掉帧的主要来源之一）。
+      if (!this.focused || this.caretAnimating || this.scrollAnimating || this.flingTimer !== -1) {
         return;
       }
       this.breathPhase += this.theme.caretBreathStepMs / this.theme.caretBreathPeriodMs;
@@ -3486,7 +3741,13 @@ export struct CanvasTextEditor {
       }
       // 余弦：0 → 1 → 0 的平滑波形，映射到 [0.5, 1]
       const wave: number = 0.5 - 0.5 * Math.cos(this.breathPhase * Math.PI * 2);
-      this.caret.alpha = 0.5 + 0.5 * wave;
+      const nextAlpha: number = 0.5 + 0.5 * wave;
+      // 波形在两端变化很慢，alpha 变化小于 0.02 时肉眼无差别，跳过这次整屏重绘
+      if (Math.abs(nextAlpha - this.breathDrawnAlpha) < 0.02) {
+        return;
+      }
+      this.breathDrawnAlpha = nextAlpha;
+      this.caret.alpha = nextAlpha;
       this.drawNow();
     }, this.theme.caretBreathStepMs);
   }

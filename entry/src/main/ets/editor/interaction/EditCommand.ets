@@ -109,6 +109,15 @@ export function isCaretCommand(kind: EditCommandKind): boolean {
     kind === EditCommandKind.PAGE_UP || kind === EditCommandKind.PAGE_DOWN;
 }
 
+/**
+ * 四向箭头（不含 Ctrl+←/→ 的词移动，那类由修饰键分支先处理）。
+ * 电脑模式下这些键要优先让给输入法移动候选词，见 shouldConsumePreIme。
+ */
+export function isArrowCommand(kind: EditCommandKind): boolean {
+  return kind === EditCommandKind.MOVE_LEFT || kind === EditCommandKind.MOVE_RIGHT ||
+    kind === EditCommandKind.MOVE_UP || kind === EditCommandKind.MOVE_DOWN;
+}
+
 /** 会改写正文/格式或文档状态的命令（IME 不可用时需要在键盘层兜底） */
 export function isEditingCommand(kind: EditCommandKind): boolean {
   return kind === EditCommandKind.INSERT_TEXT ||

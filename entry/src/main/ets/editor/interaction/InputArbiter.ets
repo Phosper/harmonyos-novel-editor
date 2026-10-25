@@ -6,14 +6,17 @@
  *   Ctrl 组合也会被系统默认行为吞掉（PC 端"方向键/Ctrl+C 没反应"的根因）。
  * - 打印字符只能在**输入法不可用**（attach 失败）时于 ① 兜底消费；可用时放行给输入法组字。
  */
-import { EditCommand, EditCommandKind, isCaretCommand, isEditingCommand } from './EditCommand';
+import { EditCommand, EditCommandKind, isArrowCommand, isCaretCommand, isEditingCommand } from './EditCommand';
 
 /**
  * @param cmd        已解析命令
  * @param imeUsable  输入法 attach 是否成功（true 时字符键必须放行给 IME）
+ * @param composing  是否处于输入法组字态（有预上屏文本）
+ * @param imeFirstArrows 键鼠形态（电脑模式/指针优先）：方向键优先交给输入法移动候选词
  * @return true 表示 onKeyPreIme 应消费该键（返回 true 并 stopPropagation）
  */
-export function shouldConsumePreIme(cmd: EditCommand, imeUsable: boolean): boolean {
+export function shouldConsumePreIme(cmd: EditCommand, imeUsable: boolean,
+  composing: boolean = false, imeFirstArrows: boolean = false): boolean {
   if (cmd.kind === EditCommandKind.NONE) {
     return false;
   }
@@ -21,13 +24,24 @@ export function shouldConsumePreIme(cmd: EditCommand, imeUsable: boolean): boole
   if (cmd.mods.primary || cmd.mods.alt) {
     return true;
   }
-  // 走位键：必须在输入法之前截获，否则光标不动
+  // 走位键：空闲态必须在输入法之前截获，否则光标不动。
+  // 但**组字态下方向键属于输入法的"移动候选词"**，抢占会让候选框纹丝不动、
+  // 光标反而在正文里跳（PC 中文输入实测）。组字期间一律放行，由 IME 处理；
+  // IME 不消费时按键会继续到 ③ onKeyEvent，光标移动仍有兜底。
   if (isCaretCommand(cmd.kind)) {
-    return true;
+    // 电脑/键鼠形态下，方向键属于输入法的"移动候选词"：
+    // 即使应用侧还没收到预上屏（部分桌面输入法把候选窗画在自己的窗口里、
+    // 不回传 preview text），也不能在 ① 抢走，否则按方向键只会移动光标。
+    // 输入法没消费时按键会继续到 ③ onKeyEvent，光标移动仍有兜底。
+    if (isArrowCommand(cmd.kind)) {
+      return !(composing || imeFirstArrows);
+    }
+    // Home/End/PgUp/PgDn：输入法不用，空闲态仍由编辑器截获
+    return !composing;
   }
-  // Esc：关闭编辑器浮层（无浮层时 host 返回 false，继续冒泡给系统）
+  // Esc：组字态是"取消这次输入"，同样必须留给输入法；空闲态关编辑器浮层
   if (cmd.kind === EditCommandKind.DISMISS) {
-    return true;
+    return !composing;
   }
   // F11 沉浸开关：属于界面命令，必须由编辑器消费，不能交给输入法
   if (cmd.kind === EditCommandKind.TOGGLE_IMMERSIVE) {
