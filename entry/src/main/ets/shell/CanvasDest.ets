@@ -23,13 +23,13 @@ import { CanvasPane } from './CanvasPane'
 import { CanvasBoardScope, CanvasCardKind } from '../model/CanvasTypes'
 import { CanvasSpec } from '../constants/CanvasSpec'
 import type { CanvasBoardItem, CanvasCardItem } from '../model/CanvasStoreModels'
+import { CanvasBoardLibrary } from './CanvasBoardLibrary'
+import { CardLibrary } from './CardLibrary'
 
 interface CanvasPoint {
   x: number
   y: number
 }
-import { CanvasBoardLibrary } from './CanvasBoardLibrary'
-import { CardLibrary } from './CardLibrary'
 
 @ComponentV2
 export struct CanvasDest {

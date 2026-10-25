@@ -1102,6 +1102,32 @@ function exportHarness(options = {}) {
     assert.doesNotMatch(sidebar, /showRowTrash|hoveredProjectId/,
       'delete entry must not add a hover icon');
   });
+  await check('launcher and start icons are the current logo (PNG, right sizes, alpha kept)', async () => {
+    // 只读 PNG 头：签名 + IHDR（宽/高/颜色类型），不引三方图像库
+    const readPng = (file) => {
+      const buf = fs.readFileSync(path.resolve(__dirname, '..', file));
+      assert.equal(buf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', file + ' must be a PNG');
+      return {width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), colorType: buf[25]};
+    };
+    for (const file of ['AppScope/resources/base/media/foreground.png',
+      'entry/src/main/resources/base/media/foreground.png']) {
+      const png = readPng(file);
+      assert.equal(png.width, 1024, file + ' width');
+      assert.equal(png.height, 1024, file + ' height');
+      assert.equal(png.colorType, 6, file + ' must keep alpha (RGBA) for the layered-icon mask');
+    }
+    for (const file of ['AppScope/resources/base/media/background.png',
+      'entry/src/main/resources/base/media/background.png']) {
+      const png = readPng(file);
+      assert.equal(png.width, 1024, file + ' width');
+      assert.equal(png.height, 1024, file + ' height');
+    }
+    const start = readPng('entry/src/main/resources/base/media/startIcon.png');
+    assert.equal(start.width, 144, 'startWindowIcon stays 144x144 (same as before)');
+    assert.equal(start.height, 144);
+    // 侧栏品牌头用的就是这张图，别再引回旧资源名
+    assert.match(read('shell/ProjectSidebar.ets'), /app\.media\.startIcon/);
+  });
   console.log(`Shell regression: ${count} checks passed`);
   if (failures > 0) {
     console.error(`Shell regression: ${failures} checks failed`);

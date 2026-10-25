@@ -12,7 +12,7 @@
 // 所有增量都是「基准 + 累计」：base + offset、baseZoom * scale，绝不逐帧累加 delta。
 import {
   CanvasCardData, CanvasEvidenceData, CanvasPlacementData, CanvasLinkData, CanvasCardKind,
-  CanvasOutlineRow, canvasChildren, canvasFlatten, canvasFindPlacement, canvasIsAncestor
+  CanvasOutlineRow, canvasChildren, canvasDepthOf, canvasFlatten, canvasFindPlacement, canvasIsAncestor
 } from '../model/CanvasTypes'
 import { CanvasSpec } from '../constants/CanvasSpec'
 import { app, fireAndLog } from '../store/AppStores'
