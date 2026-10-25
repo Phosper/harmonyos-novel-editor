@@ -511,10 +511,13 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.equal(app.canvas.canNest('t3', 't2'), true);
   });
 
-  await check('canvas: createBoard and createCard persist, and duplicate titles are rejected per board', async () => {
+  await check('canvas: createBoard and createCard persist; duplicate titles are allowed and identity is id', async () => {
     const {app} = canvasFixture();
     await app.canvas.load();
-    assert.equal(await app.canvas.createCard(api.CanvasCardKind.CONCEPT, '均势'), undefined);
+    const duplicate = await app.canvas.createCard(api.CanvasCardKind.CONCEPT, '均势');
+    assert.ok(duplicate);
+    assert.notEqual(duplicate.id, 't1');
+    assert.equal(duplicate.title, '均势');
     const fresh = await app.canvas.createCard(api.CanvasCardKind.CONCEPT, '无政府状态');
     assert.ok(fresh); assert.ok(store.get('topics', fresh.id));
     assert.equal(fresh.bookId, 'book-a');
@@ -640,7 +643,7 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.equal(copy.aliases, '别名');
     assert.equal(copy.tags, 'tag');
     assert.equal(copy.summary, '一句话');
-    assert.equal(app.canvas.evidenceOf(copy.id).length, 0);
+    assert.equal(app.canvas.evidenceOf(copy.id).length, before);
     assert.equal(app.canvas.evidenceOf('t1').length, before);
   });
 

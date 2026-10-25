@@ -264,6 +264,40 @@ export function canvasAttach(placements: CanvasPlacementData[], cardId: string, 
 }
 
 /**
+ * 把 cardId 挂到 newParentId 下，并插入到 siblings 的第 index 位（0 基）。
+ * 与 canvasAttach 的区别：落点预览的 index 就是最终顺序，不再一律追加。
+ */
+export function canvasAttachAt(placements: CanvasPlacementData[], cardId: string,
+  newParentId: string, index: number): void {
+  const target: CanvasPlacementData | undefined = canvasFindPlacement(placements, cardId)
+  if (target === undefined) {
+    return
+  }
+  const allSiblings: CanvasPlacementData[] = canvasChildren(placements, newParentId)
+  let currentIndex: number = -1
+  for (let i: number = 0; i < allSiblings.length; i++) {
+    if (allSiblings[i].cardId === cardId) {
+      currentIndex = i
+      break
+    }
+  }
+  const siblings: CanvasPlacementData[] = allSiblings.filter(
+    (p: CanvasPlacementData): boolean => p.cardId !== cardId)
+  // index 是按“含被拖卡”的兄弟列表算的；同父移动时先移除自己，后面的位置要回退一位
+  let adjusted: number = index
+  if (currentIndex >= 0 && currentIndex < index) {
+    adjusted = index - 1
+  }
+  const at: number = Math.max(0, Math.min(adjusted, siblings.length))
+  target.parentId = newParentId
+  const ordered: CanvasPlacementData[] = siblings.slice()
+  ordered.splice(at, 0, target)
+  for (let i: number = 0; i < ordered.length; i++) {
+    ordered[i].order = i
+  }
+}
+
+/**
  * 从白板移除一个 placement：其子项上提一层，并重排同级 order。
  * 只处理传入数组（同一块白板的全部 placement）。
  */

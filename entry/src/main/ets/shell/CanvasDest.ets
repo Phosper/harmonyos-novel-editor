@@ -20,6 +20,14 @@ import { closeCanvasAnimated, CANVAS_SURFACE_ID } from './CanvasTransition'
 import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { CanvasPane } from './CanvasPane'
+import { CanvasBoardScope, CanvasCardKind } from '../model/CanvasTypes'
+import { CanvasSpec } from '../constants/CanvasSpec'
+import type { CanvasBoardItem, CanvasCardItem } from '../model/CanvasStoreModels'
+
+interface CanvasPoint {
+  x: number
+  y: number
+}
 import { CanvasBoardLibrary } from './CanvasBoardLibrary'
 import { CardLibrary } from './CardLibrary'
 
@@ -113,24 +121,37 @@ export struct CanvasDest {
     let chain: Promise<void> = Promise.resolve()
     for (let i: number = 0; i < cardIds.length; i++) {
       const cardId: string = cardIds[i]
-      const offset: number = (app.canvas.placements.length + i) % 6
-      const x: number = 120 + offset * 28
-      const y: number = 120 + offset * 28
-      chain = chain.then((): Promise<void> => app.canvas.addPlacement(cardId, x, y))
+      const point: CanvasPoint = this.placePoint(i)
+      chain = chain.then((): Promise<void> => app.canvas.addPlacement(cardId, point.x, point.y))
     }
     chain.then(() => {
       this.cardLibOpen = false
+      this.getUIContext().getPromptAction().showToast({
+        message: '已加入 ' + cardIds.length.toString() + ' 张，可用卡片库「定位」找回'
+      })
     }).catch((e: Error) => {
       Logger.error('CanvasDest: placeCards failed: ' + String(e))
     })
   }
 
+  /** 当前视口中心的网格落点：按卡宽留间距，避免固定 120+28 叠在一起。 */
+  private placePoint(index: number): CanvasPoint {
+    const z: number = app.canvas.zoom > 0.01 ? app.canvas.zoom : 1
+    const vw: number = app.canvas.viewportW > 0 ? app.canvas.viewportW : 900
+    const vh: number = app.canvas.viewportH > 0 ? app.canvas.viewportH : 700
+    const stepX: number = CanvasSpec.CARD_WIDTH + 24
+    const stepY: number = 180
+    const cols: number = Math.max(1, Math.floor(vw / stepX))
+    const col: number = index % cols
+    const row: number = Math.floor(index / cols)
+    const cx: number = (vw / 2 - app.canvas.panX) / z - CanvasSpec.CARD_WIDTH / 2
+    const cy: number = (vh / 2 - app.canvas.panY) / z - 80
+    return { x: cx + col * stepX, y: cy + row * stepY }
+  }
+
   private placeCard(cardId: string): void {
-    const n: number = app.canvas.placements.length
-    const offset: number = n % 6
-    const x: number = 120 + offset * 28
-    const y: number = 120 + offset * 28
-    app.canvas.addPlacement(cardId, x, y).then(() => {
+    const point: CanvasPoint = this.placePoint(0)
+    app.canvas.addPlacement(cardId, point.x, point.y).then(() => {
       this.cardLibOpen = false
     }).catch((e: Error) => {
       Logger.error('CanvasDest: addPlacement failed: ' + String(e))
@@ -141,10 +162,37 @@ export struct CanvasDest {
    * 点卡钩子。选中态由 CanvasPane 自己写进 Store（它先写再回调），
    * 宿主这一层暂时不需要额外动作——保留钩子是为了契约 §3 的签名和后续埋点。
    */
+  /** 首次开始：建课程板 + 一张可改名的写作提纲，直接进入编辑。 */
+  private startFirstBoard(): void {
+    app.canvas.createBoard(CanvasBoardScope.COURSE, '新课程白板').then(async (board: CanvasBoardItem | undefined) => {
+      if (board === undefined) {
+        return
+      }
+      const card: CanvasCardItem | undefined = await app.canvas.createCard(CanvasCardKind.WRITING, '未命名提纲')
+      if (card !== undefined) {
+        await app.canvas.addPlacement(card.id, 160, 140)
+        app.canvas.selectedCardId = card.id
+      }
+      this.booted = true
+    }).catch((e: Error) => {
+      Logger.error('CanvasDest: startFirstBoard failed: ' + String(e))
+    })
+  }
+
   private openCard(cardId: string): void {
     if (cardId === '') {
       Logger.warn('CanvasDest: onOpenCard got empty cardId')
     }
+  }
+
+  private openFromLibrary(cardId: string): void {
+    app.canvas.selectedCardId = cardId
+    this.cardLibOpen = false
+  }
+
+  private locateFromLibrary(cardId: string): void {
+    app.canvas.focusCard(cardId)
+    this.cardLibOpen = false
   }
 
   /** 手机端返回条：只有返回动作，板名与「白板/卡片库」由 CanvasPane 的顶栏负责 */
@@ -175,16 +223,16 @@ export struct CanvasDest {
         .fontSize(TypeScale.CAPTION)
         .fontColor(this.colors().textTertiary)
         .margin({ top: 6 })
-      Button('新建白板')
+      Button('开始整理思路')
         .fontSize(TypeScale.BODY)
         .height(this.tablet() ? 44 : 40)
         .margin({ top: 16 })
         .backgroundColor(this.colors().brand)
         .fontColor(this.colors().onBrand)
         .borderRadius(WeaverRadii.SM)
-        .accessibilityText('新建白板')
+        .accessibilityText('创建课程白板并开始')
         .onClick(() => {
-          this.boardLibOpen = true
+          this.startFirstBoard()
         })
     }
     .width('100%')
@@ -215,6 +263,8 @@ export struct CanvasDest {
       CardLibrary({
         onAdd: (cardId: string) => this.placeCard(cardId),
         onAddMany: (cardIds: string[]) => this.placeCards(cardIds),
+        onOpen: (cardId: string) => this.openFromLibrary(cardId),
+        onLocate: (cardId: string) => this.locateFromLibrary(cardId),
         onClose: () => { this.cardLibOpen = false }
       })
     }

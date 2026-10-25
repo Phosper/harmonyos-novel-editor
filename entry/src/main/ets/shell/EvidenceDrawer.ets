@@ -249,6 +249,9 @@ export struct EvidenceDrawer {
         ctl.revealOffset(ev.startOff)
       }
       ctl.focus()
+      // 同文稿也要先收起画布，否则用户仍停在全窗口画布上
+      ensureWorkspace()
+      closeCanvasAnimated(this.getUIContext())
     } catch (e) {
       this.toast('原文已不存在或无法打开')
     }

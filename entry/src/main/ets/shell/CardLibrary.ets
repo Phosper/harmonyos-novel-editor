@@ -29,6 +29,10 @@ export struct CardLibrary {
   @Event onAdd: (cardId: string) => void = () => {}
   /** 批量放到当前白板 */
   @Event onAddMany: (cardIds: string[]) => void = (cardIds: string[]) => {}
+  /** 直接打开卡片详情（不上板也能查看/编辑） */
+  @Event onOpen: (cardId: string) => void = (cardId: string) => {}
+  /** 已上板卡片：把相机移到它 */
+  @Event onLocate: (cardId: string) => void = (cardId: string) => {}
   /** 关闭抽屉 */
   @Event onClose: () => void = () => {}
 
@@ -95,6 +99,9 @@ export struct CardLibrary {
         continue
       }
       if (this.kindFilter === 2 && card.kind !== CanvasCardKind.WRITING) {
+        continue
+      }
+      if (this.kindFilter === 3 && app.canvas.occurrences(card.id).length > 0) {
         continue
       }
       const placed: boolean = canvasFindPlacement(app.canvas.placements, card.id) !== undefined
@@ -260,7 +267,14 @@ export struct CardLibrary {
         .width('100%')
         .margin({ top: 2 })
         Row() {
-          Text('复制')
+          Text('打开')
+            .fontSize(this.captionFont() - 1)
+            .fontColor(this.colors().textTertiary)
+            .padding({ right: 10, top: 3, bottom: 3 })
+            .onClick(() => {
+              this.onOpen(row.id)
+            })
+          Text('复制（含素材）')
             .fontSize(this.captionFont() - 1)
             .fontColor(this.colors().textTertiary)
             .padding({ right: 10, top: 3, bottom: 3 })
@@ -295,15 +309,21 @@ export struct CardLibrary {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Button(row.onCurrentBoard ? '已在当前白板' : '放到当前白板')
+      Button(row.onCurrentBoard ? '定位' : '放到当前白板')
         .fontSize(this.captionFont())
         .height(this.tablet() ? 36 : 32)
         .backgroundColor(row.onCurrentBoard ? this.colors().activeBg : this.colors().brand)
-        .fontColor(row.onCurrentBoard ? this.colors().textTertiary : this.colors().onBrand)
+        .fontColor(row.onCurrentBoard ? this.colors().textSecondary : this.colors().onBrand)
         .borderRadius(WeaverRadii.SM)
-        .enabled(!row.onCurrentBoard)
-        .accessibilityText(row.onCurrentBoard ? '已在当前白板' : '放到当前白板')
-        .onClick(() => this.onAdd(row.id))
+        .enabled(true)
+        .accessibilityText(row.onCurrentBoard ? '定位到这张卡' : '放到当前白板')
+        .onClick(() => {
+          if (row.onCurrentBoard) {
+            this.onLocate(row.id)
+          } else {
+            this.onAdd(row.id)
+          }
+        })
     }
     .width('100%')
     .constraintSize({ minHeight: this.tablet() ? 64 : 56 })
@@ -334,6 +354,7 @@ export struct CardLibrary {
         this.filterChip('全部', 0)
         this.filterChip('概念', 1)
         this.filterChip('写作', 2)
+        this.filterChip('待整理', 3)
         Blank()
         Text(this.sortMode === 0 ? '最近' : '标题')
           .fontSize(this.captionFont())

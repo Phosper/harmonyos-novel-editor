@@ -11,7 +11,7 @@ import { Logger } from '../utils/Logger'
 import { IdGenerator } from '../utils/IdGenerator'
 import {
   CanvasBoardScope, CanvasCardKind, CanvasEvidenceKind, CanvasLinkKind,
-  canvasAttach, canvasCanNest, canvasDepthOf, canvasFlatten, canvasNextOrder,
+  canvasAttach, canvasAttachAt, canvasCanNest, canvasDepthOf, canvasFlatten, canvasNextOrder,
   canvasReorder
 } from '../model/CanvasTypes'
 import type { CanvasOutlineRow } from '../model/CanvasTypes'
@@ -20,6 +20,7 @@ import {
 } from '../model/CanvasStoreModels'
 import type { CanvasCardPatch, CanvasEvidenceInput } from '../model/CanvasStoreModels'
 import { canvasRepo } from './Repos'
+import { CanvasSpec } from '../constants/CanvasSpec'
 import type { CanvasCardSnapshot } from '../repository/CanvasRepository'
 
 @ObservedV2
@@ -42,6 +43,9 @@ export class CanvasStore {
   /** 撤销条文案（空串 = 不显示）；目前用于删除素材 */
   @Trace undoLabel: string = ''
   @Trace panX: number = 0
+  /** 画布视口尺寸（vp），CanvasPane 测量后写入；放卡/定位用 */
+  @Trace viewportW: number = 0
+  @Trace viewportH: number = 0
   @Trace panY: number = 0
   @Trace zoom: number = 1
   @Trace loading: boolean = false
@@ -184,10 +188,6 @@ export class CanvasStore {
       this.error = '卡片标题不能为空'
       return undefined
     }
-    if (this.cardOnBoardByTitle(trimmed) !== undefined) {
-      this.error = '这块白板上已有同名卡片'
-      return undefined
-    }
     const bookId: string = this.scopeBookId
     try {
       const created: CanvasCardItem = await this.enqueue<CanvasCardItem>(
@@ -220,6 +220,20 @@ export class CanvasStore {
       tags: src.tags,
       summary: src.summary
     })
+    const evidence: CanvasEvidenceItem[] = this.evidenceOf(cardId)
+    for (let i: number = 0; i < evidence.length; i++) {
+      const ev: CanvasEvidenceItem = evidence[i]
+      await this.addEvidence(copy.id, ev.kind, {
+        docId: ev.docId,
+        paraIndex: ev.paraIndex,
+        startOff: ev.startOff,
+        endOff: ev.endOff,
+        fingerprint: ev.fingerprint,
+        quoteText: ev.quoteText,
+        userText: ev.userText,
+        sourceLabel: ev.sourceLabel
+      })
+    }
     return copy
   }
 
@@ -303,6 +317,19 @@ export class CanvasStore {
       this.fail('保存素材失败：' + String(e))
       return false
     }
+  }
+
+  /** 把某张卡移到当前视口中心（卡片库“定位”用）。 */
+  focusCard(cardId: string): void {
+    const pl: CanvasPlacementItem | undefined = this.placementOf(cardId)
+    if (pl === undefined) {
+      return
+    }
+    const z: number = this.zoom > 0 ? this.zoom : 1
+    const w: number = this.viewportW > 0 ? this.viewportW : 800
+    const h: number = this.viewportH > 0 ? this.viewportH : 600
+    this.panX = w / 2 - (pl.x + CanvasSpec.CARD_WIDTH / 2) * z
+    this.panY = h / 2 - (pl.y + 80) * z
   }
 
   async setCardDocId(cardId: string, docId: string): Promise<void> {
@@ -419,33 +446,47 @@ export class CanvasStore {
    * 放不进去返回 false（UI 据此不张嘴），不抛异常。
    */
   async attachCard(cardId: string, parentCardId: string): Promise<boolean> {
+    return this.attachCardAt(cardId, parentCardId, -1)
+  }
+
+  /** index < 0 = 追加到末尾；否则按预览位置插入。 */
+  async attachCardAt(cardId: string, parentCardId: string, index: number): Promise<boolean> {
     try {
-      return await this.enqueue<boolean>((): Promise<boolean> => this.doAttach(cardId, parentCardId))
+      return await this.enqueue<boolean>((): Promise<boolean> =>
+        this.doAttach(cardId, parentCardId, index))
     } catch (e) {
       this.fail('放入子卡失败：' + String(e))
       return false
     }
   }
 
-  private async doAttach(cardId: string, parentCardId: string): Promise<boolean> {
+  private async doAttach(cardId: string, parentCardId: string, index: number): Promise<boolean> {
     // 排队期间父子关系可能已变，落库前按最新状态再校验一次
     if (parentCardId === '' || !canvasCanNest(this.placements, cardId, parentCardId)) {
       return false
     }
     let item: CanvasPlacementItem | undefined = undefined
+    let alreadyParent: boolean = false
     for (let i: number = 0; i < this.placements.length; i++) {
       const p: CanvasPlacementItem = this.placements[i]
       if (p.cardId === cardId && p.parentId === parentCardId) {
-        return false
+        alreadyParent = true
       }
       if (p.cardId === cardId && item === undefined) {
         item = p
       }
     }
+    if (alreadyParent && index < 0) {
+      return false
+    }
     if (item === undefined) {
       return false
     }
-    canvasAttach(this.placements, cardId, parentCardId)
+    if (index >= 0) {
+      canvasAttachAt(this.placements, cardId, parentCardId, index)
+    } else {
+      canvasAttach(this.placements, cardId, parentCardId)
+    }
     // 内存里父字段是卡片 id（冻结纯规则的语义），库里 parent_id 存贴放 id —— 只在落库这一处换
     const parentPlacement: CanvasPlacementItem | undefined = this.placementOf(parentCardId)
     const parentPlacementId: string = parentPlacement === undefined ? '' : parentPlacement.id
@@ -801,11 +842,6 @@ export class CanvasStore {
 
   private placementOf(cardId: string): CanvasPlacementItem | undefined {
     return this.placements.find((item: CanvasPlacementItem): boolean => item.cardId === cardId)
-  }
-
-  private cardOnBoardByTitle(title: string): CanvasCardItem | undefined {
-    const onBoard: CanvasCardItem[] = this.cardsOnBoard()
-    return onBoard.find((card: CanvasCardItem): boolean => card.title === title)
   }
 
   private nextZ(): number {

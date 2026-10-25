@@ -911,6 +911,16 @@ function exportHarness(options = {}) {
     for (const host of ['shell/AppShell.ets', 'shell/MobileShell.ets', 'shell/WorkspaceDest.ets']) {
       assert.match(read(host), /onOpenCanvas: \(\) => openCanvasAnimated\(this\.getUIContext\(\)\)/, host + ' must wire onOpenCanvas');
     }
+    // 审计修正：落点=最终位置、待整理、定位、预览、同文稿跳回收画布
+    assert.match(read('shell/CanvasPane.ets'), /attachCardAt\(/);
+    assert.match(read('shell/CanvasPane.ets'), /siblingIndex\(/);
+    assert.match(read('shell/CanvasPane.ets'), /draftPreviewLines\(\)/);
+    assert.match(read('shell/CanvasPane.ets'), /打开文稿/);
+    assert.match(read('shell/CardLibrary.ets'), /filterChip\('待整理', 3\)/);
+    assert.match(read('shell/CardLibrary.ets'), /@Event onOpen/);
+    assert.match(read('shell/CardLibrary.ets'), /@Event onLocate/);
+    assert.match(read('shell/CanvasDest.ets'), /private placePoint\(/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /同文稿也要先收起画布/);
     // M5：卡片长按/右键菜单 + 行内改名
     assert.match(read('shell/TopicCard.ets'), /@Event onCardMenu/);
     assert.match(read('shell/TopicCard.ets'), /@Event onRenameCard/);

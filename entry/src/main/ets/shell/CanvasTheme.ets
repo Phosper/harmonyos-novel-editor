@@ -165,8 +165,10 @@ export enum CanvasDragKind {
 export interface CanvasHitResult {
   cardId: string
   rowCardId: string
-  /** 缺口插入的行序号（>= 本卡行数表示插在子卡区末尾） */
+  /** 最终父卡下的兄弟位置（attachCardAt 用） */
   insertIndex: number
+  /** 缺口在展开行里的位置（mouthInsert 用；与 insertIndex 可能不同） */
+  previewIndex: number
   /** 缺口缩进层级（1..3） */
   depth: number
   isRow: boolean

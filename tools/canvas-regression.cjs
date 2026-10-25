@@ -15,7 +15,7 @@ function compile(source) {
 const context = vm.createContext({ console: { log() {}, warn() {}, error() {} } });
 vm.runInContext(compile(read('model/CanvasTypes.ets')), context);
 const api = vm.runInContext('({ canvasNumbering, canvasChildren, canvasDepthOf, canvasSubtreeDepth,' +
-  ' canvasIsAncestor, canvasCanNest, canvasNextOrder, canvasFlatten, canvasAttach, canvasRemovePlacement,' +
+  ' canvasIsAncestor, canvasCanNest, canvasNextOrder, canvasFlatten, canvasAttach, canvasAttachAt, canvasRemovePlacement,' +
   ' canvasReorder, canvasFindPlacement, CANVAS_MAX_DEPTH })', context);
 
 let pass = 0;
@@ -123,6 +123,16 @@ check('概念卡放进写作卡：出现在子卡行且 depth=1', () => {
   assert.ok(hit !== undefined, 'D 应出现在 W 的展开行里');
   assert.equal(hit.depth, 1);
   assert.equal(hit.numbering, '二、'); // W 下已有 A（一、），D 追加为第二
+});
+
+check('按位置挂载：中间插入/同父重排与预览一致', () => {
+  const list = tree();
+  // W 下 A、D；把 D 插到第 0 位
+  api.canvasAttachAt(list, 'D', 'W', 0);
+  assert.equal(api.canvasChildren(list, 'W').map((k) => k.cardId).join(','), 'D,A');
+  // 同父：把 A 放到第 0 位（D 前面）
+  api.canvasAttachAt(list, 'A', 'W', 0);
+  assert.equal(api.canvasChildren(list, 'W').map((k) => k.cardId).join(','), 'A,D');
 });
 
 check('常量与规格一致', () => {

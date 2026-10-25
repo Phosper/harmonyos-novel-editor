@@ -14,6 +14,7 @@
 | 4 | `docs/design/card-content-engineering-guide.md` | 改造工程指南与里程碑 |
 | 5 | `docs/design/canvas-e2e-checklist.md` | 真机完整流程验收清单 |
 | 6 | `docs/review/agent-skill-manifest.md` | 专家使用 Agent 评审时的技能依赖与下载地址 |
+| 7 | `docs/review/audit-response.md` | 审计报告 J01–J08/UI02 的逐项落地与未落地说明 |
 
 ## 2. 新增/重点代码地图
 

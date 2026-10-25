@@ -278,12 +278,30 @@ export struct CanvasPane {
         const dist: number = Math.abs(worldY - (rc.y + rc.h / 2))
         if (bestRow === undefined || dist < bestRowDist) {
           bestRowDist = dist
-          bestRow = {
-            cardId: rows[r].cardId,
-            rowCardId: rows[r].cardId,
-            insertIndex: this.subtreeEndIndex(rows, r),
-            depth: rows[r].depth + 1,
-            isRow: true
+          const parentCard: string = this.parentOf(rows[r].cardId)
+          const rel: number = rc.h > 1 ? (worldY - rc.y) / rc.h : 0.5
+          if (rel < 0.28 || rel > 0.72) {
+            // 行的上下边缘：插到该行前/后（同级），不改变层级
+            const after: boolean = rel > 0.72
+            bestRow = {
+              cardId: parentCard,
+              rowCardId: rows[r].cardId,
+              insertIndex: this.siblingIndex(parentCard, rows[r].cardId) + (after ? 1 : 0),
+              previewIndex: after ? this.subtreeEndIndex(rows, r) : r,
+              depth: rows[r].depth,
+              isRow: true
+            }
+          } else {
+            // 行的中间：挂成该行的子卡（保留章→节→目的拖拽嵌套）
+            const kids: CanvasPlacementData[] = canvasChildren(app.canvas.placements, rows[r].cardId)
+            bestRow = {
+              cardId: rows[r].cardId,
+              rowCardId: rows[r].cardId,
+              insertIndex: kids.length,
+              previewIndex: this.subtreeEndIndex(rows, r),
+              depth: rows[r].depth + 1,
+              isRow: true
+            }
           }
         }
       }
@@ -303,18 +321,30 @@ export struct CanvasPane {
           cardId: pl.cardId,
           rowCardId: '',
           insertIndex: rows.length,
+          previewIndex: rows.length,
           depth: 1,
           isRow: false
         }
       }
     }
-    if (bestRow !== undefined && this.peekCanNest(dragId, bestRow.cardId)) {
+    if (bestRow !== undefined && this.peekCanNest(dragId, bestRow.cardId, true)) {
       return bestRow
     }
-    if (bestCard !== undefined && this.peekCanNest(dragId, bestCard.cardId)) {
+    if (bestCard !== undefined && this.peekCanNest(dragId, bestCard.cardId, false)) {
       return bestCard
     }
     return undefined
+  }
+
+  /** 是否可放：自己 / 当前父卡 / 子孙 / 深度超限 一律不张嘴 */
+  private peekCanNest(dragId: string, targetCardId: string, allowSameParent: boolean): boolean {
+    if (dragId === '' || dragId === targetCardId) {
+      return false
+    }
+    if (!allowSameParent && targetCardId === this.parentOf(dragId)) {
+      return false
+    }
+    return app.canvas.canNest(dragId, targetCardId)
   }
 
   /** 行 i 的子树结束位置（其后第一条不更深的行为止），缺口就插在这里 */
@@ -326,15 +356,14 @@ export struct CanvasPane {
     return j
   }
 
-  /** 是否可放：自己 / 当前父卡 / 子孙 / 深度超限 一律不张嘴 */
-  private peekCanNest(dragId: string, targetCardId: string): boolean {
-    if (dragId === '' || dragId === targetCardId) {
-      return false
+  private siblingIndex(parentCardId: string, cardId: string): number {
+    const kids: CanvasPlacementData[] = canvasChildren(app.canvas.placements, parentCardId)
+    for (let i: number = 0; i < kids.length; i++) {
+      if (kids[i].cardId === cardId) {
+        return i
+      }
     }
-    if (targetCardId === this.parentOf(dragId)) {
-      return false
-    }
-    return app.canvas.canNest(dragId, targetCardId)
+    return kids.length
   }
 
   private parentOf(cardId: string): string {
@@ -522,7 +551,8 @@ export struct CanvasPane {
       this.hitTest(cardId, this.pointerWorldX(dx), this.pointerWorldY(dy))
     const key: string = target === undefined
       ? ''
-      : target.cardId + '#' + target.insertIndex.toString() + '#' + target.depth.toString()
+      : target.cardId + '#' + target.insertIndex.toString() + '#' +
+        target.previewIndex.toString() + '#' + target.depth.toString()
     if (key === this.mouthKey) {
       return
     }
@@ -533,7 +563,7 @@ export struct CanvasPane {
       return
     }
     this.mouthCardId = target.cardId
-    this.mouthInsert = target.insertIndex
+    this.mouthInsert = target.previewIndex
     this.mouthDepth = target.depth
     this.mouthOn = true
   }
@@ -552,27 +582,31 @@ export struct CanvasPane {
     const wx: number = this.pointerWorldX(dx)
     const wy: number = this.pointerWorldY(dy)
     const currentParent: string = this.parentOf(cardId)
-    if (this.isOverParentRow(currentParent, wx, wy)) {
-      // 拖回当前父卡（含嵌套父卡的行矩形）：什么都不做，也不移出
-      this.resetDrag()
-      return
-    }
     const target: CanvasHitResult | undefined = this.hitTest(cardId, wx, wy)
     const inside: boolean = this.pointerInsideCanvas(winX, winY)
     if (target !== undefined) {
       const title: string = this.titleOf(target.cardId)
-      if (target.cardId !== currentParent) {
-        app.canvas.attachCard(cardId, target.cardId).then((ok: boolean) => {
-          if (ok) {
-            this.toast('已放进「' + title + '」')
-          } else {
-            this.toast('这张卡放不进「' + title + '」')
-          }
-        }).catch((e: Error) => {
-          Logger.error('CanvasPane.attachCard failed: ' + String(e))
-        })
+      const sameParent: boolean = target.cardId === currentParent
+      if (sameParent && !target.isRow) {
+        // 拖回当前父卡本体：不改父级，也不重排
+        this.resetDrag()
+        return
       }
+      app.canvas.attachCardAt(cardId, target.cardId, target.insertIndex).then((ok: boolean) => {
+        if (ok) {
+          this.toast(sameParent ? '已调整顺序' : '已放进「' + title + '」')
+        } else {
+          this.toast(sameParent ? '顺序调整失败' : '这张卡放不进「' + title + '」')
+        }
+      }).catch((e: Error) => {
+        Logger.error('CanvasPane.attachCard failed: ' + String(e))
+      })
     } else if (kind === CanvasDragKind.ROW) {
+      if (this.isOverParentCard(currentParent, wx, wy)) {
+        // 行拖到父卡本体：不改变结构，也不误移出
+        this.resetDrag()
+        return
+      }
       if (inside) {
         fireAndLog(this.detachAtPointer(cardId, wx, wy), 'CanvasPane.detachAtPointer')
         this.toast('已移出，成为画布上的独立卡片')
@@ -601,8 +635,8 @@ export struct CanvasPane {
     await app.canvas.movePlacement(cardId, worldX - CanvasSpec.CARD_WIDTH / 2, worldY - 20)
   }
 
-  /** 指针是否落在当前父卡（顶层卡用卡片矩形，嵌套父卡用行矩形，外扩 30） */
-  private isOverParentRow(parentId: string, worldX: number, worldY: number): boolean {
+  /** 行拖动时，指针是否落在当前父卡本体（不含行区）——用于避免误移出。 */
+  private isOverParentCard(parentId: string, worldX: number, worldY: number): boolean {
     if (parentId === '') {
       return false
     }
@@ -659,6 +693,7 @@ export struct CanvasPane {
           cardId: tops[i].cardId,
           rowCardId: '',
           insertIndex: rows.length,
+          previewIndex: rows.length,
           depth: 1,
           isRow: false
         }
@@ -945,7 +980,7 @@ export struct CanvasPane {
           .onClick(() => {
             this.openRename(this.menuCardId)
           })
-        Text('复制').fontSize(13).fontColor(this.pal().textPrimary).width('100%')
+        Text('复制（含素材）').fontSize(13).fontColor(this.pal().textPrimary).width('100%')
           .padding({ top: 9, bottom: 9 })
           .onClick(() => {
             this.cardMenuOpen = false
@@ -980,6 +1015,18 @@ export struct CanvasPane {
     .height('100%')
   }
 
+  private draftPreviewLines(): string[] {
+    const rows: CanvasOutlineRow[] = canvasFlatten(app.canvas.placements, this.draftCardId, 1)
+    const out: string[] = []
+    for (let i: number = 0; i < rows.length && i < 4; i++) {
+      const c: CanvasCardData | undefined = app.canvas.cardOf(rows[i].cardId)
+      const title: string = c === undefined ? '' : c.title
+      const n: number = app.canvas.evidenceCountOf(rows[i].cardId)
+      out.push(rows[i].numbering + title + (n > 0 ? ' · ' + n.toString() + ' 条素材' : ''))
+    }
+    return out
+  }
+
   private draftHasDoc(): boolean {
     const c: CanvasCardData | undefined = app.canvas.cardOf(this.draftCardId)
     return c !== undefined && c.docId !== ''
@@ -1004,9 +1051,22 @@ export struct CanvasPane {
           .fontSize(11.5)
           .fontColor(this.pal().textTertiary)
           .margin({ top: 4 })
+        Text('生成是快照：正文与卡片不会自动双向同步。')
+          .fontSize(11)
+          .fontColor(this.pal().textTertiary)
+          .margin({ top: 2 })
+        ForEach(this.draftPreviewLines(), (line: string, index: number) => {
+          Text(line)
+            .fontSize(11.5)
+            .fontColor(this.pal().textSecondary)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+            .margin({ top: 3 })
+        }, (line: string, index: number): string => index.toString() + ':' + line)
         if (app.canvas.evidenceCountOf(this.draftCardId) > 0) {
           Row() {
-            Text('包含写作卡自己的素材')
+            Text('把这张卡自己的素材写入开篇')
               .fontSize(12)
               .fontColor(this.pal().textSecondary)
               .layoutWeight(1)
@@ -1033,7 +1093,18 @@ export struct CanvasPane {
             })
           Blank()
           if (this.draftHasDoc()) {
-            Text('覆盖当前初稿')
+            Text('打开文稿')
+              .fontSize(12)
+              .fontColor(this.pal().onBrand)
+              .backgroundColor(this.pal().textPrimary)
+              .borderRadius(8)
+              .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+              .margin({ right: 8 })
+              .onClick(() => {
+                this.draftOpen = false
+                this.openDraft(this.draftCardId)
+              })
+            Text('覆盖现有文稿')
               .fontSize(12)
               .fontColor(this.pal().danger)
               .border({ width: 1, color: this.pal().danger })
@@ -1044,10 +1115,11 @@ export struct CanvasPane {
                 fireAndLog(this.confirmWriteDraft(true), 'CanvasPane.overwriteDraft')
               })
           }
-          Text(this.draftHasDoc() ? '新建一篇' : '生成初稿')
+          Text(this.draftHasDoc() ? '新建副本' : '生成初稿')
             .fontSize(12)
-            .fontColor(this.pal().onBrand)
-            .backgroundColor(this.pal().textPrimary)
+            .fontColor(this.draftHasDoc() ? this.pal().textPrimary : this.pal().onBrand)
+            .backgroundColor(this.draftHasDoc() ? this.pal().activeBg : this.pal().textPrimary)
+            .border({ width: 1, color: this.draftHasDoc() ? this.pal().divider : this.pal().textPrimary })
             .borderRadius(8)
             .padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .onClick(() => {
@@ -1069,15 +1141,34 @@ export struct CanvasPane {
   }
 
   /** 写作卡内加一章：新卡默认“第 N 章”，放在父卡右下方再挂进去。 */
+  private nextChapterTitle(cardId: string): string {
+    const kids: CanvasPlacementData[] = canvasChildren(app.canvas.placements, cardId)
+    let max: number = 0
+    for (let i: number = 0; i < kids.length; i++) {
+      const c: CanvasCardData | undefined = app.canvas.cardOf(kids[i].cardId)
+      if (c === undefined) {
+        continue
+      }
+      const t: string = c.title.trim()
+      if (t.startsWith('第 ') && t.endsWith(' 章')) {
+        const n: number = parseInt(t.substring(2, t.length - 2), 10)
+        if (!Number.isNaN(n) && n > max) {
+          max = n
+        }
+      }
+    }
+    return '第 ' + (max + 1).toString() + ' 章'
+  }
+
   private addChapter(cardId: string): void {
     const parent: CanvasPlacementData | undefined = canvasFindPlacement(app.canvas.placements, cardId)
-    const n: number = canvasChildren(app.canvas.placements, cardId).length + 1
     const x: number = parent === undefined ? 120 : parent.x + 48
     const y: number = parent === undefined ? 160 : parent.y + 72
-    fireAndLog(app.canvas.addChildCard(cardId, '第 ' + n.toString() + ' 章', x, y)
+    fireAndLog(app.canvas.addChildCard(cardId, this.nextChapterTitle(cardId), x, y)
       .then((ok: boolean) => {
         if (!ok) {
-          this.toast('加章失败：可能已到最深层')
+          const depth: number = canvasDepthOf(app.canvas.placements, cardId)
+          this.toast(depth >= 3 ? '已到最深层，建议拆成独立写作卡' : '加章失败，请重试')
         }
       }), 'CanvasPane.addChapter')
   }
@@ -1581,6 +1672,8 @@ export struct CanvasPane {
       if (Math.abs(w - this.canvasW) > 0.5 || Math.abs(h - this.canvasH) > 0.5) {
         this.canvasW = w
         this.canvasH = h
+        app.canvas.viewportW = w
+        app.canvas.viewportH = h
         setTimeout(() => {
           this.drawDots()
         }, 0)
