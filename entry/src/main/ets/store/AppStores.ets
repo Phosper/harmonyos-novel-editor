@@ -22,15 +22,17 @@ import type { WorldSettingModel } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 import type { RelationshipModel } from '../model/Relationship'
 import { RelationshipType } from '../model/Relationship'
-import { bookRepo, chapterRepo, materialRepo, relationRepo, runInTransaction } from './Repos'
+import { bookRepo, chapterRepo, materialRepo, relationRepo, canvasRepo, runInTransaction } from './Repos'
 import type { TransactionRepos } from './Repos'
 import { BookBackupSnapshot, BackupPayload, BackupPayloadLoose } from './BackupTypes'
+import { CanvasBackupBundle, CanvasBackupLooseBundle } from '../model/CanvasStoreModels'
 import { UiStore } from './UiStore'
 import { ProjectStore } from './ProjectStore'
 import { EditorStore } from './EditorStore'
 import type { EditorDraftSnapshot } from './EditorStore'
 import { MaterialStore } from './MaterialStore'
 import { RelationStore } from './RelationStore'
+import { CanvasStore } from './CanvasStore'
 
 export class AppStores {
   readonly ui: UiStore = new UiStore()
@@ -38,6 +40,8 @@ export class AppStores {
   readonly editor: EditorStore = new EditorStore()
   readonly material: MaterialStore = new MaterialStore()
   readonly relation: RelationStore = new RelationStore()
+  /** 思路板（画布）：白板 / 卡片 / 贴放 / 连线 / 素材 */
+  readonly canvas: CanvasStore = new CanvasStore()
 
   private inited: boolean = false
   private openRequestRev: number = 0
@@ -79,6 +83,7 @@ export class AppStores {
     const bookId: string = this.project.currentBookId
     this.material.setBookScope(bookId)
     this.relation.setBookScope(bookId)
+    this.canvas.setBookScope(bookId)
     await this.project.reloadChapters()
     if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     await this.project.refreshCounts()
@@ -86,6 +91,9 @@ export class AppStores {
     await this.material.load(bookId)
     if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     await this.relation.load(bookId, this.material.characters)
+    if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
+    // 思路板自带加载失败提示，不会把异常抛给启动流程
+    await this.canvas.load()
     if (request !== this.reloadRequestRev || bookId !== this.project.currentBookId) return
     this.syncSelection()
   }
@@ -109,6 +117,7 @@ export class AppStores {
     this.project.setCurrentBook(bookId)
     this.material.setBookScope(bookId)
     this.relation.setBookScope(bookId)
+    this.canvas.setBookScope(bookId)
     this.editor.reset()
     this.enterEditorIfEmpty()
     await this.reloadAll()
@@ -136,9 +145,10 @@ export class AppStores {
   }
 
   async deleteBook(bookId: string): Promise<void> {
-    await this.editor.flushAllStrict()
+    await this.flushBeforeDelete()
     this.openRequestRev++
     await bookRepo.deleteBook(bookId)
+    await this.removeCanvasScope(bookId)
     await this.project.loadBooks()
     this.editor.reset()
     if (this.project.books.length === 0) {
@@ -146,8 +156,46 @@ export class AppStores {
     } else if (this.project.currentBookId === bookId) {
       this.project.setCurrentBook(this.project.books[0].id)
     }
+    this.canvas.setBookScope(this.project.currentBookId)
     await this.reloadAll()
     this.enterEditorIfEmpty()
+  }
+
+  /**
+   * 删项目前必须把**打开着的**文稿全部落库。失败时**不绕过保存**（绕过 = 直接丢稿），
+   * 而是把原因转成用户能看懂、能动作的文案再抛出：
+   *   ① 某篇正文超过单篇入库上限 → SaveState.TOO_LARGE（EditorStore.persistDoc 先拦截并 throw）；
+   *   ② 落库期间用户又输入了 / 数据库写失败 → doc.dirty 仍为 true →「仍有未保存的改动」。
+   * 旧实现直接抛 Error，上层只能提示「操作失败，请重试」，用户完全看不出该拆分超长文稿。
+   */
+  private async flushBeforeDelete(): Promise<void> {
+    try {
+      await this.editor.flushAllStrict()
+    } catch (e) {
+      let raw: string = String(e)
+      if (raw.startsWith('Error: ')) {
+        raw = raw.substring(7)
+      }
+      // contentLimitMessage() 是两行（原因 + 说明），toast 只取第一行
+      const first: string = raw.split('\n')[0]
+      const reason: string = first.trim() !== '' ? first.trim() : '有文稿未能保存'
+      Logger.error('deleteBook blocked by unsaved draft: ' + reason)
+      // 文案尽量短：toast 只有两行，前缀「操作失败，请重试」由 AppShell 统一加
+      throw new Error('有文稿未保存：' + reason)
+    }
+  }
+
+  /**
+   * 删项目时清掉它名下的思路板数据（五张表之间没有 books 的级联外键，
+   * book_id 允许空串，所以不能靠 FK CASCADE）。失败只记日志：
+   * 项目已经删了，残留行最多占空间，不该让删除流程报错。
+   */
+  private async removeCanvasScope(bookId: string): Promise<void> {
+    try {
+      await canvasRepo.deleteBookScope(bookId)
+    } catch (e) {
+      Logger.warn('Canvas scope cleanup failed for ' + bookId + ': ' + String(e))
+    }
   }
 
   // ===== 文稿 =====
@@ -170,6 +218,27 @@ export class AppStores {
   }
 
   /** 打开文稿（进入编辑） */
+  /**
+   * 从全局文库打开文稿：属于其它项目时先切项目。
+   *
+   * 为什么不改 openChapter 本体：它内部用「打开时的 currentBookId 快照」做请求归属校验
+   * （防止慢查询把用户后来切换的项目又打开回去）。把切换塞进去会破坏那条契约，
+   * 因此切换放在调用方这一层，openChapter 保持原语义。
+   */
+  async openLibraryChapter(chapterId: string): Promise<void> {
+    const target: ChapterModel | null = await chapterRepo.loadOne(chapterId)
+    if (target === null) {
+      return
+    }
+    if (target.bookId !== this.project.currentBookId) {
+      await this.selectBook(target.bookId)
+      if (this.project.currentBookId !== target.bookId) {
+        return
+      }
+    }
+    await this.openChapter(chapterId)
+  }
+
   async openChapter(chapterId: string): Promise<void> {
     const request: number = ++this.openRequestRev
     this.editor.cancelPendingActivation()
@@ -477,6 +546,9 @@ export class AppStores {
           }
           await repos.materialRepo.insertInspiration(model)
         }
+        // 章节恢复同样换新 id：思路板的写作卡 doc_id 与引文 doc_id 依赖这张表重指向，
+        // 缺了它「跳回原文」会指向已不存在的文稿（既有缺陷，见规格 §11-8）。
+        const chapterIdMap: Map<string, string> = new Map<string, string>()
         let order: number = 0
         for (const ch of chapters) {
           const content: string = ch.content ?? ''
@@ -487,8 +559,10 @@ export class AppStores {
             skippedChapters++
             continue
           }
+          const newChapterId: string = IdGenerator.generate()
+          chapterIdMap.set(ch.id, newChapterId)
           const model: ChapterModel = {
-            id: IdGenerator.generate(),
+            id: newChapterId,
             bookId: created.id,
             title: ch.title !== undefined && ch.title.trim() !== '' ? ch.title : '无标题',
             content: content,
@@ -519,6 +593,16 @@ export class AppStores {
           }
           await repos.relationRepo.insert(model)
         }
+        // 思路板五表：topicId / canvasId / placementId 全部重映射，parent_id 按新 id 重指向
+        // ArkTS 不支持结构类型：把宽松载荷显式组装成画布恢复包（字段同名同类型）
+        const looseCanvas: CanvasBackupLooseBundle = {
+          topics: payload.topics ?? [],
+          topicEvidence: payload.topicEvidence ?? [],
+          canvases: payload.canvases ?? [],
+          canvasPlacements: payload.canvasPlacements ?? [],
+          canvasLinks: payload.canvasLinks ?? []
+        }
+        await repos.canvasRepo.restoreBundle(looseCanvas, created.id, chapterIdMap)
         return created
       })
 
@@ -579,16 +663,23 @@ export class AppStores {
     const worldSettings: WorldSettingModel[] = await materialRepo.loadWorldSettings(bookId)
     const inspirations: InspirationModel[] = await materialRepo.loadInspirationsByBook(bookId)
     const relationships: RelationshipModel[] = await relationRepo.loadRelationships(bookId)
+    // 思路板：按 bookId 查库，不用 canvases 缓存（导出时可能正切项目）
+    const canvasBundle: CanvasBackupBundle = await canvasRepo.exportBundle(bookId)
     const payload: BackupPayload = {
       app: 'Weaver',
-      version: 1,
+      version: 2,
       exportedAt: Date.now(),
       book: snapshot,
       chapters: chapters,
       characters: characters,
       worldSettings: worldSettings,
       inspirations: inspirations,
-      relationships: relationships
+      relationships: relationships,
+      topics: canvasBundle.topics,
+      topicEvidence: canvasBundle.topicEvidence,
+      canvases: canvasBundle.canvases,
+      canvasPlacements: canvasBundle.canvasPlacements,
+      canvasLinks: canvasBundle.canvasLinks
     }
     return payload
   }
@@ -599,9 +690,17 @@ export class AppStores {
     await this.editor.flushAll()
   }
 
+  /**
+   * 严格落库：任一草稿未保存成功即 reject，供关闭窗口等“不能静默丢稿”的路径使用。
+   */
+  async flushAllStrict(): Promise<void> {
+    await this.editor.flushAllStrict()
+  }
+
   destroy(): void {
     this.editor.flushAll()
     this.editor.stopTimers()
+    this.canvas.destroy()
   }
 }
 

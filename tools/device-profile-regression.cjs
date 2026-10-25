@@ -18,10 +18,29 @@ const storage = new Map();
 const warnings = [];
 const errors = [];
 const deviceInfo = { deviceType: 'phone' };
+// 折叠形态替身：折叠屏在 deviceType 上返回 phone，状态只能从 display 读
+const displayState = { foldable: false, status: 0, listeners: [], width: 440, height: 744 };
+const display = {
+  FoldStatus: { FOLD_STATUS_UNKNOWN: 0, FOLD_STATUS_EXPANDED: 1, FOLD_STATUS_FOLDED: 2, FOLD_STATUS_HALF_FOLDED: 3 },
+  isFoldable: () => displayState.foldable,
+  getFoldStatus: () => displayState.status,
+  getDefaultDisplaySync: () => ({
+    densityPixels: 1,
+    height: displayState.height,
+    width: displayState.width,
+    getRoundedCorner: () => [{ position: { x: 0, y: 0 }, radius: 24 }]
+  }),
+  on: (name, cb) => { displayState.listeners.push([name, cb]); },
+  off: (name, cb) => {
+    const index = displayState.listeners.findIndex(entry => entry[0] === name && entry[1] === cb);
+    if (index >= 0) displayState.listeners.splice(index, 1);
+  }
+};
 const context = vm.createContext({
   window: { WindowStatusType: statuses, AvoidAreaType: avoidTypes },
   WidthBreakpoint: breakpoints,
   deviceInfo,
+  display,
   AppStorage: { get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value) },
   Logger: { info() {}, warn: message => warnings.push(message), error: message => errors.push(message) },
   px2vp: value => value,
@@ -199,11 +218,33 @@ check('attach reads device class, free window, status, breakpoint and safe area'
     assert.equal(snapshot.titleButtonWidthVp, 96);
     assert.equal(snapshot.chromeHeightVp, api.DESKTOP_CHROME_HEIGHT_VP + 32);
     assert.equal(snapshot.modality, api.InputModality.POINTER);
-    // attach 显式读一次（TYPE_SYSTEM + TYPE_NAVIGATION_INDICATOR），watchSafeArea 再读一次
-    assert.equal(binding.record.calls.filter(call => call[0] === 'getWindowAvoidArea').length, 4);
+    // attach 显式读一次（SYSTEM + NAVIGATION_INDICATOR + KEYBOARD），watchSafeArea 再读一次
+    assert.equal(binding.record.calls.filter(call => call[0] === 'getWindowAvoidArea').length, 6);
   } finally {
     profile.detach();
   }
+});
+check('foldable devices are classified by display state, not deviceType', () => {
+  withDeviceType('phone', () => {
+    displayState.foldable = true;
+    displayState.status = 1; // FOLD_STATUS_EXPANDED
+    const { profile } = attach({ free: false, safeTopPx: 0, safeBottomPx: 0, breakpoint: breakpoints.WIDTH_MD });
+    try {
+      assert.equal(profile.snapshot.foldable, true, 'display.isFoldable drives the flag');
+      assert.equal(profile.snapshot.foldExpanded, true, 'expanded foldable is tablet-sized');
+      assert.equal(displayState.listeners.filter(entry => entry[0] === 'foldStatusChange').length, 1,
+        'half-fold changes need a dedicated listener');
+      displayState.status = 2; // FOLD_STATUS_FOLDED
+      profile.refresh();
+      assert.equal(profile.snapshot.foldable, true);
+      assert.equal(profile.snapshot.foldExpanded, false, 'folded back to phone-sized');
+    } finally {
+      profile.detach();
+      assert.equal(displayState.listeners.length, 0, 'fold listener must be released on detach');
+      displayState.foldable = false;
+      displayState.status = 0;
+    }
+  });
 });
 check('chrome height is zero when the window is not in free-window mode', () => {
   deviceInfo.deviceType = 'tablet';
@@ -213,9 +254,35 @@ check('chrome height is zero when the window is not in free-window mode', () => 
     assert.equal(profile.snapshot.chromeHeightVp, 0, 'no self-drawn title bar may reserve chrome height');
     assert.equal(profile.snapshot.tier, api.LayoutTier.DOUBLE);
     assert.equal(profile.snapshot.modality, api.InputModality.TOUCH);
+    // Pura X View：744vp 短屏 + 24vp 大圆角，用于收紧 chrome 与贴边控件让位
+    assert.equal(profile.snapshot.shortScreen, true);
+    assert.equal(profile.snapshot.cornerRadiusVp, 24);
   } finally {
     profile.detach();
   }
+});
+check('wide-bar devices are recognised in both portrait and landscape', () => {
+  withDeviceType('phone', () => {
+    displayState.foldable = false;
+    displayState.width = 440;
+    displayState.height = 744; // Pura X View 竖屏
+    const { profile } = attach({ free: false, safeTopPx: 0, safeBottomPx: 0, breakpoint: breakpoints.WIDTH_SM });
+    try {
+      assert.equal(profile.snapshot.wideBar, true, '440x744 is a wide-bar phone');
+      displayState.width = 744;
+      displayState.height = 440; // 横屏：用 min/max 判定，旋转不丢识别
+      profile.refresh();
+      assert.equal(profile.snapshot.wideBar, true, 'landscape keeps the same form factor');
+      displayState.width = 360;
+      displayState.height = 800; // 普通直板机
+      profile.refresh();
+      assert.equal(profile.snapshot.wideBar, false, 'regular 360x800 phone is not wide-bar');
+    } finally {
+      profile.detach();
+      displayState.width = 440;
+      displayState.height = 744;
+    }
+  });
 });
 check('a failing free-window probe falls back to AppStorage and warns only once', () => {
   storage.set('freeWindowMode', true);

@@ -60,6 +60,11 @@ export class EditorStore {
    */
   @Trace undoStack: HistoryEntry[] = []
   @Trace redoStack: HistoryEntry[] = []
+  /**
+   * 历史深度版本号：@Trace 数组的原地 push 在个别场景没触发工具栏重算，
+   * 用这个显式自增的标量给 canUndo/canRedo 建立稳定依赖（按钮置灰的根因）。
+   */
+  @Trace historyVersion: number = 0
   private debounceTimer: number = -1
   private safetyTimer: number = -1
   private lastHistoryAt: number = 0
@@ -118,12 +123,34 @@ export class EditorStore {
     return countChars(this.content)
   }
 
+  /**
+   * 撤销/重做是**跨文稿共享**的历史栈，但按钮状态必须只看当前文稿：
+   * 否则打开一篇没有历史的文稿时会误显示“可撤销”，点击却没有反应。
+   */
   get canUndo(): boolean {
-    return this.undoStack.length > 0
+    const doc: OpenDoc | undefined = this.activeDoc
+    if (doc === undefined) {
+      return false
+    }
+    for (let i: number = this.undoStack.length - 1; i >= 0; i--) {
+      if (this.undoStack[i].docId === doc.id) {
+        return true
+      }
+    }
+    return false
   }
 
   get canRedo(): boolean {
-    return this.redoStack.length > 0
+    const doc: OpenDoc | undefined = this.activeDoc
+    if (doc === undefined) {
+      return false
+    }
+    for (let i: number = this.redoStack.length - 1; i >= 0; i--) {
+      if (this.redoStack[i].docId === doc.id) {
+        return true
+      }
+    }
+    return false
   }
 
   get dirtyCount(): number {
@@ -318,6 +345,8 @@ export class EditorStore {
     if (this.historyBoundary || this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1].docId !== doc.id ||
       now - this.lastHistoryAt > HISTORY_MERGE_MS) {
       this.undoStack.push(new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson))
+      this.historyVersion++
+      Logger.info('History: push doc=' + doc.id + ' stack=' + this.undoStack.length.toString() + ' len=' + doc.draft.length.toString())
       if (this.undoStack.length > MAX_HISTORY) {
         this.undoStack.shift()
       }
@@ -328,6 +357,9 @@ export class EditorStore {
   }
 
   undo(): void {
+    // 先 flush：撤销回到的是“落库的上一版”，若草稿还挂在待保存防抖里，
+    // 回灌画布与随后保存可能互相覆盖（真机上表现为“点了撤销没反应”）
+    this.flushActive()
     this.stepHistory(this.undoStack, this.redoStack)
   }
 
@@ -345,6 +377,8 @@ export class EditorStore {
     while (index >= 0 && from[index].docId !== doc.id) { index-- }
     if (index < 0) { return }
     // V2 的 @Trace 数组可观测 push/splice 等原地改动，故 canUndo/canRedo 能随栈变化刷新
+    this.historyVersion++
+    Logger.info('History: step doc=' + doc.id + ' from=' + from.length.toString() + ' to=' + to.length.toString())
     const entry: HistoryEntry = from.splice(index, 1)[0]
     to.push(new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson))
     this.restoring = true

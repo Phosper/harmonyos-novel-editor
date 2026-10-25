@@ -82,7 +82,9 @@ export function applySystemBars(dark: boolean, bgHex: string): void {
   } catch (e) {
     Logger.warn('setWindowBackgroundColor failed: ' + String(e))
   }
-  setBars(w, '#00000000', contentFor(dark))
+  // 状态栏/导航条用**主题底色**而不是全透明：透明依赖"布局真的延伸到系统栏"，
+  // 一旦设备没进入全屏布局就会露出系统黑底，形成上下黑边（平板实测）。
+  setBars(w, argbOf(bgHex), contentFor(dark))
 }
 
 /** 弹层蒙层展示期间：状态栏底色=底色×蒙层（与被压暗的页面一致），前景随明暗 */

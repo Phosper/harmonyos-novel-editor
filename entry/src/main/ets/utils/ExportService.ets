@@ -80,10 +80,15 @@ export class ExportService {
     let base: number = 0
     for (let li: number = 0; li < lines.length; li++) {
       const line: string = lines[li]
-      const level: number = ExportService.headingFor(runs, base)
+      // 按**整段**取属性，而不是只看段首那个码元：
+      // 在段首插入过文字后，段落标注可能从段中开始（模型侧 reading 有兜底，
+      // 这里用同一套区间判定，保证导出的列表前缀不会时有时无）。
+      const kind: number = ExportService.paragraphAttrFor(runs, base, base + line.length + 1, 0)
+      const indent: number = ExportService.paragraphAttrFor(runs, base, base + line.length + 1, 1)
       let text: string = ExportService.applyInlineMarkdown(line, runs, base)
-      if (level > 0) {
-        text = '######'.substring(0, level) + ' ' + text
+      const prefix: string = ExportService.paragraphPrefix(kind, indent)
+      if (prefix !== '') {
+        text = prefix + text
       }
       out.push(text)
       base += line.length + 1
@@ -91,14 +96,65 @@ export class ExportService {
     return out.join('\n')
   }
 
-  private static headingFor(runs: FormatRun[], offset: number): number {
+  /**
+   * 段落 → Markdown 行首标记。
+   *
+   * 段落种类（ParagraphKind）与标题级别共用 FormatRun.heading：1–3 是标题，
+   * 4/5/6 是列表 / 未完成待办 / 已完成待办。旧实现直接 `'######'.substring(0, level)`，
+   * 于是列表段会被导出成 `####`–`######` 的假标题——必须先按种类分派。
+   */
+  private static paragraphPrefix(kind: number, indent: number): string {
+    if (kind >= 1 && kind <= 3) {
+      return '######'.substring(0, kind) + ' '
+    }
+    if (kind === 4) {
+      return ExportService.listPad(indent) + '- '
+    }
+    if (kind === 5) {
+      return ExportService.listPad(indent) + '- [ ] '
+    }
+    if (kind === 6) {
+      return ExportService.listPad(indent) + '- [x] '
+    }
+    return ''
+  }
+
+  /** 列表层级 → 两个空格缩进（0–2 层） */
+  private static listPad(indent: number): string {
+    const level: number = Math.max(0, Math.min(2, indent))
+    let pad: string = ''
+    for (let i: number = 0; i < level; i++) {
+      pad += '  '
+    }
+    return pad
+  }
+
+  /**
+   * 段落属性取值：field=0 取种类，field=1 取层级。
+   * 只认带段落语义的 run（种类/层级非 0），并优先取覆盖段首的那条 ——
+   * 行内加粗等标注切出的 heading=0 分段不能把列表/标题读成正文。
+   */
+  private static paragraphAttrFor(runs: FormatRun[], start: number, end: number, field: number): number {
+    let fallback: number = 0
+    let hasFallback: boolean = false
     for (let i: number = 0; i < runs.length; i++) {
       const r: FormatRun = runs[i]
-      if (offset >= r.startOffset && offset < r.endOffset) {
-        return r.heading
+      if (r.endOffset <= start || r.startOffset >= end) {
+        continue
+      }
+      if (r.heading === 0 && r.indent === 0) {
+        continue
+      }
+      const value: number = field === 0 ? r.heading : r.indent
+      if (r.startOffset <= start && r.endOffset > start) {
+        return value
+      }
+      if (!hasFallback) {
+        fallback = value
+        hasFallback = true
       }
     }
-    return 0
+    return hasFallback ? fallback : 0
   }
 
   /** 行内标记：按格式区间切分并包裹 ** / * */

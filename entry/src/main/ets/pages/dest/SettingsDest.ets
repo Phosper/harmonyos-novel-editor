@@ -1,11 +1,11 @@
-// 设置页 —— 状态管理 V2 版本
+// 设置页（路由外壳）—— 手机端仍可用；桌面/平板走 AppShell 的半模态面板
 //
-// 主题为全局唯一来源（DesignTokens.THEMES）：选中态由 app.ui.themeId 派生；
-// 编辑器纸色随全局主题联动（正文字号/行距仍独立）。
+// 内容统一由 shell/SettingsPanel.ets 提供（分组卡片版式），这里只负责页面外框：
+// 光感背景 + 返回栏。两份宿主共用同一份设置内容，避免两套 UI 走样。
 import { app } from '../../store/AppStores'
-import { tokensFor, WeaverColorSet, THEMES, WeaverTheme } from '../../constants/DesignTokens'
+import { tokensFor, WeaverColorSet } from '../../constants/DesignTokens'
 import { GlowPageBackground, glassBarStyle } from '../../shell/MaterialSurface'
-import { sheenGlass, GLASS_NONE_GRADIENT } from '../../constants/LightTokens'
+import { SettingsPanel } from '../../shell/SettingsPanel'
 
 @ComponentV2
 export struct SettingsDest {
@@ -30,38 +30,7 @@ export struct SettingsDest {
           .attributeModifier(glassBarStyle(app.ui.themeId))
 
           Scroll() {
-            Column() {
-              // 主题（全局）
-              Text('主题').fontSize(13).fontColor(this.colors().textSecondary)
-                .width('100%').padding({ left: 16, right: 16, top: 16, bottom: 4 })
-              ForEach(THEMES, (t: WeaverTheme) => {
-                Row() {
-                  Text(t.name).fontSize(16).fontColor(this.colors().textPrimary)
-                  Row() { }.layoutWeight(1)
-                  if (app.ui.themeId === t.id) {
-                    Text('✓').fontSize(18).fontColor(this.colors().brand)
-                  }
-                }
-                .width('100%').height(52).padding({ left: 16, right: 16 })
-                .linearGradient({
-                  angle: 180,
-                  colors: app.ui.themeId === t.id ? sheenGlass(app.ui.themeId).gradient : GLASS_NONE_GRADIENT
-                })
-                .border({ width: { bottom: 1 }, color: this.colors().divider })
-                .clickEffect({ level: ClickEffectLevel.LIGHT })
-                .onClick(() => { app.ui.setTheme(t.id) })
-              }, (t: WeaverTheme) => t.id)
-
-              // 写作体验
-              Row() {
-                Text('打字机模式（当前段居中）').fontSize(16).fontColor(this.colors().textPrimary)
-                Row() { }.layoutWeight(1)
-                Toggle({ type: ToggleType.Switch, isOn: app.ui.typewriter })
-                  .onChange((on: boolean) => { app.ui.typewriter = on })
-              }.width('100%').height(52).padding({ left: 16, right: 16 })
-              .border({ width: { bottom: 1 }, color: this.colors().divider })
-              .clickEffect({ level: ClickEffectLevel.LIGHT })
-            }.width('100%')
+            SettingsPanel()
           }.layoutWeight(1).width('100%')
         }.width('100%').height('100%').backgroundColor(Color.Transparent)
       }

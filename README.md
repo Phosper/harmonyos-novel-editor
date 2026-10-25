@@ -2,6 +2,17 @@
 
 HarmonyOS / ArkTS 小说写作应用。当前源码基线为 2026-10-13 收到的 `Weaver(1).zip`；此前的 `Weaver.zip` 与 Git 历史保留供对照。
 
+## 思路板 / 卡片内容评审（2026-10）
+
+- 评审入口：[docs/review/README.md](docs/review/README.md)
+- 技能依赖与下载地址：[docs/review/agent-skill-manifest.md](docs/review/agent-skill-manifest.md)
+- 真机验收清单：[docs/design/canvas-e2e-checklist.md](docs/design/canvas-e2e-checklist.md)
+- 实现与已知限制：[docs/design/canvas-implementation-report.md](docs/design/canvas-implementation-report.md)
+
+## 设计记忆
+
+- [HarmonyOS 动效规范与 Weaver 落地](docs/design/animation-guidelines.md)：时长/曲线/侧栏动画的单一依据。
+
 ## 工程结构
 
 - `entry/src/main/ets/editor/flowtext/`：FlowText 自绘正文编辑器
@@ -22,7 +33,7 @@ HarmonyOS / ArkTS 小说写作应用。当前源码基线为 2026-10-13 收到�
 
 2026-10-18 修复自绘编辑器的文字漂移与多选异常：多 run 行按行 API 归一 run 原点（不再叠在行首）、改字号/主题/窗口宽度不再把滚动夹回顶部、滚动上限改用已排版精确高度、预上屏只画一次、拖选/手柄光标跟随 head、长按选词后拖动从词边界扩展、选区高亮与光标统一行盒并补空行、Ctrl+A 同步、触摸 Cancel 复位、IME 上报去抖。本地回归增至 **130 项**（FlowText 60 + 数据 28 + 外壳 20 + 窗口 17 + 导入 5），全部通过；设备侧构建与原生用例待按测试说明执行。详见 [修复报告](docs/editor-drift-selection-fix.md)。
 
-2026-10-18 完成多端交互重构与沉浸视觉升级：编辑器输入统一为 `EditCommand → EditorCommandRouter` 命令层（新增 `entry/src/main/ets/editor/interaction/`），新增 `utils/DeviceProfile.ets` 以窗口宽度断点、设备形态、输入形态三条正交判据统一分流，新增 `shell/DesktopTitleBar.ets` 沉浸标题栏（48vp、自由窗口模式判定、系统原生三键 + 拖拽 + 后台落库）与 `shell/MaterialSurface.ets`、`constants/LightTokens.ets` 沉浸光感（四主题、FULL/REDUCED/OFF 三级降级、每屏 ≤2 层实时模糊）；`PcWindowBar` 保留为兼容薄壳。本地回归增至 **224 项**（FlowText 97 + 窗口 32 + 设备分流 25 + ArkTS 静态守卫 17 + 数据 28 + 外壳 20 + 导入 5），`node tools/*.cjs` 全部通过。本机无 SDK/模拟器，**尚未编译、未跑设备用例**；手机 / 平板 / PC(2in1) / MatePad Edge 电脑模式的逐条自测步骤、预期结果、失败判定与 Hypium 判定条件见 [多端自测清单](docs/refactor/multidevice-self-test.md)，改动文件与关键行号见 [改动清单](docs/refactor/change-list.md)。
+2026-10-18 完成多端交互重构与沉浸视觉升级：编辑器输入统一为 `EditCommand → EditorCommandRouter` 命令层（新增 `entry/src/main/ets/editor/interaction/`），新增 `utils/DeviceProfile.ets` 以窗口宽度断点、设备形态、输入形态三条正交判据统一分流，新增 `shell/DesktopTitleBar.ets` 沉浸标题栏（48vp、自由窗口模式判定、系统原生三键 + 拖拽 + 后台落库）与 `shell/MaterialSurface.ets`、`constants/LightTokens.ets` 沉浸光感（四主题、FULL/REDUCED/OFF 三级降级、每屏 ≤2 层实时模糊）；`PcWindowBar` 保留为兼容薄壳。本地回归增至 **295 项**（FlowText 127 + 窗口 32 + 外壳 57 + 设备分流 27 + ArkTS 静态守卫 19 + 数据 28 + 导入 5），`node tools/*.cjs` 全部通过。本机无 SDK/模拟器，**尚未编译、未跑设备用例**；手机 / 平板 / PC(2in1) / MatePad Edge 电脑模式的逐条自测步骤、预期结果、失败判定与 Hypium 判定条件见 [多端自测清单](docs/refactor/multidevice-self-test.md)，改动文件与关键行号见 [改动清单](docs/refactor/change-list.md)。
 
 2026-10-18 第三轮交互 / UI：鼠标点击光标不再播放弹簧动画（手指点按保留），光标改为余弦 alpha 呼吸（0.5–1、2.4s，替代 600ms 硬闪烁）；编辑器内部工具条上移到窗口顶栏（撤销/重做、B/I/H、查找、打字机、专注写作 + 低频「⋯」），顶栏副标题统一显示章节·字数·保存状态；新增窗口内沉浸编辑（顶栏按钮 / F11 / 移动端「更多」进入，桌面顶栏与移动端浮动按钮退出），正文按 880vp 宽度居中铺开。打字机模式新增段落视觉层级：当前段 1.08×、相邻行 0.98×、逐行 -0.02 至 0.90×，切换段落用 180ms 缓动同步过渡缩放与淡化（仅绘制层，不触发重排）。
 
@@ -40,7 +51,7 @@ HarmonyOS / ArkTS 小说写作应用。当前源码基线为 2026-10-13 收到�
 for f in tools/*.cjs; do node "$f" || echo "FAILED $f"; done
 ```
 
-期望 7 个脚本全部通过、合计 224 项。设备侧四形态（键鼠输入、沉浸标题栏、沉浸光感、手机/平板触摸不回退）按 [多端自测清单](docs/refactor/multidevice-self-test.md) 执行；构建命令与 Hypium 通过条件（`Failure:0 Error:0 Ignore:0` 且 `Pass == Tests run`）见该文档 §1。
+期望 7 个脚本全部通过、合计 262 项。设备侧四形态（键鼠输入、沉浸标题栏、沉浸光感、手机/平板触摸不回退）按 [多端自测清单](docs/refactor/multidevice-self-test.md) 执行；构建命令与 Hypium 通过条件（`Failure:0 Error:0 Ignore:0` 且 `Pass == Tests run`）见该文档 §1。
 
 来包新增了窗口排版、绘制缓存、列表读取裁剪与保存修订号保护；其原始审查报告保存在 [2026-10-13 来包报告](docs/reviews/upstream-review-2026-10-13.html)。该报告保留部分修改前结论，验证结果需以当前源码的测试为准。
 

@@ -14,6 +14,8 @@ import { Logger } from './Logger'
 let cachedTopVp: number = 0
 /** 底部（导航条 / Home 指示条）避让高度，vp */
 let cachedBottomVp: number = 0
+/** 软键盘遮挡高度，vp（0 = 未弹出） */
+let cachedKeyboardVp: number = 0
 
 let bound: boolean = false
 let listener: ((data: window.AvoidAreaOptions) => void) | null = null
@@ -68,6 +70,13 @@ export function readSafeArea(win?: window.Window): void {
   } catch (e) {
     Logger.warn('SafeArea: read TYPE_NAVIGATION_INDICATOR failed ' + String(e))
   }
+  try {
+    // 软键盘：输入时必须让内容/光标让位，否则编辑器末行被键盘盖住
+    const kb: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD)
+    cachedKeyboardVp = toVp(kb.bottomRect.height)
+  } catch (e) {
+    Logger.warn('SafeArea: read TYPE_KEYBOARD failed ' + String(e))
+  }
 }
 
 export function safeTopVp(): number {
@@ -76,6 +85,11 @@ export function safeTopVp(): number {
 
 export function safeBottomVp(): number {
   return cachedBottomVp
+}
+
+/** 软键盘遮挡高度（vp）：0 表示未弹出；收起时回到 0 */
+export function keyboardHeightVp(): number {
+  return cachedKeyboardVp
 }
 
 /**
@@ -98,6 +112,9 @@ export function watchSafeArea(onChange: () => void, win?: window.Window): () => 
       cachedTopVp = toVp(data.area.topRect.height)
     } else if (data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
       cachedBottomVp = toVp(data.area.bottomRect.height)
+    } else if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
+      // 弹出/收起/切换输入法都会回调：高度 0 即收起
+      cachedKeyboardVp = toVp(data.area.bottomRect.height)
     }
     if (onAreaChange !== null) {
       onAreaChange()

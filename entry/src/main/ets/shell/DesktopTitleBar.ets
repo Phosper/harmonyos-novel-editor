@@ -22,14 +22,14 @@ import {
 } from '../utils/DesktopWindowChrome'
 import { deviceProfile, DeviceSnapshot } from '../utils/DeviceProfile'
 import { BreakPoint } from '../utils/BreakPoint'
-import { glassBarStyle } from './MaterialSurface'
-import { nav, Routes } from './Navigator'
-import { EditorTools } from './EditorTools'
 import { SaveState } from '../store/StoreModels'
+import { exitFocusAnimated } from './FocusTransition'
+import { ExportService } from '../utils/ExportService'
 import type { AppStores } from '../store/AppStores'
+import type { EditorDraftSnapshot } from '../store/EditorStore'
 
 /** 书名尚未加载时的标题兜底 */
-const TITLE_FALLBACK: string = 'Weaver'
+const TITLE_FALLBACK: string = '语流'
 /** 标题区最大宽度：留出动作与三键的空间，超长省略 */
 const TITLE_MAX_WIDTH: number = 340
 
@@ -252,15 +252,75 @@ export struct DesktopTitleBar {
       this.terminate(host)
       return
     }
-    stores.flushAll()
+    // 关闭窗口必须确认所有草稿真正落库：flushAll 会吞掉单篇失败，不能用它判断结果。
+    stores.flushAllStrict()
       .then(() => {
         this.terminate(host)
       })
       .catch((e: Error) => {
-        // 落库失败也要能关窗（数据由 30 秒安全网/下次启动兜底），不能把用户困在窗口里
-        Logger.warn('DesktopTitleBar: flushAll failed before close: ' + String(e))
-        this.terminate(host)
+        Logger.warn('DesktopTitleBar: flushAllStrict failed before close: ' + String(e))
+        this.showCloseBlockedDialog(stores, host)
       })
+  }
+
+  /**
+   * 保存失败时**不关窗**，给出可执行动作：重试保存 / 导出草稿 / 放弃并退出。
+   * 放弃是唯一会丢内存草稿的显式选择；点遮罩/返回则继续编辑。
+   */
+  private showCloseBlockedDialog(stores: AppStores, host: common.UIAbilityContext | undefined): void {
+    const retry: promptAction.Button = { text: '重试保存', color: this.colors().brand }
+    const exportDraft: promptAction.Button = { text: '导出草稿', color: this.colors().textPrimary }
+    const discard: promptAction.Button = { text: '放弃并退出', color: this.colors().danger }
+    try {
+      this.getUIContext().getPromptAction().showDialog({
+        title: '尚有未保存内容',
+        message: '保存到本地数据库失败，窗口已保持打开。可重试保存，先导出草稿，或明确放弃本次修改。',
+        buttons: [retry, exportDraft, discard]
+      }).then((res) => {
+        if (res.index === 0) {
+          this.close()
+        } else if (res.index === 1) {
+          this.exportDraftsBeforeClose(stores)
+        } else if (res.index === 2) {
+          this.terminate(host)
+        }
+      }).catch((e: Error) => {
+        Logger.warn('close-blocked dialog failed: ' + String(e))
+      })
+    } catch (e) {
+      Logger.warn('close-blocked dialog unavailable: ' + String(e))
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: '保存失败，窗口保持打开；请稍后重试' })
+      } catch (e2) {
+        Logger.warn('close-blocked toast failed: ' + String(e2))
+      }
+    }
+  }
+
+  /** 导出当前内存草稿为 JSON 文件（数据库不可用时的最后一道人工备份）。 */
+  private exportDraftsBeforeClose(stores: AppStores): void {
+    try {
+      const drafts: EditorDraftSnapshot[] = stores.editor.snapshotDrafts()
+      const payload: string = JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        reason: 'close-blocked-unsaved',
+        drafts: drafts
+      }, null, 2)
+      const name: string = '语流-未保存草稿-' + Date.now().toString() + '.json'
+      ExportService.saveText(name, payload)
+        .then((ok: boolean) => {
+          if (ok) {
+            this.getUIContext().getPromptAction().showToast({ message: '草稿已导出，可重试保存后再关闭' })
+          } else {
+            this.getUIContext().getPromptAction().showToast({ message: '导出取消或失败，草稿仍在窗口中' })
+          }
+        })
+        .catch((e: Error) => {
+          Logger.warn('export drafts failed: ' + String(e))
+        })
+    } catch (e) {
+      Logger.warn('export drafts unavailable: ' + String(e))
+    }
   }
 
   private hostContext(): common.UIAbilityContext | undefined {
@@ -353,32 +413,25 @@ export struct DesktopTitleBar {
     }
   }
 
-  private openSettings(): void {
-    nav.pushPath({ name: Routes.SETTINGS })
-  }
-
   private titleMaxWidth(): number {
-    return this.compactTools() ? 210 : TITLE_MAX_WIDTH
+    return this.compactTools() ? 170 : TITLE_MAX_WIDTH
   }
 
   private openMoreMenu(): void {
     const menuColor: string = this.colors().textPrimary
     const b1: promptAction.Button = { text: '导出', color: menuColor }
     const b2: promptAction.Button = { text: '导入', color: menuColor }
-    const b3: promptAction.Button = { text: '设置', color: menuColor }
     this.getUIContext().getPromptAction().showActionMenu({
       title: '应用',
-      buttons: [b1, b2, b3]
+      buttons: [b1, b2]
     }, (err, data) => {
       if (err) {
         return
       }
       if (data.index === 0) {
         this.onExport()
-      } else if (data.index === 1) {
-        this.onImport()
       } else {
-        this.openSettings()
+        this.onImport()
       }
     })
   }
@@ -448,120 +501,25 @@ export struct DesktopTitleBar {
 
   private exitImmersive(): void {
     if (this.app !== null) {
-      this.app.ui.exitImmersiveEditing()
+      exitFocusAnimated(this.getUIContext())
     }
   }
 
   build() {
-    Column() {
-      Row() {
-        // ① 应用导航：侧栏开关（沉浸模式隐藏，避免误触退出专注）
-        if (!this.isImmersive()) {
-          Row() {
-            Text('☰')
-              .fontSize(16)
-              .fontColor(this.app !== null && this.app.ui.showSidebar
-                ? this.colors().textPrimary : this.colors().textTertiary)
-          }
-          .width(44)
-          .height(DESKTOP_CHROME_HEIGHT_VP)
-          .justifyContent(FlexAlign.Center)
-          .alignItems(VerticalAlign.Center)
-          .accessibilityText(this.app !== null && this.app.ui.showSidebar ? '收起侧栏' : '展开侧栏')
-          .hoverEffect(HoverEffect.Highlight)
-          .focusable(true)
-          .tabStop(true)
-          .onClick(() => this.toggleSidebar())
-        }
-
-        // ② 标题 + 副标题（章节 · 字数 · 保存状态）：全应用唯一标题来源
-        Column() {
-          Text(this.barTitle())
-            .fontSize(14).fontWeight(FontWeight.Medium)
-            .fontColor(this.colors().textPrimary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-            .accessibilityText('书名：' + this.barTitle())
-          if (this.subtitle() !== '') {
-            Text(this.subtitle())
-              .fontSize(11)
-              .fontColor(this.colors().textTertiary)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              .width('100%')
-              .margin({ top: 1 })
-              .accessibilityText('文档状态：' + this.subtitle())
-              .onClick(() => this.onStatusClick())
-          }
-        }
-        .height(DESKTOP_CHROME_HEIGHT_VP)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Start)
-        .constraintSize({ maxWidth: this.titleMaxWidth() })
-        .margin({ left: 4, right: 8 })
-
-        // ③ 可拖拽空白：占满剩余宽度；双击空白区切换最大化/还原
-        Row() { }
-          .layoutWeight(1)
-          .height('100%')
-          .onTouch((event: TouchEvent) => this.onTitleTouch(event))
-          .onMouse((event: MouseEvent) => this.onTitleMouse(event))
-          .gesture(TapGesture({ count: 2 }).onAction(() => {
-            this.toggleMaximize()
-          }))
-
-        // ④ 常用工具上移到顶栏（文档级动作集中在这里，编辑器内部不再重复一条工具条）
-        if (this.hasDoc() && !this.isImmersive()) {
-          EditorTools({ app: this.app, compact: this.compactTools(), immersive: false })
-        }
-
-        // ⑤ 沉浸退出 / 应用级动作；窄宽度时低频动作收进「⋯」
-        if (this.isImmersive()) {
-          this.headerAction('退出专注', () => this.exitImmersive())
-        } else if (this.compactTools()) {
-          this.headerAction('⋯', () => this.openMoreMenu())
-        } else {
-          this.headerAction('导出', () => this.onExport())
-          this.headerAction('导入', () => this.onImport())
-          this.headerAction('设置', () => this.openSettings())
-        }
-
-        // ⑥ 窗口三键由系统原生绘制（见 DesktopWindowChrome.setWindowTitleButtonVisible）。
-        //    这里不再自绘字符按钮，只在右侧预留三键区宽度（getTitleButtonRect），
-        //    既保留华为原生外观，也避免动作区被三键遮挡。
-      }
-      .width('100%')
-      .height(DESKTOP_CHROME_HEIGHT_VP)
-      .padding({ right: this.titleButtonWidth })
-      .onAreaChange((oldValue: Area, newValue: Area) => {
-        const w: number = Number(newValue.width)
-        if (Math.abs(w - this.headerWidth) > 20) {
-          this.headerWidth = w
-        }
-      })
+    // 透明窗口条：只承载窗口拖动与双击最大化，**不再绘制背景、分隔线、品牌或动作**。
+    // 品牌在侧栏头部，文稿标题在正文内，目录开关在列表头部；视觉上与内容融为一体。
+    Row() {
     }
     .width('100%')
-    // 总高 = 48 + safeTop：safeTop 由标题栏自己吸纳，AppShell 不再额外加顶部 padding
     .height(this.barHeight())
-    .padding({ top: this.safeTop })
-    // 沉浸材质背景：模糊 + 渐变 + 下沿 1px 高光（T3 MaterialSurface，自动降级）
-    .attributeModifier(glassBarStyle(this.themeId()))
+    .padding({ top: this.safeTop, right: this.titleButtonWidth })
+    .backgroundColor(Color.Transparent)
+    .onTouch((event: TouchEvent) => this.onTitleTouch(event))
+    .onMouse((event: MouseEvent) => this.onTitleMouse(event))
+    .gesture(TapGesture({ count: 2 }).onAction(() => {
+      this.toggleMaximize()
+    }))
   }
 
-  /** 应用级动作按钮：统一 44vp 命中高度 + hover + 键盘焦点 */
-  @Builder
-  headerAction(label: string, action: () => void) {
-    Row() {
-      Text(label).fontSize(12).fontColor(this.colors().textSecondary)
-    }
-    .height(DESKTOP_CHROME_HEIGHT_VP)
-    .padding({ left: 10, right: 10 })
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .accessibilityText(label)
-    .hoverEffect(HoverEffect.Highlight)
-    .focusable(true)
-    .tabStop(true)
-    .onClick(action)
-  }
 
 }

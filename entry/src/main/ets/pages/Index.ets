@@ -8,18 +8,63 @@
 import { AppShell } from '../shell/AppShell'
 import { app } from '../store/AppStores'
 import { pageGlow } from '../constants/LightTokens'
+import { tokensFor } from '../constants/DesignTokens'
+import { fireAndLog } from '../store/AppStores'
+import { closeCanvasAnimated } from '../shell/CanvasTransition'
 
 @Entry
 @ComponentV2
 struct Index {
+  /** 思路板是全窗口分支：返回键先收它，再交回系统 */
+  onBackPress(): boolean {
+    if (app.ui.canvasOpen) {
+      closeCanvasAnimated(this.getUIContext())
+      return true
+    }
+    return false
+  }
+
+  /** 全局撤销条：画布/编辑器/列表都可见（覆盖初稿后画布已关闭，也必须能撤销）。 */
+  @Builder
+  undoBar() {
+    Row() {
+      Text(app.canvas.undoLabel)
+        .fontSize(12)
+        .fontColor(tokensFor(app.ui.themeId).onBrand)
+        .maxLines(1)
+        .layoutWeight(1)
+      Text('撤销')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(tokensFor(app.ui.themeId).onBrand)
+        .padding({ left: 12, right: 6, top: 6, bottom: 6 })
+        .onClick(() => {
+          fireAndLog(app.canvas.performUndo(), 'Index.undo')
+        })
+        .accessibilityText('撤销')
+    }
+    .width(300)
+    .height(44)
+    .padding({ left: 14, right: 8 })
+    .backgroundColor(tokensFor(app.ui.themeId).textPrimary)
+    .borderRadius(10)
+    .shadow({ radius: 18, color: tokensFor(app.ui.themeId).divider, offsetX: 0, offsetY: 6 })
+    .margin({ bottom: 48 })
+  }
+
   build() {
-    // @Entry 的 build 根节点必须是容器组件，故包一层 Column。
-    // 兜底铺一层页面光感渐变（AppShell 内部的 GlowPageBackground 是主层；
-    // 这里保证加载中/窗口边角也是"上亮下暗"，不会闪出纯色底）。
-    Column() {
-      AppShell()
+    // @Entry 的 build 根节点必须是容器组件，故包一层 Stack：撤销条要浮在所有页面之上。
+    Stack({ alignContent: Alignment.Bottom }) {
+      Column() {
+        AppShell()
+      }
+      .width('100%').height('100%')
+      .linearGradient({ angle: 180, colors: pageGlow(app.ui.themeId) })
+      if (app.canvas.undoLabel !== '') {
+        this.undoBar()
+      }
     }
     .width('100%').height('100%')
-    .linearGradient({ angle: 180, colors: pageGlow(app.ui.themeId) })
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

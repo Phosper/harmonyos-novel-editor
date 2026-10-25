@@ -12,6 +12,10 @@ const KEY_DARK: string = 'weaver_dark'
 const KEY_DARK_EXPLICIT: string = 'weaver_dark_explicit'
 const KEY_ENGINE: string = 'weaver_engine'
 const KEY_THEME: string = 'weaver_theme'
+const KEY_NICK: string = 'weaver_nickname'
+const KEY_AVATAR: string = 'weaver_avatar'
+/** 思路板：最近打开的白板 id（空串 = 没记过，进页面时退回第一块） */
+const KEY_CANVAS_RECENT: string = 'canvas_recent_board'
 
 export class PreferenceHelper {
   private static instance: PreferenceHelper | null = null
@@ -137,6 +141,55 @@ export class PreferenceHelper {
 
   async setThemeId(id: string): Promise<void> {
     await this.putString(KEY_THEME, id)
+  }
+
+  /**
+   * 本地账号昵称（空串 = 未登录）。
+   * 账号服务尚未接入：先在本机记住一个身份，侧栏左下角据此显示头像 + 昵称；
+   * 将来换成 Account Kit 时，只需把 UiStore.signIn 换成服务端身份写入。
+   */
+  async getNickname(): Promise<string> {
+    return this.getString(KEY_NICK, '')
+  }
+
+  async setNickname(name: string): Promise<void> {
+    await this.putString(KEY_NICK, name)
+  }
+
+  /** 自定义头像在沙箱里的绝对路径（空串 = 用系统占位人像） */
+  async getAvatarPath(): Promise<string> {
+    return this.getString(KEY_AVATAR, '')
+  }
+
+  async setAvatarPath(path: string): Promise<void> {
+    await this.putString(KEY_AVATAR, path)
+  }
+
+  /**
+   * 思路板最近打开的白板 id。
+   * 读写都不抛：读失败当作"没记过"（画布页退回第一块白板），写失败只记日志——
+   * 一个记忆项不该让整页进不去。
+   */
+  async getCanvasRecentBoard(): Promise<string> {
+    if (!this.prefs) return ''
+    try {
+      const val: Object = await this.prefs.get(KEY_CANVAS_RECENT, '')
+      if (typeof val === 'string') return val
+      return ''
+    } catch (e) {
+      Logger.warn('PreferenceHelper getCanvasRecentBoard failed: ' + String(e))
+      return ''
+    }
+  }
+
+  async setCanvasRecentBoard(boardId: string): Promise<void> {
+    if (!this.prefs) return
+    try {
+      await this.prefs.put(KEY_CANVAS_RECENT, boardId)
+      await this.prefs.flush()
+    } catch (e) {
+      Logger.warn('PreferenceHelper setCanvasRecentBoard failed: ' + String(e))
+    }
   }
 }
 

@@ -41,6 +41,7 @@ export class DatabaseHelper {
       await store.executeSql('PRAGMA foreign_keys = ON')
       await this.createTables(store)
       await this.ensureColumns(store)
+      await this.ensurePlacementUniqueIndex(store)
       this.store = store
       Logger.info('Database initialized (version ' + DB_VERSION + ')')
     } catch (e) {
@@ -49,6 +50,32 @@ export class DatabaseHelper {
       throw new Error(String(e))
     }
     return this.store
+  }
+
+  /**
+   * 同板同卡唯一约束：先查是否还有重复，没有才建索引。
+   * 有重复时只记日志、跳过，等本轮启动后的读侧 normalizeDuplicates 清完，
+   * 下次启动再建——这样既有数据不会把启动流程炸掉。
+   */
+  private async ensurePlacementUniqueIndex(store: relationalStore.RdbStore): Promise<void> {
+    try {
+      const rs: relationalStore.ResultSet = await store.querySql(
+        'SELECT canvas_id, topic_id FROM canvas_placements ' +
+        'GROUP BY canvas_id, topic_id HAVING COUNT(*) > 1 LIMIT 1')
+      let hasDuplicate: boolean = false
+      if (rs !== undefined) {
+        hasDuplicate = rs.goToFirstRow()
+        rs.close()
+      }
+      if (hasDuplicate) {
+        Logger.warn('Canvas: duplicate placements exist, skip unique index until next launch')
+        return
+      }
+      await store.executeSql(
+        'CREATE UNIQUE INDEX IF NOT EXISTS ux_placement_card ON canvas_placements(canvas_id, topic_id)')
+    } catch (e) {
+      Logger.warn('Canvas: ensurePlacementUniqueIndex failed: ' + String(e))
+    }
   }
 
   private async createTables(store: relationalStore.RdbStore): Promise<void> {
@@ -126,7 +153,78 @@ export class DatabaseHelper {
         'FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,' +
         'FOREIGN KEY (char_a_id) REFERENCES characters(id) ON DELETE CASCADE,' +
         'FOREIGN KEY (char_b_id) REFERENCES characters(id) ON DELETE CASCADE' +
-        ')'
+        ')',
+      'CREATE TABLE IF NOT EXISTS topics (' +
+        'id TEXT PRIMARY KEY,' +
+        'book_id TEXT,' +
+        "kind TEXT NOT NULL DEFAULT 'concept'," +
+        'title TEXT NOT NULL,' +
+        "aliases TEXT NOT NULL DEFAULT ''," +
+        "tags TEXT NOT NULL DEFAULT ''," +
+        "my_summary TEXT NOT NULL DEFAULT ''," +
+        'doc_id TEXT,' +
+        'created_at INTEGER NOT NULL,' +
+        'updated_at INTEGER NOT NULL' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS topic_evidence (' +
+        'id TEXT PRIMARY KEY,' +
+        'topic_id TEXT NOT NULL,' +
+        'kind TEXT NOT NULL,' +
+        'doc_id TEXT,' +
+        'para_index INTEGER NOT NULL DEFAULT 0,' +
+        'start_off INTEGER NOT NULL DEFAULT 0,' +
+        'end_off INTEGER NOT NULL DEFAULT 0,' +
+        "fingerprint TEXT NOT NULL DEFAULT ''," +
+        "quote_text TEXT NOT NULL DEFAULT ''," +
+        "user_text TEXT NOT NULL DEFAULT ''," +
+        "source_label TEXT NOT NULL DEFAULT ''," +
+        'created_at INTEGER NOT NULL,' +
+        'FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS canvases (' +
+        'id TEXT PRIMARY KEY,' +
+        'scope TEXT NOT NULL,' +
+        'book_id TEXT,' +
+        "title TEXT NOT NULL DEFAULT ''," +
+        'pan_x REAL NOT NULL DEFAULT 0,' +
+        'pan_y REAL NOT NULL DEFAULT 0,' +
+        'zoom REAL NOT NULL DEFAULT 1,' +
+        'sort_order INTEGER NOT NULL DEFAULT 0,' +
+        'created_at INTEGER NOT NULL,' +
+        'updated_at INTEGER NOT NULL' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS canvas_placements (' +
+        'id TEXT PRIMARY KEY,' +
+        'canvas_id TEXT NOT NULL,' +
+        'topic_id TEXT NOT NULL,' +
+        "parent_id TEXT NOT NULL DEFAULT ''," +
+        'ord INTEGER NOT NULL DEFAULT 0,' +
+        'x REAL NOT NULL DEFAULT 0,' +
+        'y REAL NOT NULL DEFAULT 0,' +
+        'z INTEGER NOT NULL DEFAULT 0,' +
+        'collapsed INTEGER NOT NULL DEFAULT 0,' +
+        "style TEXT NOT NULL DEFAULT ''," +
+        'FOREIGN KEY (canvas_id) REFERENCES canvases(id) ON DELETE CASCADE,' +
+        'FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS canvas_links (' +
+        'id TEXT PRIMARY KEY,' +
+        'canvas_id TEXT NOT NULL,' +
+        'from_topic_id TEXT NOT NULL,' +
+        'to_topic_id TEXT NOT NULL,' +
+        'kind TEXT NOT NULL,' +
+        "label TEXT NOT NULL DEFAULT ''," +
+        'created_at INTEGER NOT NULL,' +
+        'FOREIGN KEY (canvas_id) REFERENCES canvases(id) ON DELETE CASCADE,' +
+        'FOREIGN KEY (from_topic_id) REFERENCES topics(id) ON DELETE CASCADE,' +
+        'FOREIGN KEY (to_topic_id) REFERENCES topics(id) ON DELETE CASCADE' +
+        ')',
+      'CREATE INDEX IF NOT EXISTS idx_canvas_book ON canvases(book_id)',
+      'CREATE INDEX IF NOT EXISTS idx_topics_book ON topics(book_id)',
+      'CREATE INDEX IF NOT EXISTS idx_evidence_topic ON topic_evidence(topic_id)',
+      'CREATE INDEX IF NOT EXISTS idx_placement_canvas ON canvas_placements(canvas_id)',
+      'CREATE INDEX IF NOT EXISTS idx_placement_parent ON canvas_placements(parent_id)',
+      'CREATE INDEX IF NOT EXISTS idx_link_canvas ON canvas_links(canvas_id)'
     ]
     for (const sql of sqls) {
       try {

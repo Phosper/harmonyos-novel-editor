@@ -1,36 +1,217 @@
 // 顶栏编辑器工具组（桌面窗口头 / 平板宽屏顶栏共用）
 //
-// 设计目标（2026-10-18 顶栏承载常用工具）：
-//   - 只收高频动作：撤销/重做、行内格式、查找、打字机、沉浸编辑；
-//   - 导出/导入/设置等低频动作留在窗口头的「⋯」菜单，避免顶栏拥挤；
-//   - 统一 28vp 胶囊命中区 + hover + 两态（可用/禁用、开/关），
-//   - compact 模式下折叠格式组，只保留撤销/重做/查找/打字机/沉浸。
-import { tokensFor, WeaverColorSet, WeaverRadii, DEFAULT_THEME_ID } from '../constants/DesignTokens'
+// 2026-10-21 两轮修订：
+//   1) 视觉：全部动作改成 Email 式裸图标（见 TopActionButton），不再有玻璃圆片；
+//   2) 布局：按**可用宽度**分档，绝不溢出到窗口右上角被原生三键压住：
+//        L0 全量（含「打字机」文字胶囊）
+//        L1 全量（打字机只留图标）
+//        L2 精简（⋯ 菜单 + 查找 + 专注）
+//        L3 极简（⋯ 菜单 + 查找）
+//        L4 只剩撤销/重做
+//      每档宽度由 rowWidth() 显式计算，level() 取第一个放得下的档位；
+//      space 由调用方用「实测列宽 − 右侧原生三键避让」算好后传入。
+//   3) 被收起的动作不会丢：⋯ 菜单里始终有 加粗 / 斜体 / 标题 / 打字机 / 专注写作。
+import { tokensFor, WeaverColorSet, DEFAULT_THEME_ID } from '../constants/DesignTokens'
+import { Motion } from '../constants/Motion'
 import type { AppStores } from '../store/AppStores'
-import { StyleKind } from '../editor/flowtext/model/EditorTypes'
+import { ParagraphKind, StyleKind } from '../editor/flowtext/model/EditorTypes'
+import { TopActionButton } from './TopActionButton'
+import { promptAction } from '@kit.ArkUI'
+import { Logger } from '../utils/Logger'
+import { MenuButton } from './MenuButton'
+import { toggleFocusAnimated } from './FocusTransition'
+import { TopIconMetrics, topIconMetrics } from '../constants/LightTokens'
 
 @ComponentV2
 export struct EditorTools {
   @Param app: AppStores | null = null
-  /** 窄宽度：隐藏 B/I/H1，减少顶栏宽度 */
-  @Param compact: boolean = false
-  /** 沉浸模式下隐藏"进入沉浸"按钮（退出入口由窗口头/浮动按钮提供） */
+  /**
+   * 工具组可用宽度（vp）：调用方用「列宽 − 左内边距 − 原生三键避让」算好传入。
+   * 0 表示尚未测量，按全量渲染（首帧可能被裁剪一瞬，下一帧即分档到位）。
+   */
+  @Param space: number = 0
+  /** 沉浸模式下隐藏“进入沉浸”按钮（退出入口由窗口头提供） */
   @Param immersive: boolean = false
+  /** 历史深度（由宿主经 @Monitor 推送）：让撤销/重做禁用态可精确刷新 */
+  @Param historyTick: number = 0
+  /** 「加到卡片」：由 EditorPane 打开选卡面板（选区 → 引文） */
+  @Event onAddToCard: () => void = () => {}
+
+  /** 空闲淡出：3 秒无操作降到 55%，悬停/输入/选词即恢复 */
+  @Local idle: boolean = false
+  private idleTimer: number = -1
+
+  aboutToAppear(): void {
+    this.scheduleIdle()
+  }
+
+  aboutToDisappear(): void {
+    if (this.idleTimer !== -1) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = -1
+    }
+  }
+
+  /** 任何输入/选区变化都算“活跃”（editor 每次编辑都会递增 selectionTick） */
+  @Monitor('app.ui.selectionTick')
+  onSelectionTick(): void {
+    this.wake()
+  }
+
+  private scheduleIdle(): void {
+    if (this.idleTimer !== -1) {
+      clearTimeout(this.idleTimer)
+    }
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = -1
+      this.idle = true
+    }, 3000)
+  }
+
+  private wake(): void {
+    if (this.idle) {
+      this.idle = false
+    }
+    this.scheduleIdle()
+  }
+
+  /** 当前是否有选区；读 selectionTick 建立订阅。 */
+  private hasSelection(): boolean {
+    if (this.app === null || this.app.ui.editorController === null) {
+      return false
+    }
+    if (this.app.ui.selectionTick < 0) {
+      return false
+    }
+    const sel = this.app.ui.editorController.getSelection()
+    return sel.end > sel.start
+  }
+
+  @Builder
+  captureButton() {
+    Text('加到卡片')
+      .fontSize(this.tabletPill() ? 12 : 11)
+      .fontColor(this.colors().brand)
+      .backgroundColor(this.colors().activeBg)
+      .borderRadius(8)
+      .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+      .onClick(() => this.onAddToCard())
+      .accessibilityText('把选中文字加到卡片')
+  }
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
   }
 
+  /** 图标形态：电脑 = 方形 40/44/20，平板 = 圆形 44/56/24 */
+  private metrics(): TopIconMetrics {
+    if (this.app === null) {
+      return topIconMetrics(true, false, false)
+    }
+    return topIconMetrics(this.app.ui.pointerPrimary, this.app.ui.tabletMode,
+      this.app.ui.usesDesktopChrome)
+  }
+
+  private hitSize(): number {
+    return this.metrics().hitSize
+  }
+
+  /** 打字机胶囊：平板字号更大，留宽一点 */
+  private tabletPill(): boolean {
+    return this.app !== null && this.app.ui.tabletMode
+  }
+
+  private pillWidth(): number {
+    return this.tabletPill() ? 88 : 74
+  }
+
+  private hasDoc(): boolean {
+    return this.app !== null && this.app.editor.hasDoc
+  }
+
   private canUndo(): boolean {
-    return this.app !== null && this.app.editor.canUndo
+    if (this.app === null) {
+      return false
+    }
+    // 读宿主推送的 tick + store 版本号，建立稳定的显式依赖
+    const tick: number = this.historyTick
+    const version: number = this.app.editor.historyVersion
+    return tick >= 0 && version >= 0 && this.app.editor.canUndo
   }
 
   private canRedo(): boolean {
-    return this.app !== null && this.app.editor.canRedo
+    if (this.app === null) {
+      return false
+    }
+    const tick: number = this.historyTick
+    const version: number = this.app.editor.historyVersion
+    return tick >= 0 && version >= 0 && this.app.editor.canRedo
   }
 
   private typewriterOn(): boolean {
     return this.app !== null && this.app.ui.typewriter
+  }
+
+  /** 当前格式位掩码；读取 selectionTick 建立订阅 */
+  private currentMask(): number {
+    if (this.app === null || this.app.ui.editorController === null) {
+      return 0
+    }
+    const tick: number = this.app.ui.selectionTick
+    if (tick < 0) {
+      return 0
+    }
+    return this.app.ui.editorController.inlineStyleMask()
+  }
+
+  // ── 宽度分档 ──────────────────────────────────────────────
+  //
+  // 每档都按「图标热区 + 外边距」精算，宁可早一档收起，也不让内容溢出到
+  // 窗口右上角（那里是系统绘制的三键区，会把图标压掉一半）。
+  // 精简档（L2/L3）去掉图标外边距，44vp 热区贴紧，省出 16vp。
+
+  private gapForLevel(): number {
+    return this.level() <= 1 ? this.metrics().gap : 0
+  }
+
+  private rowWidth(level: number): number {
+    const gap: number = level <= 1 ? this.metrics().gap : 0
+    const slot: number = this.hitSize() + gap * 2
+    const divider: number = 8
+    const menu: number = this.paragraphMenuWidth()
+    if (level === 0) {
+      // 撤销 重做 | B I 段落▾ | 打字机胶囊 查找 专注
+      return 2 * slot + divider + 2 * slot + menu + divider + this.pillWidth() + slot + slot
+    }
+    if (level === 1) {
+      // 打字机改为纯图标
+      return 2 * slot + divider + 2 * slot + menu + divider + slot + slot + slot
+    }
+    if (level === 2) {
+      // 撤销 重做 | ⋯ | 查找 专注
+      return 2 * slot + divider + slot + divider + slot + slot
+    }
+    if (level === 3) {
+      // 撤销 重做 | ⋯ | 查找
+      return 2 * slot + divider + slot + divider + slot
+    }
+    return 2 * slot
+  }
+
+  private level(): number {
+    const space: number = this.space
+    if (space <= 0) {
+      return 0
+    }
+    // 8vp 容差：rowWidth 是估算值（分隔线/胶囊宽度有 ±几 vp 误差），
+    // 而 captionInset 已留了 24vp 呼吸，容差内不会真的压到原生三键。
+    const tolerance: number = 8
+    for (let level: number = 0; level <= 3; level++) {
+      if (this.rowWidth(level) <= space + tolerance) {
+        return level
+      }
+    }
+    return 4
   }
 
   private toggleTypewriter(): void {
@@ -51,86 +232,263 @@ export struct EditorTools {
     }
   }
 
-  private applyHeading(): void {
+  /** 设为某段落种类（工具栏下拉 / ⋯ 菜单共用） */
+  private applyParagraph(kind: number): void {
     if (this.app !== null && this.app.ui.editorController !== null) {
-      this.app.ui.editorController.toggleParagraphStyle(1)
+      this.app.ui.editorController.setParagraphKind(kind)
     }
+  }
+
+  /** 当前段落种类（ParagraphKind）：读 selectionTick 建立订阅 */
+  private paragraphKind(): number {
+    if (this.app === null || this.app.ui.editorController === null) {
+      return 0
+    }
+    if (this.app.ui.selectionTick < 0) {
+      return 0
+    }
+    return this.app.ui.editorController.paragraphKind()
+  }
+
+  private paragraphLabel(): string {
+    const kind: number = this.paragraphKind()
+    if (kind === ParagraphKind.H1) {
+      return '标题 1'
+    }
+    if (kind === ParagraphKind.H2) {
+      return '标题 2'
+    }
+    if (kind === ParagraphKind.H3) {
+      return '标题 3'
+    }
+    if (kind === ParagraphKind.BULLET) {
+      return '• 列表'
+    }
+    if (kind === ParagraphKind.TODO) {
+      return '○ 待办'
+    }
+    if (kind === ParagraphKind.TODO_DONE) {
+      return '✓ 已完成'
+    }
+    return '正文'
+  }
+
+
+  /** 精简档的 ⋯ 菜单：被收起的动作全部在这里，功能不丢 */
+  private onOverflowAction(index: number): void {
+    if (index === 0) {
+      this.applyInline(StyleKind.BOLD)
+    } else if (index === 1) {
+      this.applyInline(StyleKind.ITALIC)
+    } else if (index === 2) {
+      this.applyParagraph(ParagraphKind.H1)
+    } else if (index === 3) {
+      this.applyParagraph(ParagraphKind.H2)
+    } else if (index === 4) {
+      // 段落下拉在窄窗口会被整档收起，列表/待办必须在这里也留入口
+      this.applyParagraph(ParagraphKind.BULLET)
+    } else if (index === 5) {
+      this.applyParagraph(ParagraphKind.TODO)
+    } else if (index === 6) {
+      this.toggleTypewriter()
+    } else if (index === 7 && this.app !== null) {
+      toggleFocusAnimated(this.getUIContext())
+    } else if (index === 8) {
+      this.onAddToCard()
+    }
+  }
+
+  private paragraphMenuWidth(): number {
+    return this.tabletPill() ? 96 : 84
+  }
+
+  @Builder
+  paragraphMenuView() {
+    // 点当前种类 = 回到正文（编辑器侧开关语义）；点其他种类 = 设为该种类
+    Menu() {
+      MenuItem({ content: '正文' }).onClick(() => this.applyParagraph(ParagraphKind.BODY))
+      MenuItem({ content: '标题 1' }).onClick(() => this.applyParagraph(ParagraphKind.H1))
+      MenuItem({ content: '标题 2' }).onClick(() => this.applyParagraph(ParagraphKind.H2))
+      MenuItem({ content: '标题 3' }).onClick(() => this.applyParagraph(ParagraphKind.H3))
+      MenuItem({ content: '• 无序列表' }).onClick(() => this.applyParagraph(ParagraphKind.BULLET))
+      MenuItem({ content: '○ 待办清单' }).onClick(() => this.applyParagraph(ParagraphKind.TODO))
+    }
+    .fontSize(this.tabletPill() ? 16 : 14)
+    .fontColor(this.colors().textPrimary)
+    .radius(12)
+  }
+
+  /** 段落样式下拉：显示当前值的触发器（对齐备忘录「正文▾」） */
+  @Builder
+  paragraphStyleMenu() {
+    Row() {
+      Text(this.paragraphLabel())
+        .fontSize(this.tabletPill() ? 14 : 13)
+        .fontColor(this.colors().textPrimary)
+        .maxLines(1)
+      Text('⌄')
+        .fontSize(12)
+        .fontColor(this.colors().textTertiary)
+        .margin({ left: 4 })
+    }
+    .height(this.tabletPill() ? 30 : 26)
+    .padding({ left: 10, right: 8 })
+    .borderRadius(8)
+    .backgroundColor(this.colors().activeBg)
+    .margin({ left: 2, right: 2 })
+    .enabled(this.hasDoc())
+    .opacity(this.hasDoc() ? 1 : 0.38)
+    .accessibilityText('段落样式：' + this.paragraphLabel())
+    .hoverEffect(HoverEffect.Highlight)
+    .bindMenu(this.paragraphMenuView, { placement: Placement.BottomLeft, enableArrow: true })
+  }
+
+  @Builder
+  toolDivider() {
+    Divider()
+      .vertical(true).height(14).color(this.colors().divider)
+      .margin({ left: 2, right: 2 })
+  }
+
+  /** 打字机：L0 用带文字的胶囊（模式开关需要明确文字），L1 收成图标 */
+  @Builder
+  typewriterPill() {
+    Row() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.textformat'))
+          .fontSize(this.tabletPill() ? 15 : 14)
+          .fontColor([this.typewriterOn() ? this.colors().brand : this.colors().textSecondary])
+          .margin({ right: 5 })
+        Text('打字机')
+          .fontSize(this.tabletPill() ? 12 : 11)
+          .fontColor(this.typewriterOn() ? this.colors().brand : this.colors().textSecondary)
+      }
+      .height(this.tabletPill() ? 30 : 26)
+      .padding({ left: this.tabletPill() ? 10 : 8, right: this.tabletPill() ? 11 : 9 })
+      .borderRadius(8)
+      .backgroundColor(this.typewriterOn() ? this.colors().activeBg : Color.Transparent)
+      .border({ width: 1, color: this.typewriterOn() ? this.colors().brand : Color.Transparent })
+      .animation({ duration: Motion.fast, curve: Motion.standardCurve })
+    }
+    .height(this.hitSize())
+    .padding({ left: 2, right: 2 })
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .accessibilityText(this.typewriterOn() ? '打字机模式：已开启，点击关闭' : '打字机模式：已关闭，点击开启')
+    .hoverEffect(HoverEffect.Highlight)
+    .onClick(() => this.toggleTypewriter())
   }
 
   build() {
     Row() {
-      this.toolButton('撤', '撤销', this.canUndo(), () => {
-        if (this.app !== null) {
+      // 走编辑器控制器（与 Ctrl+Z 同一条链路），避免绕过编辑器态导致“点了没反应”
+      // 精确禁用态：有历史才亮
+      this.iconButton($r('sys.symbol.undo'), '撤销', false, this.hasDoc(), () => {
+        Logger.info('EditorTools: undo click canUndo=' + this.canUndo().toString())
+        if (!this.canUndo()) {
+          // 没有历史时给出明确反馈，而不是静默无反应
+          promptAction.showToast({ message: '没有可撤销的操作' })
+        }
+        if (this.app !== null && this.app.ui.editorController !== null) {
+          this.app.ui.editorController.undo()
+        } else if (this.app !== null) {
           this.app.editor.undo()
         }
-      }, false)
-      this.toolButton('重', '重做', this.canRedo(), () => {
-        if (this.app !== null) {
+      })
+      this.iconButton($r('sys.symbol.redo'), '重做', false, this.hasDoc(), () => {
+        if (this.app !== null && this.app.ui.editorController !== null) {
+          this.app.ui.editorController.redo()
+        } else if (this.app !== null) {
           this.app.editor.redo()
         }
-      }, false)
+      })
 
-      if (!this.compact) {
-        Divider()
-          .vertical(true).height(14).color(this.colors().divider)
-          .margin({ left: 4, right: 4 })
-        this.toolButton('B', '加粗', false, () => this.applyInline(StyleKind.BOLD), true)
-        this.toolButton('I', '斜体', false, () => this.applyInline(StyleKind.ITALIC), true)
-        this.toolButton('H', '标题', false, () => this.applyHeading(), true)
-      }
-
-      Divider()
-        .vertical(true).height(14).color(this.colors().divider)
-        .margin({ left: 4, right: 4 })
-
-      // 打字机：两态胶囊（开启=品牌色 + 圆点 + 浅底）
-      Row() {
-        Circle({ width: 5, height: 5 })
-          .fill(this.typewriterOn() ? this.colors().brand : this.colors().textTertiary)
-          .margin({ right: 5 })
-        Text('打字机')
-          .fontSize(11)
-          .fontColor(this.typewriterOn() ? this.colors().brand : this.colors().textSecondary)
-      }
-      .height(26)
-      .padding({ left: 8, right: 9 })
-      .borderRadius(13)
-      .backgroundColor(this.typewriterOn() ? this.colors().activeBg : Color.Transparent)
-      .border({ width: 1, color: this.typewriterOn() ? this.colors().brand : Color.Transparent })
-      .accessibilityText(this.typewriterOn() ? '打字机模式：已开启，点击关闭' : '打字机模式：已关闭，点击开启')
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => this.toggleTypewriter())
-
-      this.toolButton('查', '查找', false, () => {
-        if (this.app !== null) {
-          this.app.ui.requestFind()
+      if (this.level() <= 1) {
+        if (this.hasSelection()) {
+          this.captureButton()
         }
-      }, false)
-
-      if (!this.immersive) {
-        this.toolButton('专', '专注写作（隐藏侧栏与列表）', false, () => {
+        this.toolDivider()
+        this.iconButton($r('sys.symbol.bold'), '加粗', (this.currentMask() & 1) !== 0,
+          this.hasDoc(), () => this.applyInline(StyleKind.BOLD))
+        this.iconButton($r('sys.symbol.italic'), '斜体', (this.currentMask() & 2) !== 0,
+          this.hasDoc(), () => this.applyInline(StyleKind.ITALIC))
+        this.paragraphStyleMenu()
+        this.toolDivider()
+        if (this.level() === 0) {
+          this.typewriterPill()
+        } else {
+          this.iconButton($r('sys.symbol.textformat'), '打字机', this.typewriterOn(), this.hasDoc(),
+            () => this.toggleTypewriter())
+        }
+        this.iconButton($r('sys.symbol.magnifyingglass'), '查找', false, this.hasDoc(), () => {
           if (this.app !== null) {
-            this.app.ui.toggleImmersiveEditing()
+            this.app.ui.requestFind()
           }
-        }, false)
+        })
+        if (!this.immersive) {
+          this.iconButton($r('sys.symbol.fullscreen'), '专注写作（隐藏侧栏与列表）', false, this.hasDoc(), () => {
+            if (this.app !== null) {
+              toggleFocusAnimated(this.getUIContext())
+            }
+          })
+        }
+      } else if (this.level() <= 3) {
+        // 精简：格式与打字机进 ⋯ 菜单
+        this.toolDivider()
+        // 锚定下拉菜单（与 Email 三点菜单同形），不再用模态动作面板
+        MenuButton({
+          label: '更多格式操作',
+          themeId: this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID,
+          isEnabled: this.hasDoc(),
+          pointerPrimary: this.app !== null && this.app.ui.pointerPrimary,
+          tabletMode: this.app !== null && this.app.ui.tabletMode,
+          desktopMode: this.app !== null && this.app.ui.usesDesktopChrome,
+          gapOverride: this.gapForLevel(),
+          items: ['加粗', '斜体', '标题 1', '标题 2', '• 列表', '○ 待办', '打字机', '专注写作', '加到卡片'],
+          onSelect: (index: number) => this.onOverflowAction(index)
+        })
+        this.toolDivider()
+        this.iconButton($r('sys.symbol.magnifyingglass'), '查找', false, this.hasDoc(), () => {
+          if (this.app !== null) {
+            this.app.ui.requestFind()
+          }
+        })
+        if (this.level() === 2 && !this.immersive) {
+          this.iconButton($r('sys.symbol.fullscreen'), '专注写作（隐藏侧栏与列表）', false, this.hasDoc(), () => {
+            if (this.app !== null) {
+              toggleFocusAnimated(this.getUIContext())
+            }
+          })
+        }
       }
     }
+    // 兜底：即使宽度测量晚到一帧，也不会把图标画到右侧原生三键区域外
+    .clip(true)
+    // 空闲淡出：写作时降低存在感，需要时 hover 立即恢复
+    .opacity(this.idle ? 0.3 : 1)
+    .animation({ duration: Motion.normal, curve: Motion.standardCurve })
+    .onHover((isHover: boolean) => {
+      if (isHover) {
+        this.wake()
+      } else {
+        this.scheduleIdle()
+      }
+    })
   }
 
   @Builder
-  toolButton(glyph: string, label: string, active: boolean, action: () => void, bold: boolean) {
-    Row() {
-      Text(glyph)
-        .fontSize(13)
-        .fontWeight(bold ? FontWeight.Bold : FontWeight.Regular)
-        .fontColor(active || bold ? this.colors().textPrimary : this.colors().textSecondary)
-    }
-    .width(28).height(26)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .borderRadius(WeaverRadii.XS)
-    .accessibilityText(label)
-    .hoverEffect(HoverEffect.Highlight)
-    .onClick(action)
+  iconButton(symbol: Resource, label: string, active: boolean, enabled: boolean, action: () => void) {
+    TopActionButton({
+      symbol: symbol,
+      label: label,
+      themeId: this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID,
+      active: active,
+      isEnabled: enabled,
+      pointerPrimary: this.app !== null && this.app.ui.pointerPrimary,
+      tabletMode: this.app !== null && this.app.ui.tabletMode,
+      desktopMode: this.app !== null && this.app.ui.usesDesktopChrome,
+      gapOverride: this.gapForLevel(),
+      onTap: action
+    })
   }
 }

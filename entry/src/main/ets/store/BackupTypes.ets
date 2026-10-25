@@ -7,6 +7,9 @@ import type { CharacterModel } from '../model/Character'
 import type { WorldSettingModel } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 import type { RelationshipModel } from '../model/Relationship'
+import type {
+  CanvasBoardData, CanvasCardData, CanvasEvidenceData, CanvasLinkData, CanvasPlacementData
+} from '../model/CanvasTypes'
 
 export interface BookBackupSnapshot {
   id: string
@@ -24,6 +27,15 @@ export interface BackupPayload {
   worldSettings: WorldSettingModel[]
   inspirations: InspirationModel[]
   relationships: RelationshipModel[]
+  /**
+   * v2 新增：思路板五表（topics / topic_evidence / canvases / canvas_placements / canvas_links）。
+   * 都是可选的 —— 旧版本备份没有这几项，导入时按空数组处理。
+   */
+  topics?: CanvasCardData[]
+  topicEvidence?: CanvasEvidenceData[]
+  canvases?: CanvasBoardData[]
+  canvasPlacements?: CanvasPlacementData[]
+  canvasLinks?: CanvasLinkData[]
 }
 
 /** 导入侧宽松视图：允许字段缺失，由导入逻辑逐项兜底 */
@@ -37,4 +49,9 @@ export interface BackupPayloadLoose {
   worldSettings?: WorldSettingModel[]
   inspirations?: InspirationModel[]
   relationships?: RelationshipModel[]
+  topics?: CanvasCardData[]
+  topicEvidence?: CanvasEvidenceData[]
+  canvases?: CanvasBoardData[]
+  canvasPlacements?: CanvasPlacementData[]
+  canvasLinks?: CanvasLinkData[]
 }

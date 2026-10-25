@@ -86,6 +86,26 @@ const GREEN: WeaverColorSet = {
   sidebarBg: '#EDF3EB', listBg: '#FAFDF9', toolbarBg: '#F8FCF7', editorBg: '#F1F6F0'
 }
 
+// 桃笺（浅）：低饱和粉纸 + 暖深梅字，适合当写作用"底纸"。
+// 纸色取 #FAF0F1（近白粉，不荧光），卡片/工具栏逐层提亮，侧栏/次级底略压深，
+// 形成"纸 → 卡 → 侧栏"三级同色系层次。交互底沿用低透明度墨色（前两位 alpha）。
+// 对比度（WCAG 2.1，sRGB 相对亮度，脚本实算）：
+//   textPrimary #3B262B on bgPrimary/editorBg #FAF0F1 = 12.55:1（≥ 7:1）
+//   textPrimary #3B262B on bgCard #FDF8F9 = 13.33:1 / on bgSurface #F4E4E7 = 11.41:1
+//   textSecondary #6A4A51 on bgPrimary #FAF0F1 = 6.93:1（≥ 4.5:1），on bgSurface = 6.31:1
+//   textTertiary #9C7E84 on bgPrimary = 3.28:1（仅用于弱提示，不作为正文）
+//   divider #E5CDD2 on bgPrimary #FAF0F1 = 1.34:1（可见分界；同族主题为 1.16~1.25）
+//   onBrand #FFFFFF on brand #5C2F3A = 10.92:1
+//   success #2F6B3C / warning #8A5A00 / danger #B3261E on bgPrimary = 5.72 / 5.31 / 5.85:1
+const ROSE: WeaverColorSet = {
+  brand: '#5C2F3A', brandPressed: '#3F1F27', onBrand: '#FFFFFF',
+  bgPrimary: '#FAF0F1', bgCard: '#FDF8F9', bgSurface: '#F4E4E7',
+  textPrimary: '#3B262B', textSecondary: '#6A4A51', textTertiary: '#9C7E84',
+  divider: '#E5CDD2', activeBg: '#145C2F3A', hoverBg: '#0D5C2F3A',
+  success: '#2F6B3C', warning: '#8A5A00', danger: '#B3261E',
+  sidebarBg: '#F7EAEC', listBg: '#FDF8F9', toolbarBg: '#FCF4F5', editorBg: '#FAF0F1'
+}
+
 // 夜读（深）：对齐纯纯写作实测——柔和深灰（非纯黑）+ 浅字，顶栏与正文同底
 const NIGHT: WeaverColorSet = {
   brand: '#EDEDED', brandPressed: '#FFFFFF', onBrand: '#1C1C1E',
@@ -100,6 +120,7 @@ export const THEMES: WeaverTheme[] = [
   { id: 'ink', name: '极简纸墨', dark: false, colors: INK },
   { id: 'warm', name: '温暖米纸', dark: false, colors: WARM },
   { id: 'green', name: '青笺', dark: false, colors: GREEN },
+  { id: 'rose', name: '桃笺', dark: false, colors: ROSE },
   { id: 'dark', name: '夜读', dark: true, colors: NIGHT }
 ]
 
@@ -352,6 +373,8 @@ export const PAPER_THEMES: PaperTheme[] = [
   { id: 'default', name: '素白', backgroundColor: '#FFFFFF', textColor: '#182431', fontSize: 18, lineHeightRatio: 1.9 },
   { id: 'green', name: '青笺', backgroundColor: '#EDF5EA', textColor: '#1A2818', fontSize: 18, lineHeightRatio: 1.9 },
   { id: 'sepia', name: '茶墨', backgroundColor: '#F5ECD8', textColor: '#3A2E1A', fontSize: 18, lineHeightRatio: 1.9 },
+  // 桃笺：与主题 ROSE 的 editorBg / textPrimary 保持一致，名实相符
+  { id: 'rose', name: '桃笺', backgroundColor: '#FAF0F1', textColor: '#3B262B', fontSize: 18, lineHeightRatio: 1.9 },
   { id: 'dark', name: '夜读', backgroundColor: '#1E1E1E', textColor: '#E8E8E8', fontSize: 18, lineHeightRatio: 1.9 }
 ]
 

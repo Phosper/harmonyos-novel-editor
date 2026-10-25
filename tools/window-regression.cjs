@@ -46,17 +46,22 @@ const context = vm.createContext({
   ConfigurationConstant: { ColorMode: { COLOR_MODE_LIGHT: 0, COLOR_MODE_DARK: 1, COLOR_MODE_NOT_SET: -1 } },
   prefs: { async init() {}, async isDarkExplicit() { return true; }, async isFirstLaunch() { return false; } },
   app: { ui: { syncSystemBars() {}, async applySystemDarkMode() {} }, async flushAll() {}, destroy() {} },
-  setAppContext() {}
+  setAppContext() {},
+  // 一镜到底转场的第三方库在单测里用空实现，只验证调用接线
+  ezCustomTransition: { init() {}, onConfigurationChanged() {} },
+  DEFAULT_THEME_ID: 'paper',
+  tokensFor: () => ({ brand: '#0A59F7', textPrimary: '#1C1C1E', textSecondary: '#6E6E73',
+    textTertiary: '#A6A6AB', danger: '#E84026', divider: '#ECECEE', activeBg: '#0F1C1C1E' })
 });
 vm.runInContext(compile(read('utils/DesktopWindowChrome.ets')), context);
 const barSource = read('shell/PcWindowBar.ets');
 vm.runInContext(compile('class WindowBarProbe {\n' + ['win', 'startMove', 'minimize', 'toggleMaximize', 'close',
   'onTitleTouch', 'onTitleMouse'].map(name => method(barSource, name)).join('\n') + '\n}'), context);
 const titleBarSource = read('shell/DesktopTitleBar.ets');
-vm.runInContext(compile("const TITLE_FALLBACK: string = 'Weaver';\nclass TitleBarProbe {\n" + ['aboutToAppear', 'aboutToDisappear', 'win', 'applyChrome',
+vm.runInContext(compile("const TITLE_FALLBACK: string = '语流';\nclass TitleBarProbe {\n" + ['aboutToAppear', 'aboutToDisappear', 'win', 'applyChrome',
   'readStatus', 'refreshTitleButtonRect', 'bindWindowListeners', 'unbindWindowListeners', 'startMove', 'minimize',
-  'toggleMaximize', 'close', 'hostContext', 'terminate', 'onTitleTouch', 'onTitleMouse', 'barTitle', 'barHeight',
-  'maximized', 'maxGlyph', 'maxLabel'].map(name => method(titleBarSource, name)).join('\n') + '\n}'), context);
+  'toggleMaximize', 'close', 'showCloseBlockedDialog', 'exportDraftsBeforeClose', 'hostContext', 'terminate', 'onTitleTouch', 'onTitleMouse', 'barTitle', 'barHeight',
+  'maximized', 'maxGlyph', 'maxLabel', 'themeId', 'colors'].map(name => method(titleBarSource, name)).join('\n') + '\n}'), context);
 vm.runInContext(compile(read('entryability/EntryAbility.ets')), context);
 const api = vm.runInContext('({configureDesktopChrome, WindowBarProbe, TitleBarProbe, EntryAbility})', context);
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -257,7 +262,12 @@ async function check(name, action) {
     assert.equal(chromeCalls(native).length, 0, 'starting loadContent is not successful loading');
     windowStage.callbacks[0]({ code: 0 });
     assert.equal(entry.contentReady, true);
-    assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
+    // 默认浅色主题在窗口创建前就已生效，不需要再重建三键（只有夜读才切装饰栏）
+    assert.deepEqual(chromeCalls(native), [
+      ['setWindowDecorVisible', false],
+      ['setWindowTitleButtonVisible', true, true, true],
+      ['setTitleAndDockHoverShown', false, true]
+    ]);
   });
   await check('failed UI content loading leaves desktop chrome unconfigured', async () => {
     deviceInfo.deviceType = '2in1';
@@ -335,8 +345,11 @@ async function check(name, action) {
       'getWindowStatus', 'getTitleButtonRect']);
     assert.deepEqual(native.calls[0], ['setWindowDecorHeight', 48], '48vp is inside the official [37,112] range');
     assert.equal(native.calls[1][0], 'setDecorButtonStyle');
-    assert.equal(native.calls[1][1].buttonIconSize, 18);
+    // 只下发 colorMode：图标尺寸/按钮间距交还系统，避免三键被挤成一团
+    assert.equal(native.calls[1][1].buttonIconSize, undefined);
+    assert.equal(native.calls[1][1].colorMode !== undefined, true);
     assert.deepEqual(native.calls[2], ['setWindowDecorVisible', false]);
+    // 保留系统原生三键（颜色由窗口 colorMode 决定）
     assert.deepEqual(native.calls[3], ['setWindowTitleButtonVisible', true, true, true]);
     assert.deepEqual(native.calls[4], ['setTitleAndDockHoverShown', false, true]);
   });
@@ -387,13 +400,13 @@ async function check(name, action) {
     probe.chromeHeight = 90;
     assert.equal(probe.barHeight(), 90, 'a snapshot chrome height wins over the constant fallback');
   });
-  await check('desktop title bar falls back to the Weaver title for an empty book name', () => {
+  await check('desktop title bar falls back to the 语流 title for an empty book name', () => {
     const probe = titleBar(nativeWindow(), { app: { project: { bookName: '   ' }, ui: { themeId: 'paper' } } });
-    assert.equal(probe.barTitle(), 'Weaver');
+    assert.equal(probe.barTitle(), '语流');
     probe.app = { project: { bookName: '长夜' }, ui: { themeId: 'paper' } };
     assert.equal(probe.barTitle(), '长夜');
     probe.app = null;
-    assert.equal(probe.barTitle(), 'Weaver');
+    assert.equal(probe.barTitle(), '语流');
   });
   await check('desktop title bar start and minimize failures are contained', async () => {
     for (const [operation, methodName] of [['startMoving', 'startMove'], ['minimize', 'minimize']]) {
@@ -424,7 +437,7 @@ async function check(name, action) {
     const log = [];
     const host = { terminateSelf() { log.push('terminate'); return Promise.resolve(); } };
     const probe = titleBar(nativeWindow(), {
-      app: { flushAll() { log.push('flush'); return Promise.resolve(); } },
+      app: { flushAllStrict() { log.push('flush'); return Promise.resolve(); } },
       getUIContext: () => ({ getHostContext: () => host })
     });
     probe.close();
@@ -432,17 +445,26 @@ async function check(name, action) {
     await settle();
     assert.deepEqual(log, ['flush', 'terminate']);
   });
-  await check('desktop title bar still terminates when the final flush fails', async () => {
+  await check('desktop title bar keeps the window open when the strict flush fails', async () => {
     const log = [];
     const host = { terminateSelf() { log.push('terminate'); return Promise.resolve(); } };
+    let dialog = null;
     const probe = titleBar(nativeWindow(), {
-      app: { flushAll() { log.push('flush'); return Promise.reject(new Error('disk full')); } },
-      getUIContext: () => ({ getHostContext: () => host })
+      app: { ui: { themeId: 'paper' }, flushAllStrict() { log.push('flush'); return Promise.reject(new Error('disk full')); } },
+      getUIContext: () => ({
+        getHostContext: () => host,
+        getPromptAction: () => ({
+          showDialog(options) { dialog = options; return new Promise(() => {}); },
+          showToast() {}
+        })
+      })
     });
     probe.close();
     await settle();
-    assert.deepEqual(log, ['flush', 'terminate'], 'a failed flush must not trap the user in the window');
-    assert.match(warnings.at(-1), /flushAll failed before close/);
+    assert.deepEqual(log, ['flush'], 'a failed save must NOT terminate the ability');
+    assert.ok(dialog !== null, 'the user must get retry/export/discard choices');
+    assert.equal(dialog.buttons.map(b => b.text).join(','), '重试保存,导出草稿,放弃并退出');
+    assert.match(warnings.at(-1), /flushAllStrict failed before close/);
   });
   await check('desktop title bar closes safely without a store or a host context', async () => {
     const log = [];
@@ -452,7 +474,7 @@ async function check(name, action) {
     assert.deepEqual(log, ['terminate'], 'no store means nothing to flush, but the ability still ends');
     const before = warnings.length;
     const missingHost = titleBar(nativeWindow(), {
-      app: { flushAll() { return Promise.resolve(); } },
+      app: { flushAllStrict() { return Promise.resolve(); } },
       getUIContext: () => ({ getHostContext: () => { throw new Error('no host context'); } })
     });
     missingHost.close();

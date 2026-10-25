@@ -4,6 +4,8 @@
     "type": "entry",
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
+    // AbilityStage：一镜到底转场的配置变更转发（ezcustomtransition）
+    "srcEntry": "./ets/entryability/MyAbilityStage.ets",
     "deviceTypes": [
       "phone",
       "tablet",
@@ -29,6 +31,8 @@
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        // 方向策略：跟随系统自动旋转（布局只按宽度断点响应，不解释 rotation 语义）
+        "orientation": "auto_rotation",
         "skills": [
           {
             "entities": [

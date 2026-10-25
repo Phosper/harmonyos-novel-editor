@@ -314,13 +314,27 @@ export class ChapterDao extends BaseDao<ChapterModel> {
    * 计数口径以 bookId 为界：'' → 仅未归类文稿，其余 → 该书籍。
    */
   async counts(bookId: string): Promise<LibCounts> {
+    return this.countLibs(' WHERE book_id = ?', [bookId])
+  }
+
+  /**
+   * 跨项目的文库计数。
+   *
+   * 侧栏「文库」是**全局库**（全部项目合计）：废纸篓本来就按全书查，
+   * 全部文稿/收藏/灵感池也必须同一口径，否则侧栏数字与"全部文稿"列表对不上。
+   */
+  async countsGlobal(): Promise<LibCounts> {
+    return this.countLibs('', [])
+  }
+
+  /** 四个计数一次聚合（避免 4 次全表扫描）；where 只影响作用域 */
+  private async countLibs(whereClause: string, args: relationalStore.ValueType[]): Promise<LibCounts> {
     const sql: string = 'SELECT ' +
       'COALESCE(SUM(CASE WHEN is_trash = 0 THEN 1 ELSE 0 END), 0) AS c_all, ' +
       'COALESCE(SUM(CASE WHEN is_fav = 1 AND is_trash = 0 THEN 1 ELSE 0 END), 0) AS c_fav, ' +
       'COALESCE(SUM(CASE WHEN is_inspiration = 1 AND is_trash = 0 THEN 1 ELSE 0 END), 0) AS c_insp, ' +
       'COALESCE(SUM(CASE WHEN is_trash = 1 THEN 1 ELSE 0 END), 0) AS c_trash ' +
-      'FROM chapters WHERE book_id = ?'
-    const args: relationalStore.ValueType[] = [bookId]
+      'FROM chapters' + whereClause
     const rs: relationalStore.ResultSet = await this.getStore().querySql(sql, args)
     const result: LibCounts = { all: 0, fav: 0, insp: 0, trash: 0 }
     try {

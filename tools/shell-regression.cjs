@@ -160,6 +160,26 @@ function exportHarness(options = {}) {
     assert.equal(harness.service.renderChapter(chapter, 'txt', chapter.title), plain);
     assert.equal(harness.service.renderBook('示例书', [chapter], 'txt'), '示例书\n\n片段\n==\n\n' + plain);
   });
+  await check('list and todo paragraphs export as Markdown list items, never as fake headings', () => {
+    const harness = exportHarness();
+    const content = '正文\n第一项\n待办\n已办';
+    // 段落属性区间含段末换行：列表 [3,7)、待办 [7,10)、已完成待办 [10,12)
+    const runsJson = '3,7,0,0,4,0;7,10,0,0,5,0;10,12,0,0,6,1';
+    const chapter = { title: '片段', content, format: harness.format.TXT, runsJson };
+    assert.equal(harness.service.renderChapter(chapter, 'md', chapter.title),
+      '正文\n- 第一项\n- [ ] 待办\n  - [x] 已办');
+    const heading = { title: '片段', content: '标题', format: harness.format.TXT, runsJson: '0,2,0,0,2' };
+    assert.equal(harness.service.renderChapter(heading, 'md', heading.title), '## 标题');
+    // 在段首插入过文字后段落标注可能从段中开始，导出要按整段判定，不能时有时无
+    const shifted = { title: '片段', content: 'Xitem', format: harness.format.TXT,
+      runsJson: '1,5,0,0,4,0' };
+    assert.equal(harness.service.renderChapter(shifted, 'md', shifted.title), '- Xitem');
+    // 行内标注（heading=0）不能把列表读成正文
+    const inline = { title: '片段', content: 'item', format: harness.format.TXT,
+      runsJson: '0,1,1,0,0,0;1,4,0,0,5,0' };
+    // 行内加粗仍按 ** 导出，段落种类按列表前缀导出：两者共存
+    assert.equal(harness.service.renderChapter(inline, 'md', inline.title), '- [ ] **i**tem');
+  });
   await check('all six visible menu choices export their advertised format', async () => {
     const expected = [['chapter', 'txt'], ['chapter', 'md'], ['chapter', 'html'], ['book', 'txt'], ['book', 'md'], ['backup', undefined]];
     for (let index = 0; index < expected.length; index++) {
@@ -194,7 +214,9 @@ function exportHarness(options = {}) {
       assert.equal(app.ui.dialog, api.ShellDialog[kind]);
       assert.equal(app.ui.closeCount, 0);
       assert.equal(probe.dialogPending, false);
-      assert.ok(probe.toasts.includes('操作失败，请重试'));
+      // 失败文案保留「操作失败，请重试」前缀，后面可能跟上可动作原因
+      // （例如删项目时透出「正文超过单篇上限 / 仍有未保存的改动」）
+      assert.ok(probe.toasts.some((t) => t.startsWith('操作失败，请重试')), probe.toasts);
       app[operation] = async () => {};
       await probe.handleDialogConfirm('New name');
       assert.equal(app.ui.dialog, api.ShellDialog.NONE);
@@ -354,6 +376,721 @@ function exportHarness(options = {}) {
     syncGate.resolve();
     assert.equal(await save, true);
     assert.equal(harness.handles.size, 0);
+  });
+  await check('project sidebar pins its list to the top (no centred block on project changes)', async () => {
+    const sidebar = read('shell/ProjectSidebar.ets');
+    assert.match(sidebar, /constraintSize\(\{ minHeight: '100%' \}\)/, 'content must fill the viewport height');
+    assert.match(sidebar, /justifyContent\(FlexAlign\.Start\)/, 'content must start at the top');
+    assert.match(sidebar, /\.align\(Alignment\.TopStart\)/, 'Scroll must align its content to the top');
+    assert.ok(!sidebar.includes('.translate('), 'no bottom-up slide-in transform');
+    assert.match(sidebar, /sys\.symbol\.folder/, 'project rows use a Symbol icon');
+  });
+  await check('window chrome is transparent and pane headers own the Symbol actions', async () => {
+    const bar = read('shell/DesktopTitleBar.ets');
+    assert.ok(!bar.includes("Text('☰')"), 'hamburger text glyph must be gone');
+    assert.match(bar, /backgroundColor\(Color\.Transparent\)/, 'window strip must not paint a bar');
+    const list = read('shell/DocListPane.ets');
+    assert.match(list, /sys\.symbol\.close_sidebar/);
+    assert.match(list, /sys\.symbol\.open_sidebar/);
+    // 更多图标统一为鸿蒙四点 dot_grid_2x2；设置入口已并入左下角账号行
+    // 菜单顺序固定为 思路板 / 导出 / 导入（思路板是唯一入口，见 canvas-contract §5.1）
+    assert.match(list, /headerMoreIcon/);
+    assert.match(list, /items: \['思路板', '导出', '导入'\]/);
+    assert.doesNotMatch(list, /\$r\('sys\.symbol\.more'\)/, 'more glyph is an app grid, not four dots');
+    const sidebar = read('shell/ProjectSidebar.ets');
+    assert.match(sidebar, /app\.media\.startIcon/);
+  });
+  await check('tool group uses Symbol icons and unified motion tokens', async () => {
+    const tools = read('shell/EditorTools.ets');
+    for (const name of ['undo', 'redo', 'bold', 'italic', 'magnifyingglass', 'fullscreen', 'textformat']) {
+      assert.ok(tools.includes('sys.symbol.' + name), 'missing symbol ' + name);
+    }
+    assert.match(tools, /Motion\.fast/);
+    assert.match(tools, /Motion\.standardCurve/);
+  });
+  await check('user-visible application name is 语流 across resources and headers', async () => {
+    const appStrings = fs.readFileSync(path.resolve(__dirname, '../AppScope/resources/base/element/string.json'), 'utf8');
+    const entryStrings = fs.readFileSync(path.resolve(__dirname, '../entry/src/main/resources/base/element/string.json'), 'utf8');
+    assert.match(appStrings, /"value": "语流"/);
+    assert.ok(!appStrings.includes('"value": "Weaver"'));
+    assert.match(entryStrings, /语流小说编辑器/);
+    assert.ok(!entryStrings.includes('Weaver 小说编辑器'));
+    assert.ok(read('pages/GuideSwiperPage.ets').includes('开始使用 语流'));
+    assert.ok(read('shell/ProjectSidebar.ets').includes("Text('语流')"));
+  });
+  await check('main app no longer mounts a layout-occupying title bar', async () => {
+    const shell = read('shell/AppShell.ets');
+    assert.ok(!shell.includes('DesktopTitleBar({'), 'title bar must not be rendered in the main layout');
+    assert.match(read('shell/ProjectSidebar.ets'), /startWindowMove/);
+    assert.match(read('shell/DocListPane.ets'), /startWindowMove/);
+    assert.match(read('shell/EditorPane.ets'), /startWindowMove/);
+  });
+  await check('wide sidebar animates width, opacity and offset instead of snapping', async () => {
+    const shell = read('shell/AppShell.ets');
+    assert.match(shell, /\.width\(app\.ui\.showSidebar \? this\.sideBarWidthVp\(\) : 0\)/);
+    assert.match(shell, /\.opacity\(app\.ui\.showSidebar \? 1 : 0\)/);
+    assert.match(shell, /\.translate\(\{ x: app\.ui\.showSidebar \? 0 : -16 \}\)/);
+    assert.match(shell, /duration: Motion\.sidebar/);
+    assert.match(shell, /curves\.springMotion\(0\.4, 1\.0, 0\)/);
+    assert.ok(!shell.includes('SideBarContainer(SideBarContainerType.AUTO)'), 'wide layout must not rely on instant showSideBar');
+  });
+  await check('placeholder is painted on the text canvas with body metrics', async () => {
+    const renderer = read('editor/flowtext/render/GlyphRenderer.ets');
+    assert.match(renderer, /drawPlaceholder/);
+    assert.match(renderer, /TextBlob\.makeFromString/);
+    const editor = read('editor/flowtext/CanvasTextEditor.ets');
+    assert.match(editor, /placeholderColor/);
+    const pane = read('shell/EditorPane.ets');
+    assert.ok(!pane.includes("Text('开始写作…')"), 'placeholder overlay must be removed');
+  });
+  await check('middle column receives live text preview updates and undo sync', async () => {
+    assert.match(read('store/ProjectStore.ets'), /updateDocPreview\(/);
+    assert.match(read('shell/EditorPane.ets'), /updateDocPreview\(ownerId, text\)/);
+    assert.match(read('shell/EditorPane.ets'), /@Monitor\('app\.editor\.contentRev'\)/);
+  });
+  await check('focus mode has a designed header, exit path and visible fallback animation', async () => {
+    const focus = read('shell/FocusWorkspace.ets');
+    assert.match(focus, /专注写作/);
+    assert.match(focus, /exitFocus\(/);
+    assert.match(focus, /sys\.symbol\.exit_full_screen/);
+    // 不再用 scale/translate 入场（与 geometryTransition 叠加会出现白边与标题跳变）
+    assert.doesNotMatch(focus, /\.scale\(\{ x: this\.entered/);
+    assert.match(focus, /\.backgroundColor\(this\.colors\(\)\.bgPrimary\)/);
+    assert.doesNotMatch(focus, /\.translate\(\{ y: this\.entered/);
+    // 入场不再用透明度/位移兜底：geometryTransition 负责形变，页面本身始终不透明
+    assert.doesNotMatch(focus, /\.opacity\(this\.entered/);
+    assert.match(focus, /aboutToAppear/);
+    assert.match(focus, /Motion\.fast/);
+  });
+  await check('top actions are flat Email-style icons without glass material', async () => {
+    const tokens = read('constants/LightTokens.ets');
+    assert.match(tokens, /TOP_ICON_SIZE: number = 40/);
+    assert.match(tokens, /TOP_ICON_HIT_POINTER: number = 44/);
+    assert.match(tokens, /TOP_ICON_HIT_TOUCH: number = 48/);
+    assert.match(tokens, /TOP_ICON_FONT: number = 20/);
+    assert.doesNotMatch(tokens, /WeaverGlassKind\.ICON/);
+    assert.doesNotMatch(tokens, /iconGlass/);
+    const surface = read('shell/MaterialSurface.ets');
+    assert.doesNotMatch(surface, /glassIconStyle/);
+    const button = read('shell/TopActionButton.ets');
+    // 关键字面：没有材质修改器、没有模糊/渐变、没有描边阴影，只有 hover/按下时的纯色底
+    assert.doesNotMatch(button, /glassIconStyle|attributeModifier|backgroundBlurStyle|linearGradient|border\s*\(|shadow/);
+    assert.match(button, /Color\.Transparent/);
+    assert.match(button, /this\.pressed/);
+    assert.match(button, /HitTestMode\.None/);
+    for (const file of ['shell/EditorTools.ets', 'shell/DocListPane.ets', 'shell/ProjectSidebar.ets']) {
+      assert.match(read(file), /TopActionButton/, file + ' must reuse the shared button');
+    }
+    const focus = read('shell/FocusWorkspace.ets');
+    assert.doesNotMatch(focus, /glassIconStyle/, 'focus exit pill must stay flat too');
+  });
+  await check('native caption buttons follow the app theme instead of the system theme', async () => {
+    const chrome = read('utils/DesktopWindowChrome.ets');
+    assert.match(chrome, /export function syncDesktopDecorButtons\(dark: boolean\): void/);
+    assert.match(chrome, /setDecorButtonStyle/);
+    assert.match(chrome, /COLOR_MODE_DARK/);
+    assert.match(chrome, /COLOR_MODE_LIGHT/);
+    // 只对桌面窗口下发，手机/平板不刷 801 告警
+    assert.match(chrome, /AppStorage\.get<boolean>\('isPcDevice'\)/);
+    assert.match(chrome, /AppStorage\.get<boolean>\('freeWindowMode'\)/);
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /syncDesktopDecorButtons\(t\.dark\)/, 'theme sync must drive the caption button colour');
+  });
+  await check('top-right tools reserve the measured native caption area', async () => {
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /titleButtonWidthVp: number = 0/);
+    assert.match(ui, /this\.titleButtonWidthVp = snapshot\.titleButtonWidthVp/);
+    assert.match(ui, /get captionInset\(\): number/);
+    assert.match(ui, /Math\.max\(measured \+ 24, 168\)/);
+    const pane = read('shell/EditorPane.ets');
+    assert.match(pane, /return this\.app\.ui\.captionInset/);
+    assert.doesNotMatch(pane, /\? 148 : 12/, 'caption inset must not stay hard-coded');
+    const focus = read('shell/FocusWorkspace.ets');
+    assert.match(focus, /return this\.app\.ui\.captionInset/);
+  });
+  await check('editor tool group collapses by measured width and keeps an overflow menu', async () => {
+    const tools = read('shell/EditorTools.ets');
+    assert.match(tools, /@Param space: number = 0/);
+    assert.match(tools, /private rowWidth\(level: number\): number/);
+    assert.match(tools, /private level\(\): number/);
+    assert.match(tools, /if \(this\.level\(\) === 0\)/);
+    for (const item of ['加粗', '斜体', '标题 1', '标题 2', '打字机', '专注写作']) {
+      assert.ok(tools.includes("'" + item + "'"), 'overflow menu must keep ' + item);
+    }
+    // 兜底裁剪 + 不再按窗口断点拍脑袋
+    assert.doesNotMatch(tools, /@Param compact: boolean/, 'compact must come from measured space');
+    const pane = read('shell/EditorPane.ets');
+    assert.match(pane, /EditorTools\(\{ app: this\.app, space: this\.toolSpace\(\)/);
+    const shell = read('shell/AppShell.ets');
+    assert.match(shell, /EditorTools\(\{ app: app, space: 260/);
+    assert.doesNotMatch(shell, /EditorTools\(\{[^}]*compact:/, 'appBar must not pass the removed compact param');
+    assert.match(pane, /this\.headerWidth = width/);
+    const button = read('shell/TopActionButton.ets');
+    assert.match(button, /@Param gapOverride: number = -1/);
+    assert.match(button, /\.margin\(\{ left: this\.gap\(\), right: this\.gap\(\) \}\)/);
+  });
+  await check('system chrome follows the app theme instead of the OS dark mode', async () => {
+    const chrome = read('utils/AppChromeMode.ets');
+    assert.match(chrome, /export function rememberAppContext/);
+    assert.match(chrome, /export function applyAppColorMode/);
+    assert.match(chrome, /setColorMode\(/);
+    assert.match(chrome, /COLOR_MODE_DARK/);
+    assert.match(chrome, /COLOR_MODE_LIGHT/);
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /applyAppColorMode\(this\.darkMode\)/);
+    assert.match(ui, /refreshDecorColorScheme\(this\.darkMode\)/);
+    const ability = read('entryability/EntryAbility.ets');
+    assert.match(ability, /rememberAppContext\(this\.context\.getApplicationContext\(\)\)/);
+    const tools = read('shell/EditorTools.ets');
+    assert.match(tools, /MenuButton\(/);
+    // 列表/待办也进 ⋯ 菜单：段落下拉在 L2/L3 档会被整档收起，这两项必须另有入口
+    assert.match(tools, /items: \['加粗', '斜体', '标题 1', '标题 2', '• 列表', '○ 待办', '打字机', '专注写作', '加到卡片'\]/);
+    assert.doesNotMatch(tools, /\$r\('sys\.symbol\.more'\)/, 'overflow must not use the app-grid glyph');
+    const button = read('shell/TopActionButton.ets');
+    assert.match(button, /@Param glyphText: string = ''/);
+    assert.match(button, /Text\(this\.glyphText\)/);
+  });
+  await check('top action state background is a desktop rounded square, not a circle', async () => {
+    const tokens = read('constants/LightTokens.ets');
+    assert.match(tokens, /TOP_ICON_RADIUS: number = 8/);
+    const button = read('shell/TopActionButton.ets');
+    // 电脑：方形（8vp 圆角）；平板：圆形（visualSize/2）——形态必须分流
+    assert.match(button, /TOP_ICON_RADIUS/);
+    assert.match(button, /metrics\.circular \? metrics\.visualSize \/ 2 : TOP_ICON_RADIUS/);
+    assert.match(read('constants/LightTokens.ets'), /export function topIconMetrics\(pointerPrimary: boolean, tabletMode: boolean,/);
+  });
+  await check('native caption buttons stay native and follow the app colour mode', async () => {
+    assert.equal(fs.existsSync(path.resolve(__dirname, '../entry/src/main/ets/shell/WindowControls.ets')), false,
+      'self-drawn window controls must not come back');
+    const chrome = read('utils/DesktopWindowChrome.ets');
+    assert.match(chrome, /setWindowTitleButtonVisible\(true, true, true\)/);
+    assert.match(chrome, /export function refreshDecorColorScheme/);
+    const ability = read('entryability/EntryAbility.ets');
+    assert.match(ability, /refreshDecorColorScheme\(true\)/);
+    assert.match(ability, /on\('windowStatusChange'/);
+    assert.match(ability, /off\('windowStatusChange'/);
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /applyAppColorMode\(this\.darkMode\)/);
+  });
+  await check('tablet chrome scales up and uses circular state backgrounds', async () => {
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /get tabletMode\(\): boolean/);
+    assert.match(ui, /const tabletLike: boolean = this\.deviceClass === DeviceClass\.TABLET \|\| this\.foldExpanded/);
+    const light = read('constants/LightTokens.ets');
+    assert.match(light, /TOP_ICON_SIZE_TOUCH: number = 44/);
+    assert.match(light, /TOP_ICON_HIT_TABLET: number = 56/);
+    assert.match(light, /TOP_ICON_FONT_TOUCH: number = 24/);
+    assert.match(light, /metrics\.circular = true/);
+    const button = read('shell/TopActionButton.ets');
+    assert.match(button, /focusOnTouch\(this\.pointerPrimary\)/);
+    const list = read('shell/DocListPane.ets');
+    assert.match(list, /this\.tablet\(\) \? 28 : 20/);
+    assert.match(list, /this\.tablet\(\) \? 44 : 36/);
+    assert.match(list, /minHeight: this\.tabletMode \? 64 : 56/);
+    const pane = read('shell/EditorPane.ets');
+    assert.match(pane, /if \(this\.app\.ui\.tabletMode\) \{\n      return 56/);
+    assert.match(pane, /maxWidth: 760/);
+    const shell = read('shell/AppShell.ets');
+    assert.match(shell, /if \(app\.ui\.tabletMode\) \{\n      return 380/);
+    assert.match(shell, /breakPoint !== BreakPoint\.LG \|\| app\.ui\.tabletMode/);
+    const bars = read('utils/SystemBars.ets');
+    assert.match(bars, /setBars\(w, argbOf\(bgHex\), contentFor\(dark\)\)/);
+  });
+  await check('window chrome colour is fixed before the window exists', async () => {
+    const ability = read('entryability/EntryAbility.ets');
+    // 窗口创建前先按浅色建窗，避免系统深色把三键锁成白色
+    assert.match(ability, /applyAppColorMode\(false\)/);
+    // 深色主题才重建三键（浅色不闪原生标题栏）
+    assert.match(ability, /if \(app\.ui\.darkMode\) \{\n\s+refreshDecorColorScheme\(true\)/);
+    const chrome = read('utils/DesktopWindowChrome.ets');
+    // style 只在"带窗口标题"时生效：显示 → 下发 → 隐藏
+    const refresh = chrome.slice(chrome.indexOf('export function refreshDecorColorScheme'));
+    const show = refresh.indexOf('setWindowDecorVisible(true)');
+    const style = refresh.indexOf('applyDesktopDecorMetrics(w, dark)');
+    const hide = refresh.indexOf('setWindowDecorVisible(false)');
+    assert.ok(show >= 0 && show < style && style < hide, 'style must be applied while the decor is visible');
+    // 系统栏区域必须由页面背景覆盖，而不是只给透明容器加 expandSafeArea
+    assert.match(read('pages/Index.ets'), /expandSafeArea\(\[SafeAreaType\.SYSTEM\]/);
+    assert.match(read('shell/AppShell.ets'), /expandSafeArea\(\[SafeAreaType\.SYSTEM\]/);
+  });
+  await check('menus use the native menu components instead of custom popups', async () => {
+    const menu = read('shell/MenuButton.ets');
+    // 系统菜单：位置 / 材质 / 动画 / 点击关闭都由系统负责（与电子邮件一致）
+    assert.match(menu, /bindMenu\(this\.menuView, \{ placement: Placement\.BottomRight \}\)/);
+    // 右对齐：菜单右边缘贴按钮，向左展开，不越过中栏
+    assert.match(menu, /Placement\.BottomRight/);
+    assert.match(menu, /Menu\(\) \{/);
+    assert.match(menu, /MenuItem\(\{ content: item \}\)/);
+    assert.match(menu, /this\.tabletMode \? 16 : 14/);
+    // 触发器必须是普通 Stack：包在自定义组件里时点击会被内部 onClick 吃掉，菜单不弹
+    assert.doesNotMatch(menu, /TopActionButton\(\{/, 'menu trigger must not wrap a custom component');
+    assert.match(menu, /\.bindMenu\(this\.menuView/);
+    assert.match(menu, /topIconMetrics\(this\.pointerPrimary, this\.tabletMode, this\.desktopMode\)/);
+    assert.match(read('shell/DocListPane.ets'), /desktopMode: this\.app !== null && this\.app\.ui\.usesDesktopChrome/);
+    assert.doesNotMatch(menu, /bindPopup\(/, 'no custom popup');
+    assert.doesNotMatch(menu, /showActionMenu\(/, 'no modal action sheet');
+    assert.match(read('shell/DocListPane.ets'), /MenuButton\(/);
+    assert.match(read('shell/EditorTools.ets'), /MenuButton\(/);
+  });
+  await check('swipe actions are touch-only and follow the Notes circular layout', async () => {
+    const list = read('shell/DocListPane.ets');
+    // 电脑端（PC / Edge 电脑模式）没有横滑，动作只走菜单
+    assert.match(list, /private canSwipe\(\): boolean \{\n    return this\.app !== null && !this\.app\.ui\.usesDesktopChrome/);
+    assert.match(list, /if \(this\.canSwipe\(\)\) \{\n\s+ListItem\(\) \{\n\s+this\.docRow\(item\)/);
+    // 触摸端：备忘录式圆形动作（收藏 / 灵感 / 重命名 / 删除）
+    for (const name of ['star', 'lightbulb', 'square_and_pencil', 'trash']) {
+      assert.ok(list.includes('sys.symbol.' + name), 'missing swipe glyph ' + name);
+    }
+    assert.match(list, /borderRadius\(this\.swipeCircleSize\(\) \/ 2\)/);
+    // closeAllSwipeActions 在 ListScroller 上（Scroller 没有这个方法）
+    assert.match(list, /private listScroller: ListScroller = new ListScroller\(\)/);
+    assert.match(list, /closeAllSwipeActions\(\)/);
+    assert.doesNotMatch(list, /swipeDelete\(/, 'the old full-width delete strip must be gone');
+    // 右键 / 长按都是原生菜单（非模态），不再是半模态动作面板
+    assert.match(list, /bindContextMenu\(this\.rowMenu\(item\), this\.contextTrigger\(\)\)/);
+    assert.match(list, /ResponseType\.RightClick/);
+    assert.match(list, /ResponseType\.LongPress/);
+    assert.doesNotMatch(list, /showRowMenu\(/, 'row menu must not be a half-modal sheet');
+    assert.doesNotMatch(list, /showActionMenu\(/, 'row menu must not be a half-modal sheet');
+  });
+  await check('settings open as a centered half-modal sheet, not a right-side page', async () => {
+    const shell = read('shell/AppShell.ets');
+    assert.match(shell, /@Local showSettings: boolean = false/);
+    assert.match(shell, /bindSheet\(this\.showSettings, this\.settingsSheet\(\)/);
+    assert.match(shell, /preferType: SheetType\.CENTER/);
+    assert.match(shell, /showClose: true/);
+    assert.match(shell, /title: \{ title: '设置' \}/);
+    assert.match(shell, /onWillDismiss: \(action: DismissSheetAction\)/);
+    // 入口不再 push 路由
+    assert.doesNotMatch(shell, /onSettings: \(\) => \{ nav\.pushPath\(\{ name: Routes\.SETTINGS \}\) \}/);
+    // 设置内容统一在 shell/SettingsPanel（分组卡片版式，对齐电子邮件），两个宿主共用
+    const panel = read('shell/SettingsPanel.ets');
+    assert.match(panel, /export struct SettingsPanel/);
+    assert.match(panel, /this\.themeTitle\(\)/);
+    assert.match(panel, /this\.sectionTitle\('写作'\)/);
+    assert.match(panel, /this\.themeRow\(theme\)/);
+    assert.match(panel, /this\.switchRow\('打字机模式'/);
+    assert.match(panel, /this\.actionRow\('恢复默认设置'/);
+    assert.match(panel, /borderRadius\(this\.cardRadius\(\)\)/);
+    const page = read('pages/dest/SettingsDest.ets');
+    assert.match(page, /import \{ SettingsPanel \} from '\.\.\/\.\.\/shell\/SettingsPanel'/);
+    assert.match(page, /SettingsPanel\(\)/);
+  });
+  await check('long-take transition is wired through Navigation on both shells', async () => {
+    // 三方库以源码形式随仓库分发：不依赖 ohpm 安装，构建可离线复现
+    const lib = read('thirdparty/ezcustomtransition/Index.ets');
+    assert.match(lib, /export \{ ezCustomTransition \}/);
+    assert.match(lib, /export \{ LongTakeSession \}/);
+    assert.match(lib, /export \{ LongTakeTransitionDelegate \}/);
+    // AbilityStage：配置变更转发
+    const stage = read('entryability/MyAbilityStage.ets');
+    assert.match(stage, /ezCustomTransition\.onConfigurationChanged\(\)/);
+    const moduleJson = fs.readFileSync(path.resolve(__dirname, '../entry/src/main/module.json5'), 'utf8');
+    assert.match(moduleJson, /"srcEntry": "\.\/ets\/entryability\/MyAbilityStage\.ets"/);
+    // EntryAbility：初始化
+    assert.match(read('entryability/EntryAbility.ets'), /ezCustomTransition\.init\(windowStage\)/);
+    // 两个外壳都挂 customNavContentTransition + 转场期间禁用交互
+    const shell = read('shell/AppShell.ets');
+    const mobile = read('shell/MobileShell.ets');
+    for (const source of [shell, mobile]) {
+      assert.match(source, /customNavContentTransition\(\(from: NavContentInfo, to: NavContentInfo, operation: NavigationOperation\)/);
+      assert.match(source, /onTransitionStart: \(\) => \{\s*this\.navInteractive = false/);
+      assert.match(source, /\.enabled\(this\.navInteractive\)/);
+      assert.match(source, /longTakeTransitionParam/);
+    }
+    // 目标页：delegate + session + onReady/onSizeChange
+    const workspace = read('shell/WorkspaceDest.ets');
+    assert.match(workspace, /LongTakeTransitionDelegate\(\{/);
+    assert.match(workspace, /this\.longTakeSession\.init\(navDestContext, this\.longTakeParam/);
+    // 1.0.0 由库内 WindowUtils 监听 windowSizeChange，目标页不再手动 setNewSize
+    assert.match(workspace, /this\.longTakeSession\.init\(navDestContext, this\.longTakeParam/);
+    assert.match(read('thirdparty/ezcustomtransition/src/main/ets/utils/WindowUtils.ets'), /on\('windowSizeChange'/);
+    assert.match(workspace, /navDestinationBgColor/);
+    // 触发侧：只在"真的会 push"的宿主里抓参数，宽屏三栏不抓
+    const list = read('shell/DocListPane.ets');
+    assert.match(list, /@Param enableLongTake: boolean = false/);
+    assert.match(list, /if \(this\.enableLongTake && this\.app !== null && !this\.app\.ui\.isWide\)/);
+    assert.match(list, /generateLongTakeParam\(\s*this\.getUIContext\(\), 'doc_row_' \+ item\.id/);
+    assert.match(list, /\.id\('doc_row_' \+ item\.id\)/);
+  });
+  await check('soft keyboard avoidance is wired from avoid area to layout and caret', async () => {
+    const safe = read('utils/SafeArea.ets');
+    assert.match(safe, /AvoidAreaType\.TYPE_KEYBOARD/);
+    assert.match(safe, /export function keyboardHeightVp\(\): number/);
+    assert.match(safe, /data\.type === window\.AvoidAreaType\.TYPE_KEYBOARD/);
+    assert.match(read('utils/DeviceProfile.ets'), /keyboardHeightVp: number = 0/);
+    assert.match(read('utils/DeviceProfile.ets'), /next\.keyboardHeightVp = keyboardHeightVp\(\)/);
+    assert.match(read('store/UiStore.ets'), /@Trace keyboardHeight: number = 0/);
+    const shell = read('shell/AppShell.ets');
+    // 页面让位：取 max(导航条, 键盘)，避免双重留白
+    assert.match(shell, /Math\.max\(this\.safeBottom, this\.keyboardHeight\)/);
+    // 关掉框架默认 OFFSET，避免与手动 padding 叠加
+    assert.match(shell, /setKeyboardAvoidMode\(KeyboardAvoidMode\.NONE\)/);
+    // 编辑器：高度变化（键盘开合）后把光标滚进可视区
+    const editor = read('editor/flowtext/CanvasTextEditor.ets');
+    assert.match(editor, /if \(heightChanged\) \{\n\s+this\.ensureCaretVisible\(this\.effectivePolicy\(\)\);/);
+  });
+  await check('foldable devices adopt tablet chrome when expanded', async () => {
+    const profile = read('utils/DeviceProfile.ets');
+    assert.match(profile, /foldable: boolean = false/);
+    assert.match(profile, /foldExpanded: boolean = false/);
+    assert.match(profile, /display\.isFoldable\(\)/);
+    assert.match(profile, /display\.FoldStatus\.FOLD_STATUS_EXPANDED/);
+    assert.match(profile, /display\.FoldStatus\.FOLD_STATUS_HALF_FOLDED/);
+    assert.match(profile, /next\.foldExpanded = fold\.expanded/);
+    // 半折叠不改变窗口尺寸，必须有独立的 foldStatusChange 监听并在 detach 释放
+    assert.match(profile, /display\.on\('foldStatusChange'/);
+    assert.match(profile, /display\.off\('foldStatusChange'/);
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /@Trace foldExpanded: boolean = false/);
+    assert.match(ui, /this\.deviceClass === DeviceClass\.TABLET \|\| this\.foldExpanded/);
+    // 折叠屏不能只靠 deviceType 判断：deviceClass 仍为 PHONE，但 tabletMode 由 foldExpanded 兜住
+    assert.match(ui, /const tabletLike: boolean = this\.deviceClass === DeviceClass\.TABLET \|\| this\.foldExpanded/);
+  });
+  await check('Pura X View style short screens get compact chrome metrics', async () => {
+    const profile = read('utils/DeviceProfile.ets');
+    assert.match(profile, /shortScreen: boolean = false/);
+    assert.match(profile, /cornerRadiusVp: number = 0/);
+    assert.match(profile, /d\.getRoundedCorner\(\)/);
+    assert.match(profile, /metrics\.heightVp < 800/);
+    const ui = read('store/UiStore.ets');
+    assert.match(ui, /@Trace shortScreen: boolean = false/);
+    assert.match(ui, /@Trace cornerRadius: number = 0/);
+    // 短屏上半模态用 MEDIUM，避免 744vp 高度下被截断
+    assert.match(read('shell/AppShell.ets'), /height: this\.appShortScreen\(\) \? SheetSize\.MEDIUM : SheetSize\.LARGE/);
+    // 方向策略显式声明（跟随系统自动旋转，布局只按宽度断点响应）
+    const moduleJson = fs.readFileSync(path.resolve(__dirname, '../entry/src/main/module.json5'), 'utf8');
+    assert.match(moduleJson, /"orientation": "auto_rotation"/);
+    // 阔直板（Pura X View）：横竖屏识别 + 紧凑 chrome + 圆角让位
+    assert.match(profile, /wideBar: boolean = false/);
+    assert.match(profile, /shortSide >= 400 && shortSide < 520/);
+    assert.match(profile, /longSide \/ shortSide < 1\.9/);
+    assert.match(ui, /@Trace wideBar: boolean = false/);
+    assert.match(ui, /get cornerInset\(\): number/);
+    assert.match(read('shell/MobileShell.ets'), /app\.ui\.wideBar \? 40 : WeaverMobile\.TITLEBAR_H/);
+    assert.match(read('shell/EditorPane.ets'), /if \(this\.app\.ui\.wideBar\) \{\n      return 44/);
+    assert.match(read('shell/WorkspaceDest.ets'), /app\.ui\.wideBar \? 48 : 52/);
+  });
+  await check('P0 motion: characters are instant, only the caret animates', async () => {
+    const editor = read('editor/flowtext/CanvasTextEditor.ets');
+    // 编辑链路不再生成逐字动画
+    assert.doesNotMatch(editor, /createEditAnimations\(/);
+    assert.match(editor, /this\.anims\.clear\(\)/);
+    // 光标：临界阻尼弹簧 + 速度保留 + 快打档位
+    assert.match(editor, /private caretl?VelX|private caretVelX/);
+    assert.match(editor, /private startCaretSpring\(target: CursorState, durationMs: number, keepVelocity: boolean\)/);
+    assert.match(editor, /const stiffness: number = 2400/);
+    assert.match(editor, /const damping: number = 98/);
+    // 连续输入：循环在跑时只改目标、不重建动画（否则每键进度归零 → 追不上字符）
+    assert.match(editor, /private caretSpringLoop: boolean = false/);
+    assert.match(editor, /if \(this\.caretSpringLoop\) \{[\s\S]{0,200}?return;/);
+    // 快速重复输入/大跨度编辑：光标同帧到位（任何插值都会落后一格）
+    assert.match(editor, /const fastRepeat: boolean = this\.lastInputTs > 0 && \(nowTs - this\.lastInputTs\) < 90/);
+    assert.match(editor, /if \(canAnimate && !fastRepeat\)/);
+    assert.match(editor, /gapVp > charGap \* 2\.5 \? 220 : 140/);
+    // 代际守卫：stop/重建后丢弃旧动画残余帧（修"光标乱飞"）
+    assert.match(editor, /private caretSpringEpoch: number = 0/);
+    assert.match(editor, /if \(epoch !== this\.caretSpringEpoch\)/);
+    assert.match(editor, /this\.stopCaretAnimation\(caretTarget\);/);
+    // 方向键连按同样同帧到位
+    assert.match(editor, /const navRepeat: boolean = this\.lastNavTs > 0 && \(nowTs - this\.lastNavTs\) < 80/);
+    // 拖手柄必须 1:1：拖动前停掉光标弹簧
+    const stops = editor.match(/this\.stopCaretAnimation\(\);\s*\n\s*this\.selMgr\.beginHandleDrag\(handle\);/g) || [];
+    assert.ok(stops.length >= 2, 'both mouse and touch handle drag must stop caret animation');
+  });
+  await check('focus mode uses a shared-element long-take transition', async () => {
+    const helper = read('shell/FocusTransition.ets');
+    assert.match(helper, /export const FOCUS_EDITOR_ID: string = 'we-focus-editor'/);
+    assert.match(helper, /ctx\.animateTo\(\{ duration: FOCUS_DURATION, curve: curves\.springMotion\(0\.6, 0\.85\) \}/);
+    // 两个状态的编辑区共用同一 id，切换时系统把旧位置平滑放大到新位置
+    assert.match(read('shell/WorkspaceDest.ets'), /\.geometryTransition\(FOCUS_EDITOR_ID\)/);
+    assert.match(read('shell/FocusWorkspace.ets'), /\.geometryTransition\(FOCUS_EDITOR_ID\)/);
+    // 所有入口都走动画版切换，不再直接改状态
+    for (const file of ['shell/EditorPane.ets', 'shell/EditorTools.ets', 'shell/WorkspaceDest.ets']) {
+      assert.match(read(file), /toggleFocusAnimated\(this\.getUIContext\(\)\)/);
+    }
+    assert.match(read('shell/FocusWorkspace.ets'), /exitFocusAnimated\(this\.getUIContext\(\)\)/);
+  });
+  await check('toolbar exposes paragraph style as a value dropdown', async () => {
+    const tools = read('shell/EditorTools.ets');
+    assert.match(tools, /paragraphStyleMenu\(\)/);
+    assert.match(tools, /Text\(this\.paragraphLabel\(\)\)/);
+    assert.match(tools, /MenuItem\(\{ content: '正文' \}\)/);
+    assert.match(tools, /MenuItem\(\{ content: '标题 2' \}\)/);
+    assert.match(tools, /bindMenu\(this\.paragraphMenuView, \{ placement: Placement\.BottomLeft/);
+    // 当前段落样式回读（下拉显示要跟光标所在段一致）
+    assert.match(read('editor/flowtext/CanvasTextEditor.ets'), /paragraphLevel\(\): number \{\n    return this\.doc\.headingAt/);
+    // 悬停提示
+    assert.match(read('shell/TopActionButton.ets'), /bindPopup\(this\.showTip, \{/);
+    assert.match(read('shell/TopActionButton.ets'), /this\.showTip = isHover && this\.isEnabled && this\.pointerPrimary/);
+  });
+  await check('document title block shows big title, project chip and meta', async () => {
+    const pane = read('shell/EditorPane.ets');
+    assert.match(pane, /\.fontSize\(28\)\.fontWeight\(FontWeight\.Medium\)/);
+    assert.match(pane, /private projectName\(\): string/);
+    assert.match(pane, /this\.app\.project\.currentBook/);
+    assert.match(pane, /accessibilityText\('所属项目：' \+ this\.projectName\(\)\)/);
+    // 标题区在 Canvas 之上固定，正文滚动时不动（吸顶）
+    assert.match(pane, /this\.editorHeader\(\)\n\s*\/\/ 轻量文稿标题/);
+    assert.match(pane, /this\.docStatus\(\)/);
+  });
+  await check('toolbar fades out when idle and wakes on activity', async () => {
+    const tools = read('shell/EditorTools.ets');
+    assert.match(tools, /@Local idle: boolean = false/);
+    assert.match(tools, /@Monitor\('app\.ui\.selectionTick'\)/);
+    assert.match(tools, /this\.idle = true/);
+    assert.match(tools, /setTimeout\(\(\) => \{[\s\S]{0,120}?\}, 3000\)/);
+    assert.match(tools, /\.opacity\(this\.idle \? 0\.3 : 1\)/);
+    assert.match(tools, /clearTimeout\(this\.idleTimer\)/);
+  });
+  await check('focus mode centers a 720vp column and offers an exit pill plus Esc', async () => {
+    const focus = read('shell/FocusWorkspace.ets');
+    assert.match(focus, /\.constraintSize\(\{ maxWidth: 720 \}\)/);
+    assert.match(focus, /constraintSize\(\{ maxWidth: 760 \}\)/);
+    assert.match(focus, /Text\('退出专注'\)/);
+    assert.match(focus, /opacity\(this\.exitHovered \? 1 : 0\.72\)/);
+    assert.match(focus, /KeyCode\.KEYCODE_ESCAPE/);
+    assert.match(focus, /Stack\(\{ alignContent: Alignment\.BottomEnd \}\)/);
+  });
+  await check('inline styles apply to the whole paragraph when the caret is collapsed', async () => {
+    const editor = read('editor/flowtext/CanvasTextEditor.ets');
+    assert.match(editor, /const bounds: number\[\] = this\.doc\.paragraphBounds\(this\.doc\.caretOffset\)/);
+    // 撤销/重做走控制器（与 Ctrl+Z 同链路）
+    const tools = read('shell/EditorTools.ets');
+    assert.match(tools, /this\.app\.ui\.editorController\.undo\(\)/);
+    assert.match(tools, /this\.app\.ui\.editorController\.redo\(\)/);
+  });
+  await check('settings show about, service terms and privacy entries', async () => {
+    const panel = read('shell/SettingsPanel.ets');
+    assert.match(panel, /this\.sectionTitle\('关于'\)/);
+    assert.match(panel, /this\.valueRow\('版本', '1\.0\.0'\)/);
+    assert.match(panel, /this\.actionRow\('服务协议'/);
+    assert.match(panel, /this\.actionRow\('隐私政策'/);
+    assert.match(panel, /promptAction\.showDialog\(\{ title: title, message: body/);
+  });
+  await check('settings merge into the sidebar account row', async () => {
+    const sidebar = read('shell/ProjectSidebar.ets');
+    // 左下角只有账号行：账号 + 设置已合并到设置页，不再单列「设置」行或账号半模态
+    assert.match(sidebar, /\.edgeEffect\(EdgeEffect\.Spring\)[\s\S]{0,1600}?Text\('请登录'\)/);
+    assert.doesNotMatch(sidebar, /Text\('设置'\)/);
+    assert.doesNotMatch(sidebar, /bindSheet\(this\.showAccount/);
+    assert.match(sidebar, /\.onClick\(\(\) => \{\s*this\.onSettings\(\)/);
+    // 头像由共享组件渲染：有自定义图片显示图片，否则系统占位人像
+    assert.match(sidebar, /UserAvatar\(\{ avatarSize: this\.tablet\(\) \? 28 : 26 \}\)/);
+    assert.match(read('shell/UserAvatar.ets'), /sys\.symbol\.person_crop_circle_dashed/);
+    assert.match(read('shell/UserAvatar.ets'), /sys\.symbol\.person_crop_circle_fill_1/);
+    assert.match(read('shell/UserAvatar.ets'), /AvatarService\.toImageSrc/);
+    assert.match(sidebar, /Text\(this\.nickname\(\)\)/);
+
+    // 设置页顶部即账号分组：登录 / 退出都在这里；明确不提供上传头像
+    const panel = read('shell/SettingsPanel.ets');
+    assert.match(panel, /this\.sectionTitle\('账号'\)/);
+    assert.match(panel, /this\.accountSection\(\)/);
+    assert.match(panel, /await app\.ui\.signIn\(this\.loginName\)/);
+    assert.match(panel, /await app\.ui\.signOut\(\)/);
+    // 头像只用系统占位图标：没有选图/上传入口
+    // 头像可上传：图库选择 → 复制进沙箱 → 记路径
+    assert.match(panel, /AvatarService\.pickAndCopy\(context\.filesDir\)/);
+    assert.match(panel, /await app\.ui\.setAvatar\(path\)/);
+    assert.match(panel, /this\.avatarActions\(\)/);
+    assert.match(panel, /Text\('更换头像'\)/);
+    // 外观分组用调色板图标
+    assert.match(panel, /sys\.symbol\.paintpalette/);
+
+    // 昵称落首选项：登录后重启仍显示
+    assert.match(read('store/UiStore.ets'), /this\.nickname = await prefs\.getNickname\(\)/);
+    assert.match(read('store/UiStore.ets'), /await prefs\.setNickname\(trimmed\)/);
+
+    // 中栏（文稿列表）不再有独立设置入口；窗口头应用菜单为 思路板/导出/导入
+    assert.match(read('shell/DocListPane.ets'), /items: \['思路板', '导出', '导入'\]/);
+    assert.doesNotMatch(read('shell/DocListPane.ets'), /@Event onSettings/);
+    assert.doesNotMatch(read('shell/DesktopTitleBar.ets'), /text: '设置'/);
+
+    // 思路板入口：@Event 必须被三个宿主接上（AppShell / MobileShell / WorkspaceDest）
+    assert.match(read('shell/DocListPane.ets'), /@Event onOpenCanvas: \(\) => void = \(\) => \{\}/);
+    for (const host of ['shell/AppShell.ets', 'shell/MobileShell.ets', 'shell/WorkspaceDest.ets']) {
+      assert.match(read(host), /onOpenCanvas: \(\) => openCanvasAnimated\(this\.getUIContext\(\)\)/, host + ' must wire onOpenCanvas');
+    }
+    // M5：卡片长按/右键菜单 + 行内改名
+    assert.match(read('shell/TopicCard.ets'), /@Event onCardMenu/);
+    assert.match(read('shell/TopicCard.ets'), /@Event onRenameCard/);
+    assert.match(read('shell/TopicCard.ets'), /LongPressGesture/);
+    assert.match(read('shell/CanvasPane.ets'), /cardMenuPanel\(\)/);
+    assert.match(read('shell/CanvasPane.ets'), /renameDialog\(\)/);
+    // M5：卡片库类型/排序/复制/删除/移出/批量
+    assert.match(read('shell/CardLibrary.ets'), /@Event onAddMany/);
+    assert.match(read('shell/CardLibrary.ets'), /this\.selectedIds\.includes/);
+    assert.match(read('shell/CanvasDest.ets'), /private placeCards\(/);
+    assert.match(read('shell/CardLibrary.ets'), /@Local kindFilter/);
+    assert.match(read('shell/CardLibrary.ets'), /duplicateCard\(row\.id\)/);
+    assert.match(read('shell/CardLibrary.ets'), /再点一次删除/);
+    assert.match(read('shell/CardLibrary.ets'), /removePlacement\(row\.id\)/);
+    // M6：跨文稿跳回 + 移动端键盘避让
+    assert.match(read('shell/EvidenceDrawer.ets'), /jumpToSourceAsync/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /closeCanvasAnimated\(this\.getUIContext\(\)\)/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /keyboardHeight/);
+    // M4：初稿弹窗、覆盖、写作卡自身素材
+    assert.match(read('shell/CanvasPane.ets'), /draftDialog\(\)/);
+    assert.match(read('shell/CanvasPane.ets'), /confirmWriteDraft\(true\)/);
+    assert.match(read('shell/CanvasPane.ets'), /rootEvidence/);
+    assert.match(read('editor/CanvasDraftWriter.ets'), /rootEvidence\?: CanvasEvidenceData\[\]/);
+    // M3：写作卡内直接加章
+    assert.match(read('shell/TopicCard.ets'), /@Event onAddChapter/);
+    assert.match(read('shell/TopicCard.ets'), /＋ 添加一章/);
+    assert.match(read('shell/CanvasPane.ets'), /private addChapter\(/);
+    // M2：编辑器选区 → 加到卡片；工具条与选中浮层两个入口
+    assert.match(read('shell/EditorPane.ets'), /canvasCapturePayload\(/);
+    assert.match(read('shell/EditorPane.ets'), /selectionPill\(\)/);
+    assert.match(read('shell/EditorPane.ets'), /CardPicker\(\{/);
+    assert.match(read('shell/EditorTools.ets'), /@Event onAddToCard/);
+    assert.match(read('shell/EditorTools.ets'), /'加到卡片'/);
+    // M1：抽屉就是编辑器；素材可就地改，删除可撤销
+    assert.match(read('shell/EvidenceDrawer.ets'), /@Local titleDraft: string/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /app\.canvas\.updateCard\(/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /app\.canvas\.updateEvidenceText\(/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /private saveCard\(\)/);
+    assert.match(read('pages/Index.ets'), /undoBar\(\)/);
+    assert.match(read('pages/Index.ets'), /app\.canvas\.performUndo\(\)/);
+    // M0：思路板是全窗口分支，写初稿后必须关闭画布转场，不能再弹路由栈
+    assert.doesNotMatch(read('shell/CanvasPane.ets'), /nav\.pop\(\)/);
+    assert.match(read('shell/CanvasPane.ets'), /closeCanvasAnimated\(this\.getUIContext\(\)\)/);
+    assert.match(read('shell/CanvasPane.ets'), /private openDraft\(/);
+    assert.match(read('shell/TopicCard.ets'), /@Event onOpenDraft/);
+    // 抽屉头部也要避让原生三键（否则 ✕ 被系统关闭按钮盖住）
+    assert.match(read('shell/EvidenceDrawer.ets'), /@Param captionInset: number/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /DRAWER_PAD \+ this\.captionInset/);
+    // 白板内快捷建卡
+    assert.match(read('shell/CanvasPane.ets'), /quickCreatePanel\(\)/);
+    assert.match(read('shell/CanvasPane.ets'), /＋ 卡片/);
+    // 素材抽屉禁止主动 requestFocus：祖先默认不可获焦会抛 150002，定时器里无人捕获即崩溃
+    assert.doesNotMatch(read('shell/EvidenceDrawer.ets'), /requestFocus\s*\(/);
+    assert.match(read('shell/EvidenceDrawer.ets'), /defaultFocus\(true\)/);
+    // 卡片库必须能新建卡片（否则空库时没有任何入口）
+    assert.match(read('shell/CardLibrary.ets'), /app\.canvas\.createCard\(/);
+    assert.match(read('shell/CardLibrary.ets'), /＋ 新建卡片/);
+    // 思路板是全窗口分支（不是路由），且开/关走 geometryTransition 一镜到底
+    assert.match(read('shell/AppShell.ets'), /if \(app\.ui\.canvasOpen\)/);
+    assert.match(read('shell/CanvasDest.ets'), /geometryTransition\(CANVAS_SURFACE_ID\)/);
+    assert.match(read('shell/CanvasTransition.ets'), /export function openCanvasAnimated/);
+    assert.match(read('shell/CanvasTransition.ets'), /export function closeCanvasAnimated/);
+    assert.match(read('shell/CanvasPane.ets'), /captionInset: number/);
+    assert.match(read('pages/Index.ets'), /onBackPress\(\): boolean/);
+    // 最近白板 id 落首选项（键名固定 canvas_recent_board，防回退到内存态）
+    const prefs = read('utils/PreferenceHelper.ets');
+    assert.match(prefs, /KEY_CANVAS_RECENT: string = 'canvas_recent_board'/);
+    assert.match(prefs, /async getCanvasRecentBoard\(\): Promise<string>/);
+    assert.match(prefs, /async setCanvasRecentBoard\(boardId: string\): Promise<void>/);
+
+    // 宽屏/手机两种壳都把账号行接上设置
+    assert.match(read('shell/AppShell.ets'), /onSettings: \(\) => \{ this\.showSettings = true \}/);
+    assert.match(read('shell/MobileShell.ets'), /onSettings: \(\) => nav\.pushPath\(\{ name: Routes\.SETTINGS \}\)/);
+  });
+  await check('avatar upload copies the picked photo into the sandbox', async () => {
+    const service = read('utils/AvatarService.ets');
+    // 系统图库单选，且必须复制：媒体库 URI 的读权限只在本次会话有效
+    assert.match(service, /import \{ photoAccessHelper \} from '@kit\.MediaLibraryKit'/);
+    assert.match(service, /options\.MIMEType = photoAccessHelper\.PhotoViewMIMETypes\.IMAGE_TYPE/);
+    assert.match(service, /options\.maxSelectNumber = 1/);
+    assert.match(service, /filesDir \+ AVATAR_PREFIX \+ Date\.now\(\)/);
+    assert.match(service, /fs\.copyFileSync\(src\.fd, out\.fd\)/);
+    // 只接受图片后缀，未知/超长后缀回落到 jpg
+    assert.match(service, /ext === '\.jpg'/);
+    assert.match(service, /return DEFAULT_EXT/);
+    // 换/移除时清理旧文件
+    assert.match(service, /static removeFile\(path: string\): void/);
+    // 路径落首选项；启动时校验文件仍存在（防死路径）
+    assert.match(read('store/UiStore.ets'), /this\.avatarPath = await prefs\.getAvatarPath\(\)/);
+    assert.match(read('store/UiStore.ets'), /AvatarService\.exists\(this\.avatarPath\)/);
+    assert.match(read('utils/PreferenceHelper.ets'), /KEY_AVATAR: string = 'weaver_avatar'/);
+    // 上传入口不依赖登录态：本机即可换头像，昵称再单独设置
+    assert.match(read('shell/SettingsPanel.ets'), /this\.rowDivider\(\)\s*this\.avatarActions\(\)/);
+    assert.match(read('shell/UserAvatar.ets'), /return app\.ui\.avatarPath !== ''/);
+    // 官方沙箱 URI 转换（Image 不认文件系统绝对路径）
+    assert.match(service, /fileUri\.getUriFromPath\(path\)/);
+  });
+  await check('more buttons use the four-dot HarmonyOS symbol', async () => {
+    // 全项目不再用西文三点「⋯」，统一为鸿蒙四点 dot_grid_2x2
+    for (const file of ['MenuButton.ets', 'EditorPane.ets', 'WorkspaceDest.ets', 'DocListPane.ets']) {
+      assert.doesNotMatch(read('shell/' + file), /'⋯'/, file + ' still renders a three-dot glyph');
+    }
+    for (const file of ['MenuButton.ets', 'EditorPane.ets', 'WorkspaceDest.ets']) {
+      assert.doesNotMatch(read('shell/' + file), /sys\.symbol\.more\b/);
+    }
+    assert.match(read('shell/MenuButton.ets'), /sys\.symbol\.dot_grid_2x2/);
+    assert.match(read('shell/EditorPane.ets'), /sys\.symbol\.dot_grid_2x2/);
+    assert.match(read('shell/WorkspaceDest.ets'), /sys\.symbol\.dot_grid_2x2/);
+  });
+  await check('rose paper theme is registered in THEMES, mirrored in PAPER_THEMES and slot-sized caches cover it', async () => {
+    const tokens = read('constants/DesignTokens.ets');
+    const settings = read('shell/SettingsPanel.ets');
+    const light = read('constants/LightTokens.ets');
+    const material = read('shell/MaterialSurface.ets');
+
+    // 1) THEMES 里按 id 登记（主题数量不写死，从源码抽出 id 列表）
+    const themesBlock = /export const THEMES: WeaverTheme\[\] = \[([\s\S]*?)\n\]/.exec(tokens);
+    assert.ok(themesBlock, 'THEMES array literal');
+    const themeIds = [...themesBlock[1].matchAll(/id: '([a-z]+)'/g)].map(match => match[1]);
+    assert.equal(new Set(themeIds).size, themeIds.length, 'theme ids must be unique');
+    assert.ok(themeIds.includes('rose'), 'rose must be registered in THEMES');
+    // 浅色主题：dark 必须是 false（设置页 themeSubtitle 靠它区分深浅）
+    assert.match(themesBlock[1], /{ id: 'rose', name: '[^']+', dark: false, colors: ROSE }/);
+    // 有独立的色集常量，且被 THEMES 引用（避免只加 id 没配色）
+    assert.match(tokens, /\nconst ROSE: WeaverColorSet = {[\s\S]*?\n}/);
+    // 对比度注释必须落在色集上（正文/次级正文的实算值）
+    assert.match(tokens, /textPrimary #[0-9A-F]{6} on bgPrimary\/editorBg #[0-9A-F]{6} = \d+\.\d+:1/);
+    assert.match(tokens, /textSecondary #[0-9A-F]{6} on bgPrimary #[0-9A-F]{6} = \d+\.\d+:1/);
+
+    // 2) PAPER_THEMES 有同 id 条目，且纸色/字色与主题 ROSE 的 editorBg/textPrimary 一致
+    const paperBlock = /export const PAPER_THEMES: PaperTheme\[\] = \[([\s\S]*?)\n\]/.exec(tokens);
+    assert.ok(paperBlock, 'PAPER_THEMES array literal');
+    const paperRow = /{ id: 'rose', name: '[^']+', backgroundColor: '(#[0-9A-F]{6})', textColor: '(#[0-9A-F]{6})', fontSize: 18, lineHeightRatio: 1\.9 }/.exec(paperBlock[1]);
+    assert.ok(paperRow, 'PAPER_THEMES rose row with fontSize 18 / lineHeightRatio 1.9');
+    const roseColors = /\nconst ROSE: WeaverColorSet = {([\s\S]*?)\n}/.exec(tokens)[1];
+    assert.match(roseColors, new RegExp(`editorBg: '${paperRow[1]}'`), 'paper background must equal ROSE.editorBg');
+    assert.match(roseColors, new RegExp(`textPrimary: '${paperRow[2]}'`), 'paper text must equal ROSE.textPrimary');
+
+    // 3) 设置页主题行由 ForEach(THEMES) 生成：行数 == THEMES.length，不允许写死主题名单
+    assert.match(settings, /ForEach\(THEMES, \(theme: WeaverTheme, index: number\) => \{/);
+    assert.match(settings, /if \(index < THEMES\.length - 1\) \{/);
+    const hardcodedIds = [...settings.matchAll(/id: '(ink|warm|green|rose|dark)'/g)].map(match => match[1]);
+    assert.deepEqual(hardcodedIds, [], 'settings must not hardcode theme ids; rows follow THEMES.length');
+
+    // 4) 按主题槽位取值的定长缓存必须覆盖每一个槽位（themeSlot 用 THEMES 下标，缺槽会越界崩溃）
+    const themeCount = themeIds.length;
+    const declared = (source, name) => {
+      const start = source.indexOf('const ' + name);
+      assert.ok(start >= 0, name + ' must be declared');
+      const next = source.indexOf('const ', start + 6);
+      return source.substring(start, next > 0 ? next : source.length);
+    };
+    const nullCount = (source, name) => (declared(source, name).match(/null/g) ?? []).length;
+    const listLength = (source, name) => {
+      const block = declared(source, name);
+      // 从 '= [' 起算，避开类型注解里的 string[] / number[]
+      const open = block.indexOf('= [') + 2;
+      const close = block.indexOf(']', open);
+      return block.substring(open + 1, close).split(',').filter(item => item.trim() !== '').length;
+    };
+    assert.ok(listLength(light, 'HALO_RGB') >= themeCount, 'HALO_RGB needs one entry per theme');
+    assert.ok(listLength(light, 'HALO_ALPHA') >= themeCount, 'HALO_ALPHA needs one entry per theme');
+    assert.ok(nullCount(light, 'PAGE_GLOW_CACHE') >= themeCount, 'PAGE_GLOW_CACHE needs one slot per theme');
+    assert.ok(nullCount(light, 'HALO_CACHE') >= themeCount, 'HALO_CACHE needs one slot per theme');
+    assert.ok(nullCount(light, 'SPEC_CACHE') >= themeCount * 5, 'SPEC_CACHE needs one row per theme (5 kinds each)');
+    assert.ok(nullCount(material, 'MODIFIER_CACHE') >= themeCount * 6, 'MODIFIER_CACHE needs one row per theme (6 shapes each)');
+  });
+  await check('project delete is right-click on desktop and long-press on touch', async () => {
+    const sidebar = read('shell/ProjectSidebar.ets');
+    assert.match(sidebar, /MenuItem\(\{ content: '删除项目' \}\)/);
+    // 触发方式：键鼠优先 = 右键，其余（手机/平板触摸）= 长按
+    assert.match(sidebar,
+      /projectMenuTrigger\(\): ResponseType \{[\s\S]{0,240}pointerPrimary[\s\S]{0,120}ResponseType\.RightClick[\s\S]{0,60}: ResponseType\.LongPress/,
+      'delete entry must be right-click for pointer input and long-press for touch');
+    assert.match(sidebar, /\.bindContextMenu\(this\.projectMenu\(p\), this\.projectMenuTrigger\(\)\)/);
+    // 只保留这一套入口：长按手势会与菜单双弹，悬停图标是用户明确不要的额外入口
+    assert.doesNotMatch(sidebar, /LongPressGesture\(\)\.onAction\(\(\) => this\.onDeleteProject/,
+      'long press is handled by bindContextMenu; a gesture would fire twice');
+    assert.doesNotMatch(sidebar, /showRowTrash|hoveredProjectId/,
+      'delete entry must not add a hover icon');
   });
   console.log(`Shell regression: ${count} checks passed`);
   if (failures > 0) {

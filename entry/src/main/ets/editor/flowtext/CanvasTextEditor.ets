@@ -18,12 +18,12 @@ import { common2D } from '@kit.ArkGraphics2D';
 import { LengthMetricsUnit } from '@kit.ArkUI';
 import { TextDocument } from './model/TextDocument';
 import { GraphemeUtil } from './model/GraphemeUtil';
-import { SelectionInfo, PreviewInfo, ViewportInfo, ScrollPolicy, StyleKind, FormatRun, CaretAffinity } from './model/EditorTypes';
+import { SelectionInfo, PreviewInfo, ViewportInfo, ScrollPolicy, StyleKind, FormatRun, CaretAffinity,
+  ParagraphKind, isListParagraph } from './model/EditorTypes';
 import { EditorTheme } from './theme/EditorTheme';
 import { TextLayoutEngine, LayoutLine } from './render/TextLayoutEngine';
 import { LayoutCache } from './render/LayoutCache';
 import { GlyphRenderer, RenderTheme, GlyphAnimRegistry, GlyphAnimState } from './render/GlyphRenderer';
-import { GlyphAnimator, GlyphDiffOptions } from './animation/GlyphAnimator';
 import { HitTester } from './interaction/HitTester';
 import { CursorState } from './interaction/CursorState';
 import { SelectionManager } from './interaction/SelectionManager';
@@ -94,6 +94,18 @@ function parseColor(hex: string): common2D.Color {
     b = parseInt(str.substring(4, 6), 16);
   }
   return { alpha: a, red: r, green: g, blue: b };
+}
+
+/**
+ * 选区快照（D · 编辑器桥对外契约）：偏移量一律是 **UTF-16 code unit**。
+ * anchor = 拖选起点，head = 活动端（光标所在端）；start/end 由两者 min/max 派生，
+ * 因此反向选择时 anchor > head 而 start < end。
+ */
+export interface CanvasEditorSelection {
+  start: number
+  end: number
+  anchor: number
+  head: number
 }
 
 export class CanvasTextEditorController {
@@ -227,6 +239,8 @@ export class CanvasTextEditorController {
   toggleInlineStyle(kind: StyleKind): void {
     if (this.editor !== null) {
       this.editor.toggleInlineStyle(kind);
+      // 工具按钮点击会抢走焦点；完成格式命令后把焦点还给正文，选区不丢。
+      this.editor.requestEditorFocus();
     }
   }
 
@@ -234,6 +248,20 @@ export class CanvasTextEditorController {
   toggleParagraphStyle(level: number): void {
     if (this.editor !== null) {
       this.editor.toggleParagraphStyle(level);
+      this.editor.requestEditorFocus();
+    }
+  }
+
+  /** 当前光标所在段落的种类（0=正文 1/2/3=标题 4=列表 5=待办 6=已完成待办） */
+  paragraphKind(): number {
+    return this.editor !== null ? this.editor.paragraphKind() : 0;
+  }
+
+  /** 设置段落种类（工具栏下拉；当前段已是该种类时回到正文） */
+  setParagraphKind(kind: number): void {
+    if (this.editor !== null) {
+      this.editor.setParagraphKind(kind);
+      this.editor.requestEditorFocus();
     }
   }
 
@@ -248,6 +276,82 @@ export class CanvasTextEditorController {
   /** 取当前格式标注 */
   getRuns(): FormatRun[] {
     return this.editor !== null ? this.editor.getRuns() : [];
+  }
+
+  /** 当前光标/选区生效的行内格式位掩码：1=粗体 2=斜体 4=标题 */
+  paragraphLevel(): number {
+    return this.editor !== null ? this.editor.paragraphLevel() : 0;
+  }
+
+  undo(): void {
+    if (this.editor !== null) {
+      this.editor.hostUndo();
+    }
+  }
+
+  redo(): void {
+    if (this.editor !== null) {
+      this.editor.hostRedo();
+    }
+  }
+
+  inlineStyleMask(): number {
+    return this.editor !== null ? this.editor.inlineStyleMask() : 0;
+  }
+
+  /** ============ D · 编辑器桥：只读选区 / 定位（新增，不改变既有方法行为） ============ */
+
+  /**
+   * 当前选区快照。未绑定编辑器时返回全 0（折叠在文首），调用方无需判空。
+   * 偏移基于 selMgr.selection（两端已由 SelectionManager 吸附到字素边界）。
+   */
+  getSelection(): CanvasEditorSelection {
+    if (this.editor === null) {
+      return { start: 0, end: 0, anchor: 0, head: 0 };
+    }
+    return this.editor.selectionSnapshot();
+  }
+
+  /**
+   * 当前选中的文字；无选区或未绑定返回空串。
+   *
+   * 两端再做一次字素边界校正（防御 IME/手柄给出的中间偏移）：
+   * - 起点用 snapToBoundary（只向前退，正好落在字素头）；
+   * - 终点不能用 snapToBoundary（它只会往回退，会把末端的组合字符切掉一半），
+   *   落在字素内部时用 moveRight 往前扩到下一个边界。
+   */
+  getSelectedText(): string {
+    if (this.editor === null) {
+      return '';
+    }
+    const text: string = this.editor.currentText();
+    const sel: CanvasEditorSelection = this.editor.selectionSnapshot();
+    const start: number = GraphemeUtil.snapToBoundary(text, sel.start);
+    const endSnapped: number = GraphemeUtil.snapToBoundary(text, sel.end);
+    const end: number = endSnapped === sel.end ? endSnapped : GraphemeUtil.moveRight(text, endSnapped);
+    if (end <= start) {
+      return '';
+    }
+    return text.substring(start, end);
+  }
+
+  /** 设置选区 [start,end)；不改正文、不产生编辑事务（D · 编辑器桥） */
+  selectRange(start: number, end: number): void {
+    if (this.editor === null) {
+      return;
+    }
+    this.editor.selectRangeInDoc(start, end);
+  }
+
+  /**
+   * 把 offset 滚进视口并把光标放到该处；不改正文（D · 编辑器桥）。
+   * 未绑定编辑器时不动作：偏移只对已载入的文档有意义，静默丢弃比留下脏 pending 状态安全。
+   */
+  revealOffset(offset: number): void {
+    if (this.editor === null) {
+      return;
+    }
+    this.editor.revealTo(offset);
   }
 }
 
@@ -265,6 +369,8 @@ export struct CanvasTextEditor {
    */
   @Prop @Watch('onThemeChanged') dimTextColor: string = '#9AA0A6';
   @Prop placeholder: string = '';
+  /** 占位文字颜色：与正文共用 Canvas 排版，颜色由主题 tertiary 传入 */
+  @Prop placeholderColor: string = '#9AA0A6';
   /**
    * 打字机模式：为 true 时按 scrollPolicy=CENTER 使当前段居中（默认关）。
    * @Watch 是必要的：仅改这个 prop 时组件不会重排，表现为"点了按钮没有任何反应"。
@@ -332,6 +438,17 @@ export struct CanvasTextEditor {
   private selMgr: SelectionManager = new SelectionManager();
   /** 载入或销毁后，旧粘贴请求不得再改写当前文稿。 */
   private documentGeneration: number = 0;
+  /** 本次插入开始时是否处于组字态（endInsert 用它决定是否提前对齐 lastText） */
+  private insertWasComposing: boolean = false;
+  /**
+   * 最近一次"点符号切换完成态"的目标与时间。
+   *
+   * 为什么需要：PC / 2in1 上一次单击会**同时**派发 onMouse(Press) 与 onTouch(Up)，
+   * 两条路径都切一次 → 5→6→5，用户看到的是"单击没反应"。长按恰好只走鼠标那一次，
+   * 于是"只能长按才生效"。这里用"同段落 + 120ms 内"识别为同一次点击。
+   */
+  private lastMarkerToggleAt: number = 0;
+  private lastMarkerToggleOffset: number = -1;
   private caretAnimator: EditorAnimator | null = null;
   private glyphAnimator: EditorAnimator | null = null;
   /** 滚动跟随动画（打字机/光标出视口时平滑滚动，替代每键瞬时跳变） */
@@ -380,7 +497,21 @@ export struct CanvasTextEditor {
   /** 是否需要"打开即聚焦"：布局就绪后补发一次 requestEditorFocus（组件上树前请求会失败） */
   private wantInitFocus: boolean = false;
   /** 光标动画是否正在进行（用于在键盘/视口 relayout 时避免硬编码覆盖正在播放的光标） */
-  private caretAnimating: boolean = false;
+  private caretAnimating: boolean = false
+  /** 光标弹簧速度（vp/s）：编辑重定向时保留，避免每次按键"刹停再起步" */
+  private caretVelX: number = 0
+  private caretVelY: number = 0
+  /** 上次文本输入时间（ms）：用于快打档位（更短的光标跟随时长）
+   *  同时用作"快速重复输入"判据：间隔 < 90ms 时光标同帧到位，绝不落后于字符 */
+  private lastInputTs: number = 0
+  /** 上次光标导航（方向键/翻页/点击）时间：方向键连按时同帧到位 */
+  private lastNavTs: number = 0
+  /** 弹簧循环是否在跑：连续输入时只改目标，不重建动画（否则每键重置进度，光标永远追不上） */
+  private caretSpringLoop: boolean = false
+  /** 弹簧代际：stop/重建时自增，丢弃旧动画的残余帧（防"光标乱飞"） */
+  private caretSpringEpoch: number = 0
+  /** 当前弹簧目标（可被后续按键原地更新） */
+  private caretTarget: CursorState = new CursorState();
   // 触摸状态
   private pressX: number = 0;
   private pressY: number = 0;
@@ -786,6 +917,10 @@ export struct CanvasTextEditor {
             // 窗口尺寸变化后段落行区间会变：打字机模式下重新居中
             this.followTypewriter();
             this.ensureInitFocus();
+            // 软键盘弹出/收起会改变可视高度：把光标重新滚进可视区，避免打字时被键盘盖住
+            if (heightChanged) {
+              this.ensureCaretVisible(this.effectivePolicy());
+            }
           } else if (this.initialized) {
             // 仅位置变化：窗口坐标已更新，刷新一次 IME 光标位置
             this.reportCursor();
@@ -822,10 +957,17 @@ export struct CanvasTextEditor {
         this.stopFling();
         this.hideSelectionMenu();
         this.requestEditorFocus();
+        // 项目符号/待办圆点优先命中：点 ○ 直接切换完成态，而不是把光标挪到段首
+        if (this.toggleTodoAtMarker(event.x, event.y)) {
+          this.mouseSelecting = false;
+          return;
+        }
         const offset: number = this.offsetAt(event.x, event.y);
         const handle: number = this.handleAt(event.x, event.y);
         if (handle !== 0) {
           // PC 也能拖手柄：身份固定（1=anchor / 2=head）
+          // 拖手柄必须 1:1 跟手：先停掉光标弹簧，拖动期间不做动画
+          this.stopCaretAnimation();
           this.selMgr.beginHandleDrag(handle);
           this.mouseSelecting = true;
           this.drawNow();
@@ -978,6 +1120,52 @@ export struct CanvasTextEditor {
     return this.doc.text;
   }
 
+  /** ===== D · 编辑器桥（只读快照 / 设选区 / 定位；不改变任何既有方法的行为） ===== */
+
+  /** 只读选区快照：anchor/head 是唯一事实源，start/end 由 min/max 派生 */
+  selectionSnapshot(): CanvasEditorSelection {
+    const sel: SelectionInfo = this.selMgr.selection;
+    const snapshot: CanvasEditorSelection = {
+      start: sel.startOffset,
+      end: sel.endOffset,
+      anchor: this.selMgr.anchor,
+      head: this.selMgr.head
+    };
+    return snapshot;
+  }
+
+  /**
+   * 设选区 [start,end)：先锚定 anchor，再交给既有 selectTo 收口
+   * （同步 doc 选区、扩展排版、保证可见、重绘、上报选区与 IME）。
+   */
+  selectRangeInDoc(start: number, end: number): void {
+    this.selMgr.setSource(this.doc.text);
+    this.selMgr.setSelection(start, start);
+    this.selectTo(end);
+  }
+
+  /**
+   * 把光标移到 offset 并滚进视口（不播放动画、不改正文）。
+   *
+   * 与 moveCaretAnimated 同源，但走"即时"路径：ensureCaretLayout → ensureCaretVisible → 重绘一帧。
+   * 用于"跳回原文"这类跨面板定位，动画在此只有副作用（弹簧未停时会覆盖新 caret 坐标）。
+   */
+  revealTo(offset: number): void {
+    this.preferredX = -1;
+    this.stopCaretAnimation();
+    this.doc.moveCaret(offset);
+    this.twDirty = true;
+    this.selMgr.setSource(this.doc.text);
+    this.selMgr.collapse(this.doc.caretOffset);
+    this.ensureCaretLayout();
+    this.caret = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
+      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
+    this.ensureCaretVisible(this.effectivePolicy());
+    this.drawNow();
+    this.reportCursor();
+    this.emitSelection();
+  }
+
   moveCaretTo(offset: number): void {
     this.preferredX = -1;
     this.moveCaretAnimated(offset);
@@ -1005,10 +1193,25 @@ export struct CanvasTextEditor {
   }
 
   insertExternalText(text: string): void {
+    // 回车单独走一条路：列表段要续列表、空列表项要退出列表。
+    // 输入法 insertText('\n')、软键盘回车键、物理键盘 Enter 全部汇到这里，
+    // 因此语义只需要实现一次（不会出现"软键盘能续、物理键盘不续"的分叉）。
+    if (text === '\n') {
+      this.insertNewline();
+      return;
+    }
+    this.insertPlainText(text);
+  }
+
+  /** 插入前的统一准备：空提交守卫 / 组字范围替换 / 选区替换 */
+  private beginInsert(text: string): boolean {
     const wasComposing: boolean = this.previewMgr.isComposing;
     // 输入法切换语言会提交空文本；无组字状态时不应删除选区或产生编辑事务。
     // 空预上屏完成仍需替换原范围，保留组字流程的语义。
-    if (text.length === 0 && !wasComposing) { return; }
+    if (text.length === 0 && !wasComposing) {
+      return false;
+    }
+    this.insertWasComposing = wasComposing;
     if (wasComposing) {
       const range: PreviewInfo = this.previewMgr.previewInfo;
       this.selMgr.setSelection(range.startOffset, range.endOffset);
@@ -1023,16 +1226,18 @@ export struct CanvasTextEditor {
       this.selMgr.collapse(sel.startOffset);
     }
     // 插入点已在 doc.insert 内吸附到字符边界，此处取吸附后的实际位置作为失效起点
-    const offset: number = GraphemeUtil.snapToBoundary(this.doc.text, this.doc.caretOffset);
-    this.lastEditOffset = offset;
-    this.doc.insert(offset, text);
-    // 预上屏确认上屏（若有组合态）：消费组合态而非直接丢弃（T015）
+    this.lastEditOffset = GraphemeUtil.snapToBoundary(this.doc.text, this.doc.caretOffset);
+    return true;
+  }
+
+  /** 插入后的统一收口：组字态提交/取消 + 重排 + 上报（一次编辑事务） */
+  private endInsert(): void {
     if (this.previewMgr.isComposing) {
       this.previewMgr.commit();
     } else {
       this.previewMgr.cancel();
     }
-    if (wasComposing) {
+    if (this.insertWasComposing) {
       // 预览行已按最终文本排好；把 lastText 提前对齐，afterEdit 的差分即为空，
       // 提交时不会给预览字形补一次"入场动画"（那会看起来像文字跳一下）。
       this.lastText = this.doc.text;
@@ -1041,6 +1246,45 @@ export struct CanvasTextEditor {
     if (this.onTextChange !== null) {
       this.onTextChange(this.doc.text, this.doc.version);
     }
+  }
+
+  /** 普通文本插入（键入、粘贴、输入法上屏）。段落种类不变。 */
+  private insertPlainText(text: string): void {
+    if (!this.beginInsert(text)) {
+      return;
+    }
+    this.doc.insert(this.lastEditOffset, text);
+    this.endInsert();
+  }
+
+  /**
+   * 回车：列表段续列表、空列表项退出列表、其余就是普通换行。
+   *
+   * 全部在 endInsert() 之前完成，因此"换行 + 继承段落种类"是**一个**编辑事务；
+   * 拆成两次会让用户按两下 Ctrl+Z 才能回到回车前。
+   */
+  private insertNewline(): void {
+    if (!this.beginInsert('\n')) {
+      return;
+    }
+    const offset: number = this.lastEditOffset;
+    const kind: number = this.doc.paragraphKindAt(offset);
+    const indent: number = this.doc.paragraphIndentAt(offset);
+    const bounds: number[] = this.doc.paragraphBounds(offset);
+    const emptyListItem: boolean = isListParagraph(kind) && bounds[0] === bounds[1];
+    if (emptyListItem) {
+      // 空列表项上回车 = 退出列表，不新增段落（Word / 备忘录 / Notion 一致）；
+      // 光标留在原处，用户接着输的就是正文。
+      this.doc.setParagraphKind(ParagraphKind.BODY, offset, offset);
+    } else {
+      this.doc.insert(offset, '\n');
+      if (isListParagraph(kind)) {
+        // 新段继承种类与层级。段末回车时新段还没有任何字符，这里会走
+        // "空末段待生效属性"，输入第一个字时落成真实标注。
+        this.doc.setParagraphKindAndIndent(kind, indent, this.doc.caretOffset, this.doc.caretOffset);
+      }
+    }
+    this.endInsert();
   }
 
   deleteExternalLeft(length: number): void {
@@ -1317,10 +1561,14 @@ export struct CanvasTextEditor {
     provisional.setRuns(this.doc.runs);
     provisional.delete(info.startOffset, info.endOffset);
     provisional.insert(info.startOffset, info.text);
+    // 空末段的待生效段落属性是瞬态的，setText/setRuns 不会带过来；
+    // 不显式搬运的话，空列表项在组字期间符号与缩进会闪一下再回来。
+    this.doc.copyPendingStateTo(provisional);
     this.previewDoc = provisional;
     if (this.engineRef !== null) {
       this.previewCache = new LayoutCache(this.engineRef);
       this.previewCache.setRuns(provisional.runs);
+      this.attachParagraphProvider(this.previewCache, provisional);
     }
   }
 
@@ -1594,6 +1842,38 @@ export struct CanvasTextEditor {
     this.afterFormatChange(false);
   }
 
+  /** 当前光标所在段落的标题级别（0=正文，1=H1，2=H2） */
+  paragraphLevel(): number {
+    return this.doc.headingAt(this.doc.caretOffset);
+  }
+
+  /** 当前光标/选区生效的行内格式位掩码：1=粗体 2=斜体 4=标题 */
+  inlineStyleMask(): number {
+    if (this.doc.length === 0) {
+      return 0;
+    }
+    const sel: SelectionInfo = this.selMgr.selection;
+    const start: number = Math.max(0, Math.min(sel.startOffset, this.doc.length - 1));
+    const end: number = Math.max(start, Math.min(Math.max(sel.startOffset, sel.endOffset) - 1, this.doc.length - 1));
+    return this.styleMaskAt(start) & this.styleMaskAt(end);
+  }
+
+  private styleMaskAt(offset: number): number {
+    const runs: FormatRun[] = this.doc.runs;
+    for (let i: number = 0; i < runs.length; i++) {
+      const r: FormatRun = runs[i];
+      if (offset >= r.startOffset && offset < r.endOffset) {
+        let mask: number = 0;
+        if (r.bold) { mask |= 1; }
+        if (r.italic) { mask |= 2; }
+        // bit4 = 标题：段落种类 4/5/6 是列表/待办，不能当成标题点亮
+        if (r.heading >= 1 && r.heading <= 3) { mask |= 4; }
+        return mask;
+      }
+    }
+    return 0;
+  }
+
   /** 取当前格式标注 */
   getRuns(): FormatRun[] {
     return this.doc.runs;
@@ -1605,9 +1885,11 @@ export struct CanvasTextEditor {
     let s: number = sel.startOffset;
     let e: number = sel.endOffset;
     if (s === e) {
-      s = GraphemeUtil.moveLeft(this.doc.text, this.doc.caretOffset);
-      e = this.doc.caretOffset;
-      if (s === e) {
+      // 折叠光标：整段应用行内样式（与标题一致），有选区时只作用于选中文字
+      const bounds: number[] = this.doc.paragraphBounds(this.doc.caretOffset);
+      s = bounds[0];
+      e = bounds[1];
+      if (e <= s) {
         return;
       }
     }
@@ -1620,6 +1902,68 @@ export struct CanvasTextEditor {
     const sel: SelectionInfo = this.selMgr.selection;
     this.doc.toggleHeading(level, sel.startOffset, sel.endOffset);
     this.afterFormatChange();
+  }
+
+  /** 当前光标所在段落的种类（ParagraphKind；0=正文） */
+  paragraphKind(): number {
+    return this.doc.paragraphKindAt(this.doc.caretOffset);
+  }
+
+  /**
+   * 设置段落种类（覆盖选区涉及的段落）。
+   *
+   * 开关语义交给文档的 toggleHeading：它按"选中段落是否**全部**已是该种类"
+   * 决定设为该种类还是回到正文。只看选区内第一段会把"H1 + 正文"的混选
+   * 误判成取消（首段已是 H1 → 三段全变正文），用户预期是统一设成标题。
+   */
+  setParagraphKind(kind: number): void {
+    const sel: SelectionInfo = this.selMgr.selection;
+    this.doc.toggleHeading(kind, sel.startOffset, sel.endOffset);
+    this.afterFormatChange();
+  }
+
+  /** 切换某段落待办项的完成态（点项目符号 / 快捷键共用；进历史栈） */
+  toggleTodoAt(offset: number): void {
+    this.doc.toggleTodoAt(offset);
+    this.afterFormatChange();
+  }
+
+  /**
+   * 命中待办圆点则切换完成态（鼠标/触摸共用唯一入口）。
+   *
+   * @return true 表示这次点按已被符号消费，调用方不要再落光标或开菜单
+   */
+  private toggleTodoAtMarker(x: number, y: number): boolean {
+    const lineIndex: number = HitTester.markerLineAt(x, y + this.scrollY, this.lines,
+      this.padLeftVp(), this.padTopVp());
+    if (lineIndex < 0 || lineIndex >= this.lines.length) {
+      return false;
+    }
+    const offset: number = this.lines[lineIndex].startIndex;
+    const now: number = Date.now();
+    // 同一次单击被两条事件路径各派发一次：只认第一次，否则等于没切换
+    if (this.lastMarkerToggleOffset === offset && (now - this.lastMarkerToggleAt) < 120) {
+      return true;
+    }
+    this.lastMarkerToggleOffset = offset;
+    this.lastMarkerToggleAt = now;
+    this.selMgr.collapse(offset);
+    this.emitSelection(false);
+    this.toggleTodoAt(offset);
+    this.diag('marker toggle offset=' + offset.toString());
+    this.drawNow();
+    return true;
+  }
+
+  /**
+   * 把段落属性来源接到排版缓存：排版层据此给列表/待办段落加缩进与项目符号。
+   * 属性真值在 TextDocument（含"空末段待生效"状态），排版层不复制一份。
+   */
+  private attachParagraphProvider(cache: LayoutCache, source: TextDocument): void {
+    cache.setParagraphProvider((offset: number): number[] => {
+      const bounds: number[] = source.paragraphBounds(offset);
+      return [source.paragraphKindAt(bounds[0]), source.paragraphIndentAt(bounds[0])];
+    });
   }
 
   /** 格式变化收口：整体失效重排 + 重绘 + 上抛（T023） */
@@ -1686,6 +2030,7 @@ export struct CanvasTextEditor {
       this.pxPerVp);
     this.cache = new LayoutCache(engine);
     engine.setRuns(this.doc.runs);
+    this.attachParagraphProvider(this.cache, this.doc);
     this.engineRef = engine;
     // 旧预上屏排版属于旧引擎，丢弃；下一次预览回调会用新引擎重建
     this.previewCache = null;
@@ -1871,10 +2216,9 @@ export struct CanvasTextEditor {
   /** 编辑后：失效重排 + 字形动画 + 光标平滑移动动画 */
   private afterEdit(): void {
     this.preferredX = -1;
-    // 正文/排版已变：旧弹簧动画的目标坐标已失效，必须先停，否则光标会被拉回旧位置
-    this.stopCaretAnimation();
+    // 正文/排版已变：滚动动画目标失效，先停；光标动画**不停**——编辑后的光标要从当前位置
+    // 平滑追到新目标（保留速度），这样连续输入才是"光标跟着字走"，而不是每键跳一下
     this.stopScrollAnimation();
-    const previousText: string = this.lastText;
     this.lastText = this.doc.text;
     this.selMgr.setSource(this.doc.text);
     this.selMgr.collapse(this.doc.caretOffset);
@@ -1891,20 +2235,13 @@ export struct CanvasTextEditor {
     this.cache.applyEdit(this.doc.text, this.doc.version, this.doc.formatVersion, this.doc.runs, this.lastEditOffset);
     this.ensureVisibleLayout();
     this.ensureCaretLayout();
-    // 字符级动画：对比编辑前后字形（入场/消退/换行滑动），再驱动播放（T010/T011）
-    // 差分只在 lastEditOffset 附近的窗口内进行：整篇建两份字形 Map 是"越写越卡"的主因，
-    // 而真正需要过渡的字形上限只有 80 + 24 个。
-    const diff: GlyphDiffOptions = new GlyphDiffOptions();
-    diff.paddingLeftPx = this.padLeftVp();
-    diff.paddingTopPx = this.padTopVp();
-    diff.rowThresholdVp = this.theme.lineHeight * 0.5;
-    diff.oldText = previousText;
-    diff.newText = this.doc.text;
-    diff.hintOffset = this.lastEditOffset;
+    // P0 动效原则：内容即时、光标连续。
+    // 字符增删/上屏一律同帧完成（不做逐字入场/退场动画），动画预算全部给光标：
+    // 清空字形动画注册表，编辑后的光标位置交给弹簧跟随。
     this.stopGlyphAnimation();
-    this.anims = GlyphAnimator.createEditAnimations(this.oldLines, this.lines, diff);
+    this.anims.clear();
     this.lastText = this.doc.text;
-    this.caret = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
+    const caretTarget: CursorState = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
     this.twDirty = true;
     // 打字机 + 连续输入：居中必须**立即**生效。
@@ -1918,7 +2255,25 @@ export struct CanvasTextEditor {
     } else {
       this.ensureCaretVisible(this.effectivePolicy());
     }
-    this.runGlyphAnimation();
+    // 光标跟随策略（P0 修复"追不上字符"）：
+    //  - 快速重复输入（键重复间隔 < 90ms）：同帧到位，任何插值都会落后一格；
+    //  - 单次编辑但跨度大（IME 整句上屏/换行/粘贴）：也同帧到位，避免长距离滑动；
+    //  - 只有"慢速敲字"和"删除/移动一个字符"才播弹簧，既跟手又有动效。
+    const nowTs: number = Date.now();
+    const fastRepeat: boolean = this.lastInputTs > 0 && (nowTs - this.lastInputTs) < 90;
+    this.lastInputTs = nowTs;
+    const charGap: number = Math.max(1, caretTarget.height > 0 ? caretTarget.height * 0.6 : this.theme.lineHeight * 0.6);
+    const gapVp: number = Math.abs(caretTarget.x - this.caret.x) + Math.abs(caretTarget.y - this.caret.y);
+    const canAnimate: boolean = this.initialized && this.caretAnimator !== null &&
+      !this.dragging && !this.mouseSelecting;
+    if (canAnimate && !fastRepeat) {
+      // 单次大跨度（IME 整句上屏/换行/粘贴）也要动画：时长随距离加长，但不拖沓
+      this.startCaretSpring(caretTarget, gapVp > charGap * 2.5 ? 220 : 140, true);
+    } else {
+      // 同帧到位：不插值、不落后
+      this.stopCaretAnimation(caretTarget);
+      this.drawNow();
+    }
     this.reportCursor();
     // 编辑后选区已收起：让输入法同步新的 caret/选区，避免候选框停留在旧位置
     this.reportSelection(true);
@@ -1934,6 +2289,8 @@ export struct CanvasTextEditor {
       this.caretAnimator.stop();
     }
     this.caretAnimating = false;
+    this.caretSpringLoop = false;
+    this.caretSpringEpoch++;
     if (settleTo !== null) {
       this.caret.x = settleTo.x;
       this.caret.y = settleTo.y;
@@ -1942,33 +2299,106 @@ export struct CanvasTextEditor {
     }
   }
 
-  /** 光标移动弹簧动画 */
-  private animateCaretMove(from: CursorState, to: CursorState): void {
-    if (this.caretAnimator === null) {
-      this.settleCaret(to);
+  /**
+   * 光标弹簧动画（P0：动画预算全部给光标）
+   *
+   * 用临界阻尼弹簧逐帧积分（刚度 900 / 阻尼 60，约 120ms 落定），不再使用
+   * interpolating-spring 那种"忽略 duration"的曲线；每次重定向都从**当前视觉位置**
+   * 和**当前速度**继续（编辑连续输入时不会"刹停再起步"）。
+   */
+  private startCaretSpring(target: CursorState, durationMs: number, keepVelocity: boolean): void {
+    // 原地更新目标：循环在跑时不重建动画，连续按键不会把弹簧进度反复归零
+    this.caretTarget.x = target.x;
+    this.caretTarget.y = target.y;
+    this.caretTarget.height = target.height;
+    this.caretTarget.visible = target.visible;
+    if (this.caretSpringLoop) {
+      if (!keepVelocity) {
+        this.caretVelX = 0;
+        this.caretVelY = 0;
+      }
       return;
     }
-    // 以光标"当前实际位置"为起跳点（from 即调用方传入的 this.caret 当前值），
-    // 保证连续点击/移动时路径连续无跳变；过冲交由 applyClampedCaret 钳制，防止越过目标行/字符。
-    const startFrom: CursorState = from.clone();
-    // 移动过程中光标保持实心可见，到位后恢复呼吸（呼吸由 !caretAnimating 守卫）
+    const animator: EditorAnimator | null = this.caretAnimator;
+    if (animator === null || this.renderer === null) {
+      this.stopCaretAnimation(target);
+      this.drawNow();
+      return;
+    }
+    this.caretSpringLoop = true;
+    const epoch: number = ++this.caretSpringEpoch;
+    this.caretAnimating = true;
     this.caret.visible = true;
     this.caret.alpha = 1;
-    this.caretAnimating = true;
-    // 按距离选择弹簧参数档（spring 灵动 + 远慢近快；interpolating-spring 忽略 duration）
-    const distVp: number = this.caretDistanceVp(startFrom, to);
-    const curve: string = AnimationSpec.caretCurveForDistance(distVp);
-    this.diag('caretAnim from=(' + startFrom.x.toFixed(1) + ',' + startFrom.y.toFixed(1) + ')' +
-      ' to=(' + to.x.toFixed(1) + ',' + to.y.toFixed(1) + ')' + ' dist=' + distVp.toFixed(1) +
-      ' curve=' + curve);
-    this.caretAnimator.animate(AnimationSpec.caretNominalMs, curve,
-      (p: number) => {
-        this.applyClampedCaret(startFrom, to, p);
-        this.drawNow();
-      },
-      () => {
-        this.settleCaret(to);
-      });
+    const startX: number = this.caret.x;
+    const startY: number = this.caret.y;
+    let posX: number = startX;
+    let posY: number = startY;
+    let velX: number = keepVelocity ? this.caretVelX : 0;
+    let velY: number = keepVelocity ? this.caretVelY : 0;
+    if (!keepVelocity) {
+      this.caretVelX = 0;
+      this.caretVelY = 0;
+    }
+    // 刚度 2400（ω≈49）保证按键节奏再快也能跟上；临界阻尼 98 不过冲
+    const stiffness: number = 2400;
+    const damping: number = 98;
+    let lastP: number = 0;
+    animator.animate(durationMs, 'linear', (p: number) => {
+      if (epoch !== this.caretSpringEpoch) {
+        return;
+      }
+      const clamped: number = Math.min(1, Math.max(0, p));
+      const dt: number = Math.max(0.001, (clamped - lastP) * (durationMs / 1000));
+      lastP = clamped;
+      const tx: number = this.caretTarget.x;
+      const ty: number = this.caretTarget.y;
+      const ax: number = stiffness * (tx - posX) - damping * velX;
+      const ay: number = stiffness * (ty - posY) - damping * velY;
+      velX += ax * dt;
+      velY += ay * dt;
+      posX += velX * dt;
+      posY += velY * dt;
+      this.caretVelX = velX;
+      this.caretVelY = velY;
+      // 钳制在"本轮起点 → 最新目标"区间内，只允许轻微弹性，不跨行跨字
+      const charW: number = Math.max(1, this.caretTarget.height * 0.6);
+      const epsY: number = Math.max(1, this.caretTarget.height * 0.25);
+      this.caret.x = this.clampNum(posX, Math.min(startX, tx) - charW, Math.max(startX, tx) + charW);
+      this.caret.y = this.clampNum(posY, Math.min(startY, ty) - epsY, Math.max(startY, ty) + epsY);
+      this.caret.height = this.caretTarget.height;
+      this.drawNow();
+    }, () => {
+      if (epoch !== this.caretSpringEpoch) {
+        return;
+      }
+      this.caretSpringLoop = false;
+      this.caretVelX = 0;
+      this.caretVelY = 0;
+      this.settleCaret(this.caretTarget);
+    });
+  }
+
+  /** 离散跳转（点击/方向键/翻页）：从当前速度清空起步，按距离给时长 */
+  private animateCaretMove(from: CursorState, to: CursorState): void {
+    const nowTs: number = Date.now();
+    const navRepeat: boolean = this.lastNavTs > 0 && (nowTs - this.lastNavTs) < 80;
+    this.lastNavTs = nowTs;
+    if (navRepeat) {
+      // 方向键/翻页连按：同帧到位，避免"一次动画追一个键"的累积滞后
+      this.stopCaretAnimation(to);
+      this.drawNow();
+      return;
+    }
+    this.caret.x = from.x;
+    this.caret.y = from.y;
+    this.caret.height = from.height;
+    const distVp: number = this.caretDistanceVp(from, to);
+    const duration: number = distVp < 70 ? 160 : (distVp < 180 ? 180 : 200);
+    this.diag('caretSpring from=(' + from.x.toFixed(1) + ',' + from.y.toFixed(1) + ')' +
+      ' to=(' + to.x.toFixed(1) + ',' + to.y.toFixed(1) + ') dist=' + distVp.toFixed(1) +
+      ' duration=' + duration.toString());
+    this.startCaretSpring(to, duration, false);
   }
 
   /** 光标位移（vp，欧氏距离） */
@@ -2115,7 +2545,8 @@ export struct CanvasTextEditor {
       ? HitTester.lineIndexOf(this.doc.caretOffset, this.lines) : -1;
     renderer.draw(this.ctx, this.lines, this.caret,
       preview === null ? this.selMgr.selection : null, preview, viewport, this.anims, this.handlePositions(),
-      dimEnabled, focusFirst, focusLast, typewriterOn, caretLine);
+      dimEnabled, focusFirst, focusLast, typewriterOn, caretLine,
+      (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', parseColor(this.placeholderColor));
   }
 
   /**
@@ -2316,11 +2747,18 @@ export struct CanvasTextEditor {
       // 先判定是否落在选区手柄上（T018）：是则进入手柄拖动，否则进入点按/长按
       const handle: number = this.handleAt(x, y);
       if (handle !== 0) {
+        // 触摸拖手柄同样 1:1：停掉光标动画（拖动期间不做任何插值）
+        this.stopCaretAnimation();
         this.selMgr.beginHandleDrag(handle);
         this.dragging = true;
         this.scrollMode = false;
         this.cancelLongPress();
         this.diag('handleDrag begin which=' + handle.toString());
+      } else if (HitTester.markerLineAt(x, y + this.scrollY, this.lines, this.padLeftVp(),
+        this.padTopVp()) >= 0) {
+        // 按在待办圆点上：不启动长按选词。否则按住稍久（>450ms）就变成选词，
+        // 勾选反而失效 —— 复选框不该有"长按选中词"的语义。
+        this.cancelLongPress();
       } else {
         this.startLongPress(x, y);
       }
@@ -2416,16 +2854,26 @@ export struct CanvasTextEditor {
           this.selectWordAt(this.pressX, this.pressY, 'doubleTap');
           this.longPressed = true;
         } else {
-          this.selMgr.collapse(this.pressOffset);
-          this.emitSelection(false);
-          this.diag('UP tap offset=' + this.pressOffset.toString() + ' lines=' + this.lines.length.toString() +
-            ' pointer=' + this.isPointerInput(event).toString());
-          if (this.isPointerInput(event)) {
-            // 鼠标/触控板点击：立即落位，不播放光标移动动画
-            this.placeCaretImmediately(this.pressOffset);
+          // 项目符号 / 待办圆点优先命中：单指点 ○ = 切换完成态。
+          // 指针设备（PC/2in1）上这一步由 onMouse(Press) 负责，触摸事件只是同一次点击的
+          // 合成副本，这里必须让开，否则一次单击会被切成两次（5→6→5）。
+          const pointerInput: boolean = this.isPointerInput(event);
+          if (pointerInput || !this.toggleTodoAtMarker(this.pressX, this.pressY)) {
+            this.selMgr.collapse(this.pressOffset);
+            this.emitSelection(false);
+            this.diag('UP tap offset=' + this.pressOffset.toString() + ' lines=' + this.lines.length.toString() +
+              ' pointer=' + pointerInput.toString());
+            if (pointerInput) {
+              // 鼠标/触控板点击：立即落位，不播放光标移动动画
+              this.placeCaretImmediately(this.pressOffset);
+            } else {
+              // 手指点按：保留平滑移动动画
+              this.moveCaretAnimated(this.pressOffset);
+            }
           } else {
-            // 手指点按：保留平滑移动动画
-            this.moveCaretAnimated(this.pressOffset);
+            // 符号已消费这次点按：清掉连击计数，避免下一次点符号被当成双击选词
+            this.tapStreak = 0;
+            this.lastTapAt = 0;
           }
         }
       }
@@ -3270,7 +3718,7 @@ export struct CanvasTextEditor {
 
   /** 浮层项顺序：与 selectionMenu() 的两行 ForEach 一致 */
   private menuLabels(): string[] {
-    return ['撤销', '重做', '粗', '斜', '标题', '复制', '剪切', '粘贴', '全选', '查找', '分享'];
+    return ['撤销', '重做', '粗', '斜', '标题', '复制', '剪切', '粘贴', '全选', '查找', '复制到系统'];
   }
 
   /** 浮层项执行：统一走命令（撤销/格式/剪贴板/查找），分享仍走宿主回调 */

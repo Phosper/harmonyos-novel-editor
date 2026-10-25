@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "Weaver 小说编辑器主模块"
+      "value": "语流小说编辑器主模块"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "Weaver 小说编辑器"
+      "value": "语流小说编辑器"
     },
     {
       "name": "EntryAbility_label",
-      "value": "Weaver"
+      "value": "语流"
     }
   ]
 }

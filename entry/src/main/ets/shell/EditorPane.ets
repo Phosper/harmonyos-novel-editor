@@ -7,12 +7,22 @@ import { fireAndLog } from '../store/AppStores'
 import type { OpenDoc, DocItem } from '../store/StoreModels'
 import { SaveState } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
+import type { BookModel } from '../model/Book'
 import { TextEditorHost } from '../editor/TextEditorHost'
 import { CanvasTextEditorController } from '../editor/flowtext/CanvasTextEditor'
+import type { CanvasEditorSelection } from '../editor/flowtext/CanvasTextEditor'
 import { ScrollPolicy, StyleKind, FormatRun } from '../editor/flowtext/model/EditorTypes'
 import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
 import { TextFormat, FormatOptions } from '../utils/TextFormat'
+import { EditorTools } from './EditorTools'
+import { CardPicker } from './CardPicker'
+import { canvasCapturePayload } from '../editor/CanvasCapture'
+import type { CanvasCapturePayload } from '../editor/CanvasCapture'
+import { CanvasEvidenceKind } from '../model/CanvasTypes'
+import type { CanvasEvidenceInput } from '../model/CanvasStoreModels'
+import { toggleFocusAnimated } from './FocusTransition'
 import { glassBarStyle } from './MaterialSurface'
+import { startWindowMove, toggleWindowMaximize, isDesktopWindow } from '../utils/WindowDrag'
 
 /** 文稿标记位（收藏 / 灵感池） */
 enum DocFlag {
@@ -23,6 +33,8 @@ enum DocFlag {
 @ComponentV2
 export struct EditorPane {
   @Param app: AppStores | null = null
+  /** 宿主已有文稿标题条（手机/平板 WorkspaceDest）时不再重复显示正文标题 */
+  @Param showTitle: boolean = true
   /** 查找替换浮层状态 */
   @Local showReplace: boolean = false
   /** 自绘编辑器控制器（格式命令用，T026） */
@@ -31,6 +43,20 @@ export struct EditorPane {
   @Local replaceText: string = ''
   /** 工具条可用宽度（vp）：窄列时收成精简工具条，避免动作被裁切 */
   @Local toolbarWidth: number = 999
+  /** 编辑区头部实测宽度（vp）：用于给 EditorTools 计算「扣掉三键避让后的可用空间」 */
+  @Local headerWidth: number = 0
+  /** 标题行内重命名态 */
+  @Local renaming: boolean = false
+  @Local draftTitle: string = ''
+  /** 选区 → 加到卡片 */
+  @Local captureOpen: boolean = false
+  @Local capQuote: string = ''
+  @Local capStart: number = 0
+  @Local capEnd: number = 0
+  @Local capPara: number = 0
+  @Local capFingerprint: string = ''
+  @Local capDocId: string = ''
+  @Local capSource: string = ''
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
@@ -45,6 +71,24 @@ export struct EditorPane {
   @Monitor('app.ui.findRequestTick')
   onFindRequested(): void {
     this.showReplace = true
+  }
+
+  /** 撤销/重做不经过 onEdit，但 contentRev 会变化：同步中栏预览 */
+  /** 历史深度：撤销/重做按钮的禁用态靠它显式驱动（数组原地 push 不可靠） */
+  @Local historyTick: number = 0
+
+  @Monitor('app.editor.historyVersion')
+  onHistoryVersion(): void {
+    if (this.app !== null) {
+      this.historyTick = this.app.editor.historyVersion
+    }
+  }
+
+  @Monitor('app.editor.contentRev')
+  onContentRevChanged(): void {
+    if (this.app !== null && this.app.editor.hasDoc) {
+      this.app.project.updateDocPreview(this.app.editor.activeId, this.app.editor.content)
+    }
   }
 
   private typewriterDimColor(): string {
@@ -64,9 +108,20 @@ export struct EditorPane {
     return this.app.ui.isWide || this.app.ui.isDesktopMode
   }
 
-  /** 窄列（<700vp）精简工具条：只留撤销/重做/打字机 + ⋯，其余动作进菜单 */
+  /** 遗留：旧 `editorToolbar()`（已不在 build 中使用）仍按 <700vp 收窄，保留避免死代码引用报错 */
   private compactToolbar(): boolean {
     return this.toolbarWidth < 700
+  }
+
+  /**
+   * 工具组可用宽度（vp）= 头部实测宽度 − 左内边距 − 原生三键避让。
+   * 0 表示尚未测量：EditorTools 会按全量渲染，下一帧再分档。
+   */
+  private toolSpace(): number {
+    if (this.headerWidth <= 0) {
+      return 0
+    }
+    return Math.max(0, this.headerWidth - 12 - this.headerRightInset())
   }
 
   build() {
@@ -75,7 +130,17 @@ export struct EditorPane {
       if (this.app === null || !this.app.editor.hasDoc) {
         this.emptyState()
       } else {
+        // 内容列：工具/标题/正文共享同一条居中阅读列（760vp 上限），
+        // 与纯纯写作一致；窄窗口自动占满，不产生横向滚动。
+        Column() {
+        // 文档级工具：贴在正文顶部右侧，成为编辑区的一部分（不再占用窗口标题栏）
+        this.editorHeader()
+        // 轻量文稿标题：与正文左边缘对齐，点击可就地重命名（不加卡片/描边）
+        if (this.showTitle) {
+          this.docTitleRow()
+        }
         // 正文编辑面：自绘 FlowText（唯一实现，T037 单引擎收敛）
+        Stack({ alignContent: Alignment.TopStart }) {
         TextEditorHost({
             docId: this.app.editor.activeId,
             contentRev: this.app.editor.contentRev,
@@ -93,11 +158,14 @@ export struct EditorPane {
               return d !== undefined ? FormatCodec.decode(d.runsJson) : []
             },
             onSelectionChange: (start: number, end: number) => {
-              // Phase A：仅承载选区态（工具栏态在 US2 使用）
+              // 只递增版本号：顶栏 B/I/H 据此重新求值，不把选区坐标塞进 store
+              if (this.app !== null) {
+                this.app.ui.selectionTick++
+              }
             },
             onFormatChange: (runs: FormatRun[]) => {
               if (this.app !== null) {
-                // onEdit persists text and format together.
+                this.app.ui.selectionTick++
               }
             },
             onScrollState: (state: number) => {
@@ -126,6 +194,7 @@ export struct EditorPane {
             caretColor: this.colors().brand,
             dimTextColor: this.typewriterDimColor(),
             placeholder: '开始写作…',
+            placeholderColor: this.colors().textTertiary,
             loadText: (docId: string): string => {
               if (this.app === null) {
                 return ''
@@ -143,7 +212,11 @@ export struct EditorPane {
             onEdit: (text: string, runs: FormatRun[], caret: number, ownerId: string) => {
               if (this.app !== null) {
                 this.app.editor.setEditorState(text, FormatCodec.encode(runs), caret, ownerId)
-                if (this.app.editor.activeId === ownerId) { this.app.ui.noteTyping() }
+                if (this.app.editor.activeId === ownerId) {
+                  this.app.ui.noteTyping()
+                  // 实时同步中栏预览：不经数据库/防抖，下一帧即可看到正文与字数变化
+                  this.app.project.updateDocPreview(ownerId, text)
+                }
               }
             },
             onCaretChange: (offset: number, ownerId: string) => {
@@ -168,48 +241,242 @@ export struct EditorPane {
             },
             onToggleImmersive: () => {
               if (this.app !== null) {
-                this.app.ui.toggleImmersiveEditing()
+                toggleFocusAnimated(this.getUIContext())
               }
             }
           })
-            .layoutWeight(1)
+            .width('100%').height('100%')
+        }
+        .layoutWeight(1)
+        .width('100%')
+        }
+        .width('100%')
+        .height('100%')
+        .constraintSize({ maxWidth: 760 })
       }
       }
       .width('100%').height('100%')
+      .alignItems(HorizontalAlign.Center)
       .backgroundColor(this.app !== null ? this.colors().editorBg : this.colors().bgPrimary)
 
-      // 手机端浮动字数（桌面/平板已在顶栏显示字数与保存状态，避免重复）
-      if (this.app !== null && this.app.editor.hasDoc && !this.app.ui.immersive && !this.app.ui.immersiveEditing && !this.app.ui.isWide) {
-        Text((this.app.editor.wordCount) + ' 字')
-          .fontSize(12).fontColor(this.colors().textTertiary)
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .backgroundColor(this.colors().bgSurface)
-          .borderRadius(12)
-          .margin({ top: 10, right: 12 })
+      if (this.selectionLength() > 0) {
+        this.selectionPill()
+      }
+      if (this.captureOpen) {
+        CardPicker({
+          quoteText: this.capQuote,
+          onPick: (cardId: string) => this.addCaptureToCard(cardId),
+          onClose: () => {
+            this.captureOpen = false
+          }
+        })
       }
 
       if (this.showReplace) {
         this.replacePanel()
       }
 
-      // 沉浸编辑退出入口：桌面窗口头已有「退出专注」，这里只服务平板/手机
-      if (this.app !== null && this.app.ui.immersiveEditing && !this.app.ui.usesDesktopChrome) {
-        Text('退出专注')
-          .fontSize(12).fontColor(this.colors().textSecondary)
-          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-          .backgroundColor(this.colors().bgSurface)
-          .borderRadius(14)
-          .margin({ top: 12, right: 12 })
-          .hoverEffect(HoverEffect.Highlight)
-          .accessibilityText('退出专注模式')
-          .onClick(() => {
-            if (this.app !== null) {
-              this.app.ui.exitImmersiveEditing()
-            }
-          })
-      }
     }
     .width('100%').height('100%')
+  }
+
+  private canShowEditorTools(): boolean {
+    if (this.app === null) {
+      return false
+    }
+    return this.app.editor.hasDoc && !this.app.ui.immersiveEditing
+  }
+
+  private toolsRowHeight(): number {
+    if (this.app === null) {
+      return 48
+    }
+    // 平板：图标热区 56，工具行同步加高
+    if (this.app.ui.tabletMode) {
+      return 56
+    }
+    // 电脑模式：给原生三键留出 48vp 高度，标题从三键下方开始
+    if (this.app.ui.usesDesktopChrome) {
+      return 48
+    }
+    // 阔直板（Pura X View）：高度只有 744vp，工具行压到 44
+    if (this.app.ui.wideBar) {
+      return 44
+    }
+    return this.app.ui.pointerPrimary ? 44 : 48
+  }
+
+  /** 平板空态要更大、更居中 */
+  private tablet(): boolean {
+    return this.app !== null && this.app.ui.tabletMode
+  }
+
+  /** 工具行右侧避让原生三键（实测宽度 + 缓冲），非桌面窗口只留 12vp 常规边距 */
+  private headerRightInset(): number {
+    if (this.app === null || !this.app.ui.usesDesktopChrome) {
+      return 12
+    }
+    return this.app.ui.captionInset
+  }
+
+  private placeholderSize(): number {
+    return this.app === null ? 16 : this.app.ui.paperTheme.fontSize
+  }
+
+  @Builder
+  editorHeader() {
+    if (this.canShowEditorTools()) {
+      Row() {
+        // 左侧空白 = 窗口拖动/双击最大化热区；右侧是工具，避免按到按钮时拖窗
+        Row() {
+        }
+        .layoutWeight(1)
+        .height(this.toolsRowHeight())
+        .onTouch((event: TouchEvent) => {
+          if (event.type === TouchType.Down && isDesktopWindow()) {
+            startWindowMove()
+          }
+        })
+        .onMouse((event: MouseEvent) => {
+          if (event.action === MouseAction.Press && event.button === MouseButton.Left && isDesktopWindow()) {
+            startWindowMove()
+          }
+        })
+        .gesture(TapGesture({ count: 2 }).onAction(() => {
+          if (isDesktopWindow()) {
+            toggleWindowMaximize()
+          }
+        }))
+        EditorTools({ app: this.app, space: this.toolSpace(), immersive: false, historyTick: this.historyTick,
+          onAddToCard: () => this.openCapture() })
+      }
+      .width('100%')
+      .height(this.toolsRowHeight())
+      .padding({ left: 12, right: this.headerRightInset() })
+      .alignItems(VerticalAlign.Center)
+      .onAreaChange((oldValue: Area, newValue: Area) => {
+        const width: number = Number(newValue.width)
+        // 只在明显变化时写状态，避免拖动窗口时每帧重渲染
+        if (Math.abs(width - this.headerWidth) > 16) {
+          this.headerWidth = width
+        }
+      })
+    }
+  }
+
+  /** 标题右侧的轻量状态：字数 + 保存态（不重复到窗口头） */
+  private docStatus(): string {
+    if (this.app === null) {
+      return ''
+    }
+    const state: string = this.app.editor.dirtyCount > 0 ? '编辑中' : '已保存'
+    return this.app.editor.wordCount.toString() + ' 字 · ' + state
+  }
+
+  /** 当前项目名（用于标题下的归属 chip；没有项目时不显示） */
+  private projectName(): string {
+    if (this.app === null) {
+      return ''
+    }
+    const book: BookModel | undefined = this.app.project.currentBook
+    return book !== undefined ? book.name : ''
+  }
+
+  @Builder
+  docTitleRow() {
+    if (this.app !== null && this.app.editor.hasDoc) {
+      Column() {
+        Row() {
+        if (this.renaming) {
+          // 就地重命名：与显示态同一字号、无边框无按钮；回车/失焦保存，Esc 取消
+          TextInput({ text: this.draftTitle })
+            .fontSize(28)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.colors().textPrimary)
+            .height(40)
+            .layoutWeight(1)
+            .padding(0)
+            .backgroundColor(Color.Transparent)
+            .borderRadius(0)
+            .caretColor(this.colors().brand)
+            .onChange((v: string) => { this.draftTitle = v })
+            .onSubmit(() => this.commitRename())
+            .onBlur(() => this.commitRename())
+        } else {
+          Text(this.app.editor.title !== '' ? this.app.editor.title : '未命名文稿')
+            .fontSize(28).fontWeight(FontWeight.Medium)
+            .fontColor(this.colors().textPrimary)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+            .hoverEffect(HoverEffect.Highlight)
+            .accessibilityText('文稿标题，点击重命名')
+            .onClick(() => this.beginRename())
+        }
+        }
+        .width('100%')
+        .height(40)
+        .alignItems(VerticalAlign.Center)
+
+        // 元信息：项目 chip + 字数/保存态；标题区在正文上方固定，Canvas 滚动时保持不动（吸顶）
+        Row() {
+          if (this.projectName() !== '') {
+            Row() {
+              Column()
+                .width(8).height(8).borderRadius(4)
+                .backgroundColor(this.colors().brand)
+                .margin({ right: 6 })
+              Text(this.projectName())
+                .fontSize(12).fontColor(this.colors().textSecondary)
+                .maxLines(1)
+            }
+            .height(24)
+            .padding({ left: 8, right: 10 })
+            .borderRadius(WeaverRadii.LG)
+            .backgroundColor(this.colors().bgSurface)
+            .margin({ right: 10 })
+            .accessibilityText('所属项目：' + this.projectName())
+          }
+          Text(this.docStatus())
+            .fontSize(12).fontColor(this.colors().textTertiary)
+        }
+        .width('100%')
+        .height(28)
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 6, bottom: 10 })
+      .alignItems(HorizontalAlign.Start)
+    }
+  }
+
+  private beginRename(): void {
+    if (this.app === null) {
+      return
+    }
+    this.draftTitle = this.app.editor.title
+    this.renaming = true
+  }
+
+  private commitRename(): void {
+    if (!this.renaming) {
+      return
+    }
+    this.renaming = false
+    const app: AppStores | null = this.app
+    if (app === null) {
+      return
+    }
+    const next: string = this.draftTitle.trim()
+    if (next === '' || next === app.editor.title) {
+      return
+    }
+    app.renameChapter(app.editor.activeId, next)
+      .then(() => {
+        if (this.editorController !== null) {
+          this.editorController.focus()
+        }
+      })
+      .catch(() => {})
   }
 
   @Builder
@@ -270,12 +537,95 @@ export struct EditorPane {
     this.showReplace = false
   }
 
+  /** 选区长度；读 selectionTick 建立 V2 订阅（不复制正文）。 */
+  private selectionLength(): number {
+    if (this.app === null || this.editorController === null) {
+      return 0
+    }
+    if (this.app.ui.selectionTick < 0) {
+      return 0
+    }
+    const sel: CanvasEditorSelection = this.editorController.getSelection()
+    return Math.max(0, sel.end - sel.start)
+  }
+
+  private openCapture(): void {
+    if (this.app === null || this.editorController === null) {
+      this.toast('先打开一篇文稿')
+      return
+    }
+    const text: string = this.editorController.getText()
+    const sel: CanvasEditorSelection = this.editorController.getSelection()
+    const payload: CanvasCapturePayload | undefined = canvasCapturePayload(
+      this.app.editor.activeId, this.app.editor.title, text, sel.start, sel.end)
+    if (payload === undefined) {
+      this.toast('先选中一段文字')
+      return
+    }
+    this.capQuote = payload.quoteText
+    this.capStart = payload.startOff
+    this.capEnd = payload.endOff
+    this.capPara = payload.paraIndex
+    this.capFingerprint = payload.fingerprint
+    this.capDocId = payload.docId
+    this.capSource = payload.sourceLabel
+    this.captureOpen = true
+  }
+
+  private addCaptureToCard(cardId: string): void {
+    if (this.app === null) {
+      return
+    }
+    const input: CanvasEvidenceInput = {
+      docId: this.capDocId,
+      paraIndex: this.capPara,
+      startOff: this.capStart,
+      endOff: this.capEnd,
+      fingerprint: this.capFingerprint,
+      quoteText: this.capQuote,
+      userText: '',
+      sourceLabel: this.capSource
+    }
+    this.app.canvas.addEvidence(cardId, CanvasEvidenceKind.QUOTE, input).then(() => {
+      this.captureOpen = false
+      this.toast('已加入卡片')
+    }).catch((e: Error) => {
+      this.toast('加入失败：' + e.message)
+    })
+  }
+
+  @Builder
+  selectionPill() {
+    Row() {
+      Text('选中 ' + this.selectionLength().toString() + ' 字')
+        .fontSize(11.5)
+        .fontColor(this.colors().textSecondary)
+        .margin({ right: 10 })
+      Text('加到卡片')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.colors().onBrand)
+        .backgroundColor(this.colors().brand)
+        .borderRadius(7)
+        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+        .onClick(() => this.openCapture())
+        .accessibilityText('把选中文字加到卡片')
+    }
+    .height(36)
+    .padding({ left: 12, right: 8 })
+    .backgroundColor(this.colors().bgCard)
+    .borderRadius(9)
+    .border({ width: 1, color: this.colors().divider })
+    .shadow({ radius: 16, color: this.colors().divider, offsetX: 0, offsetY: 4 })
+    .margin({ top: 56, right: 18 })
+  }
+
   private toast(msg: string): void {
     this.getUIContext().getPromptAction().showToast({ message: msg })
   }
 
-  /** 分享所选文本：写入系统剪贴板（可跨应用粘贴）并提示 */
-  private shareText(text: string): void {
+  /** 把选中的文本写入系统剪贴板（可跨应用粘贴）；只有真正成功才提示“已复制”。 */
+  private async shareText(text: string): Promise<void> {
     if (text === '') {
       this.toast('无选中文本')
       return
@@ -283,11 +633,11 @@ export struct EditorPane {
     try {
       const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard()
       const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text)
-      board.setData(data).catch(() => {})
+      await board.setData(data)
+      this.toast('已复制所选文本到系统剪贴板')
     } catch (e) {
-      // 忽略：剪贴板不可用时仍给出提示
+      this.toast('复制失败，请重试或使用导出')
     }
-    this.toast('已复制所选文本，可粘贴分享')
   }
 
   /** 一键排版（编辑器无关：作用于 store 正文，可撤销） */
@@ -339,27 +689,35 @@ export struct EditorPane {
 
   @Builder
   emptyState() {
+    // 外层铺满，内层收进 760vp 阅读列并居中 —— 空态与正文同一条中线
     Column() {
-      // 统一空状态版式：一句主文案 + 一句说明 + 一个主行动（居中，留白 24/8/20）
-      Text('还没有打开任何文稿')
-        .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.colors().textPrimary)
-      Text('从文稿列表选择一篇，或新建一篇开始写作')
-        .fontSize(12).fontColor(this.colors().textTertiary).margin({ top: 8 })
-      Button('新建文稿')
-        .height(36).fontSize(13).margin({ top: 20 })
-        .padding({ left: 20, right: 20 })
-        .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
-        .borderRadius(WeaverRadii.SM)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          if (this.app !== null) {
-            // 建文稿要读聚合、写库，onClick 无法 await → 接住拒绝，避免未处理拒绝杀进程
-            fireAndLog(this.app.createChapter(), 'createChapter')
-          }
-        })
+      Column() {
+        Text('还没有打开任何文稿')
+          .fontSize(this.tablet() ? 20 : 16).fontWeight(FontWeight.Medium)
+          .fontColor(this.colors().textPrimary)
+        Text('从文稿列表选择一篇，或新建一篇开始写作')
+          .fontSize(this.tablet() ? 13 : 12).fontColor(this.colors().textTertiary).margin({ top: 8 })
+        Button('新建文稿')
+          .height(this.tablet() ? 48 : 36).fontSize(this.tablet() ? 15 : 13).margin({ top: 20 })
+          .padding({ left: this.tablet() ? 28 : 20, right: this.tablet() ? 28 : 20 })
+          .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
+          .borderRadius(WeaverRadii.SM)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            if (this.app !== null) {
+              // 建文稿要读聚合、写库，onClick 无法 await → 接住拒绝，避免未处理拒绝杀进程
+              fireAndLog(this.app.createChapter(), 'createChapter')
+            }
+          })
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: 760 })
+      .alignItems(HorizontalAlign.Center)
+      .padding({ left: 24, right: 24 })
     }
-    .width('100%').height('100%').justifyContent(FlexAlign.Center)
-    .padding({ left: 24, right: 24 })
+    .width('100%').height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
   }
 
   // ── 统一编辑器工具条（电脑/宽屏）：左侧状态，右侧文档动作 ──
@@ -421,7 +779,7 @@ export struct EditorPane {
         this.toolButton('查找', this.showReplace, () => this.openReplace())
         this.toolButton('排版', false, () => this.runFormat())
       } else {
-        this.toolButton('⋯', false, () => this.openMoreMenu())
+        this.moreIconButton()
       }
     }
     .width('100%').constraintSize({ minHeight: WeaverSpacing.TOOLBAR_H })
@@ -454,6 +812,20 @@ export struct EditorPane {
       .hoverEffect(HoverEffect.Highlight)
       .margin({ left: 2 })
       .onClick(action)
+  }
+
+  /** 收起态「更多」：鸿蒙四点图标（dot_grid_2x2），与窗口头/列表头同一符号 */
+  @Builder
+  moreIconButton() {
+    SymbolGlyph($r('sys.symbol.dot_grid_2x2'))
+      .fontSize(16)
+      .fontColor([this.colors().textSecondary])
+      .padding({ left: 9, right: 9, top: 6, bottom: 6 })
+      .borderRadius(WeaverRadii.XS)
+      .accessibilityText('更多')
+      .hoverEffect(HoverEffect.Highlight)
+      .margin({ left: 2 })
+      .onClick(() => this.openMoreMenu())
   }
 
   /** 打字机两态按钮：开启时品牌色 + 圆点 + 底色，关闭时中性 */

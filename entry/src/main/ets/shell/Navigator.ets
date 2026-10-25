@@ -17,6 +17,7 @@ export class Routes {
   /** 工作区：编辑器 + 素材 + 关系图（第三栏内容） */
   static readonly WORKSPACE: string = 'workspace'
   static readonly SETTINGS: string = 'settings'
+  // 思路板不再是路由：它是 AppShell 的全窗口分支（app.ui.canvasOpen + geometryTransition）。
 }
 
 /** 全局导航栈：由 AppShell 的 Navigation 组件消费 */

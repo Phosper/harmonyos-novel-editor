@@ -2,6 +2,7 @@
 // 用组件内联渲染（Stack 覆盖）而不是 CustomDialog，理由：V2 组件向
 // @CustomDialog 传参不受支持，内联渲染在 V1/V2 混合期最稳。
 import { tokensFor, WeaverColorSet, WeaverRadii, DEFAULT_THEME_ID } from '../constants/DesignTokens'
+import { Motion } from '../constants/Motion'
 import type { AppStores } from '../store/AppStores'
 import { glassPanelStyle } from './MaterialSurface'
 
@@ -84,7 +85,7 @@ export struct InputDialog {
     // 遮罩：比原来的 #66000000 略浅，让玻璃卡片的"通透"更明显；
     // 出现/消失统一 180ms / Curve.EaseOut（与既有动效规范一致）
     .backgroundColor('#59000000')
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
+    .transition(TransitionEffect.OPACITY.animation({ duration: Motion.normal, curve: Motion.standardCurve }))
     .onClick(() => this.onCancel())
   }
 }

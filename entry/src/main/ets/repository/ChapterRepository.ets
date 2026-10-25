@@ -171,6 +171,30 @@ export class ChapterRepository {
     return this.dao.counts(bookId)
   }
 
+  /** 全局文库计数（跨项目合计，侧栏「文库」段用） */
+  async countsGlobal(): Promise<LibCounts> {
+    return this.dao.countsGlobal()
+  }
+
+  /**
+   * 全局文库列表：不按 book_id 过滤，跨项目按最近修改倒序。
+   * 与 countsGlobal 同一口径 —— 侧栏数字与列表内容必须来自同一作用域，
+   * 否则会出现"侧栏写 9 篇、列表只有当前项目 1 篇"的错位。
+   */
+  async loadChaptersAll(lib: LibId): Promise<ChapterModel[]> {
+    const f: ChapterFilter = new ChapterFilter()
+    f.bookId = null
+    f.trash = lib === LibId.TRASH
+    if (lib === LibId.FAV) {
+      f.fav = true
+    } else if (lib === LibId.INSP) {
+      f.inspiration = true
+    }
+    f.orderBy = 'updated_at'
+    f.ascending = false
+    return this.dao.queryList(f)
+  }
+
   /** 每本书的有效文稿数（项目列表用） */
   async countActivePerBook(): Promise<Map<string, number>> {
     return this.dao.countActivePerBook()

@@ -40,6 +40,7 @@ export struct TextEditorHost {
   /** 非当前段落淡化色（打字机模式）：由宿主按当前主题计算，编辑器不硬编码 */
   @Prop dimTextColor: string = '#9AA0A6'
   @Prop placeholder: string = '开始写作…'
+  @Prop placeholderColor: string = '#9AA0A6'
   /** 打字机模式（默认关）：开启后当前段垂直居中跟随 */
   @Prop typewriter: boolean = false
   /** 滚动策略（打字机关时为 NORMAL） */
@@ -159,6 +160,7 @@ export struct TextEditorHost {
         caretColor: this.caretColor,
         dimTextColor: this.dimTextColor,
         placeholder: this.placeholder,
+        placeholderColor: this.placeholderColor,
         typewriter: this.typewriter,
         scrollPolicy: this.scrollPolicy,
         desktopMode: this.desktopMode,

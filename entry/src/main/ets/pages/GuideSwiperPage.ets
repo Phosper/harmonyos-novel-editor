@@ -80,7 +80,7 @@ struct GuideContent {
         .layoutWeight(1).width('100%').indicator(true).loop(false)
 
         Column() {
-          Button('开始使用 Weaver')
+          Button('开始使用 语流')
             .width('80%').height(46).fontSize(16)
             .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
             .borderRadius(WeaverRadii.MD)

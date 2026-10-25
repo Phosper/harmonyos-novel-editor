@@ -13,6 +13,8 @@ export class DocItem {
   readonly id: string = ''
   @Trace title: string = ''
   @Trace subTitle: string = ''
+  /** 全局文库视图下显示所属项目名；项目内视图恒为空串 */
+  @Trace projectName: string = ''
   @Trace coverColor: string = '#007DFF'
   @Trace badge: string = ''
   @Trace modified: string = ''
