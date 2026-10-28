@@ -1,6 +1,14 @@
 # Weaver
 
-HarmonyOS / ArkTS 小说写作应用。当前源码以 [JoukoPuro/Weaver](https://github.com/JoukoPuro/Weaver) 的 `master` 提交 `66a5483` 为基线，迁入本地最近的整合与编辑器优化（`029a834`、`8ce11d1`）。JoukoPuro 原始历史、界面特色和文档保留；此前 Phosper 版本保留在独立分支供对照。迁移范围见 [JoukoPuro 整合说明](docs/joukopuro-integration-2026-10-21.md)。
+后续对话与开发请先阅读 [代码与思路板设计依据](docs/PROJECT_CONTEXT.md) 和根目录 [项目规则](AGENTS.md)。当前以 `Weaver(4).zip` 完整新版主源码为底稿，迁回已验证的可靠性修复；来源、快照、验证与剩余边界见 [完整新版对齐记录](docs/weaver4-realignment-2026-10-28.md)。思路板现行规格为 2026-10-22 r2，原件已在项目内存档。
+
+第一轮可靠性改进已修复导入归属与失败处理、慢新建打开错稿、TXT 的 HTML 导出及字素选词；该轮 317 项回归和 766 个 Unicode 样例通过，范围见 [改进记录](docs/improvements-2026-10-27.md)。
+
+2026-10-28 完整新版对齐完成：保留融合工具头、原生三键、列表/待办、头像设置及专注转场，同时迁回数据、保存、输入、撤销和长文排版保护。432 项本地检查、766 个 Unicode 样例、API 26 两包构建及 39 项隔离模拟器原生用例通过，实际画面已核对。首次测试启动冻结和长文性能边界如实保留在上述完整对齐记录中。
+
+以下为历史进展。2026-10-28 界面第一批整合完成：原生菜单、正文标题和实时列表预览已接入，并修复撤销按钮未刷新的问题。342 项本地回归、766 个 Unicode 样例及 37 项 API 26 模拟器原生用例通过，主包和测试包编译成功。长文测试曾触发主线程超时，性能尚未验收；其他设备与真实鼠标也待补测。详见 [本轮验证记录](docs/integration-2026-10-28.md)。
+
+HarmonyOS / ArkTS 写作应用。Git 历史以 [JoukoPuro/Weaver](https://github.com/JoukoPuro/Weaver) 的 `master` 提交 `66a5483` 为基线，曾迁入本地整合与编辑器优化（`029a834`、`8ce11d1`）。JoukoPuro 原始历史、界面特色和文档保留；此前 Phosper 版本保留在独立分支供对照。迁移范围见 [JoukoPuro 整合说明](docs/joukopuro-integration-2026-10-21.md)。
 
 2026-10-21 整合验证：297 项本地检查、766 个 Unicode 样例及 37 项 API 26 模拟器原生测试全部通过，主包与测试包构建成功。主要远端已改为 JoukoPuro，旧仓库保留为 `phosper`；本次整合保存在本地分支，未推送远端。
 
@@ -46,13 +54,13 @@ HarmonyOS / ArkTS 小说写作应用。当前源码以 [JoukoPuro/Weaver](https:
 
 脚本统一运行本地回归并构建主包与测试包，在构建前检查实际 SDK，在安装前检查设备 API。API 23 开发工具或模拟器不能用于当前最低 API 26 的工程。
 
-上述脚本需要 DevEco Studio / 命令行工具链与设备。本机（OpenEuler，无 SDK）只能执行不依赖工具的 Node 回归与静态守卫：
+上述脚本需要 DevEco Studio / 命令行工具链与设备。当前 Windows 环境已配置 API 26 工具链和隔离模拟器；其他不带 SDK 的环境可以执行 Node 回归与静态守卫：
 
 ```bash
 for f in tools/*.cjs; do node "$f" || echo "FAILED $f"; done
 ```
 
-期望 7 个脚本全部通过、合计 224 项。设备侧四形态（键鼠输入、沉浸标题栏、沉浸光感、手机/平板触摸不回退）按 [多端自测清单](docs/refactor/multidevice-self-test.md) 执行；构建命令与 Hypium 通过条件（`Failure:0 Error:0 Ignore:0` 且 `Pass == Tests run`）见该文档 §1。
+当前期望 9 个脚本全部通过、合计 432 项（另含 766 个 Unicode 样例）；最新版整合的实际运行结果见上述对齐记录。设备侧四形态（键鼠输入、沉浸标题栏、沉浸光感、手机/平板触摸不回退）按 [多端自测清单](docs/refactor/multidevice-self-test.md) 执行；构建命令与 Hypium 通过条件（`Failure:0 Error:0 Ignore:0` 且 `Pass == Tests run`）见该文档 §1。
 
 来包新增了窗口排版、绘制缓存、列表读取裁剪与保存修订号保护；其原始审查报告保存在 [2026-10-13 来包报告](docs/reviews/upstream-review-2026-10-13.html)。该报告保留部分修改前结论，验证结果需以当前源码的测试为准。
 

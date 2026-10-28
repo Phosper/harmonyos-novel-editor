@@ -12,16 +12,27 @@ function compile(source) {
     .replace(/\bexport\s+default\s+/g, '').replace(/\bexport\s+/g, ''), { mode: 'transform' });
 }
 const statuses = { FLOATING: 0, MAXIMIZE: 1, FULL_SCREEN: 2, SPLIT_SCREEN: 3 };
-const avoidTypes = { TYPE_SYSTEM: 0, TYPE_NAVIGATION_INDICATOR: 4 };
+const avoidTypes = { TYPE_SYSTEM: 0, TYPE_NAVIGATION_INDICATOR: 4, TYPE_KEYBOARD: 3 };
 const breakpoints = { WIDTH_XS: 0, WIDTH_SM: 1, WIDTH_MD: 2, WIDTH_LG: 3, WIDTH_XL: 4 };
 const storage = new Map();
 const warnings = [];
 const errors = [];
 const deviceInfo = { deviceType: 'phone' };
+const screen = { width: 1200, height: 2000, densityPixels: 1, getRoundedCorner() { return []; } };
+const fold = { enabled: false, status: 0, listeners: [], removed: [] };
+const display = {
+  getDefaultDisplaySync: () => screen,
+  isFoldable: () => fold.enabled,
+  getFoldStatus: () => fold.status,
+  FoldStatus: { FOLD_STATUS_EXPANDED: 1, FOLD_STATUS_HALF_FOLDED: 2 },
+  on(name, callback) { fold.listeners.push([name, callback]); },
+  off(name, callback) { fold.removed.push([name, callback]); fold.listeners = fold.listeners.filter(x => x[1] !== callback); }
+};
 const context = vm.createContext({
   window: { WindowStatusType: statuses, AvoidAreaType: avoidTypes },
   WidthBreakpoint: breakpoints,
   deviceInfo,
+  display,
   AppStorage: { get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value) },
   Logger: { info() {}, warn: message => warnings.push(message), error: message => errors.push(message) },
   px2vp: value => value,
@@ -33,7 +44,7 @@ vm.runInContext(compile(read('utils/DesktopWindowChrome.ets')), context);
 vm.runInContext(compile(read('utils/SafeArea.ets')), context);
 vm.runInContext(compile(read('utils/DeviceProfile.ets')), context);
 const api = vm.runInContext('({BreakPoint,DeviceClass,InputModality,LayoutTier,DeviceSnapshot,DeviceProfileService,' +
-  'detectDeviceClass,modalityFor,DESKTOP_CHROME_HEIGHT_VP})', context);
+  'detectDeviceClass,modalityFor,DESKTOP_CHROME_HEIGHT_VP,watchSafeArea,keyboardHeightVp})', context);
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function nativeWindow(options = {}) {
@@ -44,6 +55,7 @@ function nativeWindow(options = {}) {
     rectWidth: options.rectWidth === undefined ? 0 : options.rectWidth,
     safeTopPx: options.safeTopPx === undefined ? 0 : options.safeTopPx,
     safeBottomPx: options.safeBottomPx === undefined ? 0 : options.safeBottomPx,
+    keyboardPx: options.keyboardPx === undefined ? 0 : options.keyboardPx,
     density: options.density === undefined ? 1 : options.density,
     getUIContext() { return { px2vp: value => value / this.density }; },
     freeThrows: options.freeThrows === true,
@@ -68,6 +80,9 @@ function nativeWindow(options = {}) {
       record.calls.push(['getWindowAvoidArea', type]);
       if (type === avoidTypes.TYPE_SYSTEM) {
         return { topRect: { height: this.safeTopPx }, bottomRect: { height: 0 } };
+      }
+      if (type === avoidTypes.TYPE_KEYBOARD) {
+        return { topRect: { height: 0 }, bottomRect: { height: this.keyboardPx } };
       }
       return { topRect: { height: 0 }, bottomRect: { height: this.safeBottomPx } };
     },
@@ -201,8 +216,8 @@ check('attach reads device class, free window, status, breakpoint and safe area'
     assert.equal(snapshot.titleButtonWidthVp, 96);
     assert.equal(snapshot.chromeHeightVp, api.DESKTOP_CHROME_HEIGHT_VP + 32);
     assert.equal(snapshot.modality, api.InputModality.POINTER);
-    // attach 显式读一次（TYPE_SYSTEM + TYPE_NAVIGATION_INDICATOR），watchSafeArea 再读一次
-    assert.equal(binding.record.calls.filter(call => call[0] === 'getWindowAvoidArea').length, 4);
+    // 系统栏、手势条与软键盘：attach和watch各读一次。
+    assert.equal(binding.record.calls.filter(call => call[0] === 'getWindowAvoidArea').length, 6);
   } finally {
     profile.detach();
   }
@@ -439,5 +454,68 @@ check('safe-area conversion follows the current window density after a display c
     assert.equal(profile.snapshot.safeTopVp, 16);
     assert.equal(profile.snapshot.safeBottomVp, 8);
   } finally { profile.detach(); }
+});
+check('keyboard avoidance follows live density and returns to zero when dismissed', () => {
+  const { profile, binding } = attach({ keyboardPx: 600, density: 2 });
+  try {
+    assert.equal(profile.snapshot.keyboardHeightVp, 300);
+    binding.win.density = 3;
+    const callback = binding.record.on.find(entry => entry[0] === 'avoidAreaChange')[1];
+    callback({ type: avoidTypes.TYPE_KEYBOARD, area: { bottomRect: { height: 600 } } });
+    assert.equal(profile.snapshot.keyboardHeightVp, 200);
+    callback({ type: avoidTypes.TYPE_KEYBOARD, area: { bottomRect: { height: 0 } } });
+    assert.equal(profile.snapshot.keyboardHeightVp, 0);
+  } finally { profile.detach(); }
+});
+check('stale window events cannot change AppStorage or notify the replacement page', () => {
+  const { profile, binding } = attach({ free: false });
+  const replacement = nativeWindow({ free: true });
+  profile.attach(uiContext(breakpoints.WIDTH_LG), replacement.win);
+  let seen = 0;
+  profile.onChange(() => seen++);
+  storage.set('freeWindowMode', true);
+  try {
+    for (const [name, callback] of binding.record.on) {
+      if (name === 'avoidAreaChange') callback({ type: avoidTypes.TYPE_KEYBOARD, area: { bottomRect: { height: 900 } } });
+      else callback(false);
+    }
+    assert.equal(storage.get('freeWindowMode'), true);
+    assert.equal(profile.snapshot.keyboardHeightVp, 0);
+    assert.equal(seen, 0);
+  } finally { profile.detach(); storage.delete('freeWindowMode'); }
+});
+check('a replaced safe-area disposer cannot remove the newer callback', () => {
+  const binding = nativeWindow();
+  let seen = 0;
+  const oldDispose = api.watchSafeArea(() => {}, binding.win);
+  const nextDispose = api.watchSafeArea(() => seen++, binding.win);
+  oldDispose();
+  binding.record.on.at(-1)[1]({ type: avoidTypes.TYPE_KEYBOARD, area: { bottomRect: { height: 300 } } });
+  assert.equal(seen, 1);
+  assert.equal(api.keyboardHeightVp(), 300);
+  assert.equal(binding.record.off.length, 1, 'only the replaced registration was removed');
+  nextDispose();
+  assert.equal(binding.record.off.length, 2);
+});
+check('fold and screen metrics survive the reliability merge and fold listeners release exactly', () => {
+  fold.enabled = true;
+  fold.status = 1;
+  screen.width = 880; screen.height = 1488; screen.densityPixels = 2;
+  const { profile } = attach({ free: false });
+  try {
+    assert.equal(profile.snapshot.foldable, true);
+    assert.equal(profile.snapshot.foldExpanded, true);
+    assert.equal(profile.snapshot.shortScreen, true);
+    assert.equal(profile.snapshot.wideBar, false, 'foldables use their fold model');
+    const registered = fold.listeners.at(-1);
+    fold.status = 0;
+    registered[1](0);
+    assert.equal(profile.snapshot.foldExpanded, false);
+    profile.detach();
+    assert.ok(fold.removed.some(entry => entry[0] === registered[0] && entry[1] === registered[1]));
+  } finally {
+    profile.detach(); fold.enabled = false; fold.status = 0;
+    screen.width = 1200; screen.height = 2000; screen.densityPixels = 1;
+  }
 });
 console.log(`Device profile regression: ${count} checks passed`);

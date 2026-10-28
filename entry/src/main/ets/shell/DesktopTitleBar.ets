@@ -22,18 +22,14 @@ import {
 } from '../utils/DesktopWindowChrome'
 import { deviceProfile, DeviceSnapshot } from '../utils/DeviceProfile'
 import { BreakPoint } from '../utils/BreakPoint'
-import { glassBarStyle } from './MaterialSurface'
-import { nav, Routes } from './Navigator'
-import { EditorTools } from './EditorTools'
 import { SaveState } from '../store/StoreModels'
+import { exitFocusAnimated } from './FocusTransition'
 import { ExportService } from '../utils/ExportService'
 import type { AppStores } from '../store/AppStores'
-import { app as globalApp } from '../store/AppStores'
-import { UiStore } from '../store/UiStore'
 import type { EditorDraftSnapshot } from '../store/EditorStore'
 
 /** 书名尚未加载时的标题兜底 */
-const TITLE_FALLBACK: string = 'Weaver'
+const TITLE_FALLBACK: string = '语流'
 /** 标题区最大宽度：留出动作与三键的空间，超长省略 */
 const TITLE_MAX_WIDTH: number = 340
 
@@ -45,7 +41,6 @@ const TITLE_MAX_WIDTH: number = 340
 @ComponentV2
 export struct DesktopTitleBar {
   @Param app: AppStores | null = null
-  @Local ui: UiStore = globalApp.ui
   /** 顶部安全区（状态栏）高度 vp：由 AppShell 从 DeviceSnapshot.safeTopVp 传入 */
   @Param safeTop: number = 0
   /** 标题栏总高度（含安全区）vp：由 DeviceSnapshot.chromeHeightVp 传入，0 时按常量兜底 */
@@ -67,9 +62,6 @@ export struct DesktopTitleBar {
   private boundWindow: window.Window | undefined = undefined
 
   aboutToAppear(): void {
-    if (this.app !== null) {
-      this.ui = this.app.ui
-    }
     // 1) 先把窗口侧配置做实（原生装饰栏高度/三键样式/隐藏原生标题），再读状态
     this.applyChrome()
     this.windowStatus = this.readStatus()
@@ -86,7 +78,7 @@ export struct DesktopTitleBar {
   }
 
   /** 主题切换时同步原生三键的图标配色（深色主题给 DARK，浅色主题给 LIGHT） */
-  @Monitor('ui.themeId')
+  @Monitor('app.ui.themeId')
   onThemeIdChanged(): void {
     this.applyChrome()
   }
@@ -150,6 +142,7 @@ export struct DesktopTitleBar {
     }
     this.boundWindow = w
     const status: (newStatus: window.WindowStatusType) => void = (newStatus: window.WindowStatusType): void => {
+      if (this.boundWindow !== w) { return }
       this.windowStatus = newStatus
       this.applyChrome()
       deviceProfile.refresh()
@@ -162,6 +155,7 @@ export struct DesktopTitleBar {
     }
 
     const rect: (newRect: window.TitleButtonRect) => void = (newRect: window.TitleButtonRect): void => {
+      if (this.boundWindow !== w) { return }
       this.refreshTitleButtonRect()
     }
     this.rectListener = rect
@@ -274,6 +268,10 @@ export struct DesktopTitleBar {
       })
   }
 
+  /**
+   * 保存失败时**不关窗**，给出可执行动作：重试保存 / 导出草稿 / 放弃并退出。
+   * 放弃是唯一会丢内存草稿的显式选择；点遮罩/返回则继续编辑。
+   */
   private showCloseBlockedDialog(stores: AppStores, host: common.UIAbilityContext | undefined): void {
     const retry: promptAction.Button = { text: '重试保存', color: this.colors().brand }
     const exportDraft: promptAction.Button = { text: '导出草稿', color: this.colors().textPrimary }
@@ -304,6 +302,7 @@ export struct DesktopTitleBar {
     }
   }
 
+  /** 导出当前内存草稿为 JSON 文件（数据库不可用时的最后一道人工备份）。 */
   private exportDraftsBeforeClose(stores: AppStores): void {
     try {
       const drafts: EditorDraftSnapshot[] = stores.editor.snapshotDrafts()
@@ -312,7 +311,7 @@ export struct DesktopTitleBar {
         reason: 'close-blocked-unsaved',
         drafts: drafts
       }, null, 2)
-      const name: string = 'Weaver-未保存草稿-' + Date.now().toString() + '.json'
+      const name: string = '语流-未保存草稿-' + Date.now().toString() + '.json'
       ExportService.saveText(name, payload)
         .then((ok: boolean) => {
           if (ok) {
@@ -419,52 +418,32 @@ export struct DesktopTitleBar {
     }
   }
 
-  private openSettings(): void {
-    nav.pushPath({ name: Routes.SETTINGS })
-  }
-
   private titleMaxWidth(): number {
-    const navigationWidth: number = this.isImmersive() ? 0 : 44
-    const actionWidth: number = this.isImmersive() ? 80 : (this.compactTools() ? 44 : 150)
-    const available: number = this.headerWidth - navigationWidth - this.editorToolsWidth() - actionWidth - 154
-    return Math.max(0, Math.min(this.compactTools() ? 210 : TITLE_MAX_WIDTH, available))
-  }
-
-  /** 窄窗仍保留 Jouko 的常用工具，横向滚动让位给窗口三键与可拖动标题。 */
-  private editorToolsWidth(): number {
-    if (!this.hasDoc() || this.isImmersive()) {
-      return 0
-    }
-    const desired: number = this.compactTools() ? 280 : 410
-    const actions: number = this.compactTools() ? 44 : 150
-    return Math.max(0, Math.min(desired, this.headerWidth - 44 - actions - 154 - 64))
+    return this.compactTools() ? 170 : TITLE_MAX_WIDTH
   }
 
   private openMoreMenu(): void {
     const menuColor: string = this.colors().textPrimary
     const b1: promptAction.Button = { text: '导出', color: menuColor }
     const b2: promptAction.Button = { text: '导入', color: menuColor }
-    const b3: promptAction.Button = { text: '设置', color: menuColor }
     this.getUIContext().getPromptAction().showActionMenu({
       title: '应用',
-      buttons: [b1, b2, b3]
+      buttons: [b1, b2]
     }, (err, data) => {
       if (err) {
         return
       }
       if (data.index === 0) {
         this.onExport()
-      } else if (data.index === 1) {
-        this.onImport()
       } else {
-        this.openSettings()
+        this.onImport()
       }
     })
   }
 
   /** 是否折叠工具组：非 lg 断点或顶栏自身过窄时折叠，避免标题被工具挤掉 */
   private compactTools(): boolean {
-    return this.app !== null && (this.app.ui.breakPoint !== BreakPoint.LG || this.headerWidth < 1280)
+    return this.app !== null && (this.app.ui.breakPoint !== BreakPoint.LG || this.headerWidth < 1080)
   }
 
   private hasDoc(): boolean {
@@ -527,146 +506,25 @@ export struct DesktopTitleBar {
 
   private exitImmersive(): void {
     if (this.app !== null) {
-      this.app.ui.exitImmersiveEditing()
+      exitFocusAnimated(this.getUIContext())
     }
   }
 
   build() {
-    Column() {
-      Row() {
-        // ① 应用导航：侧栏开关（沉浸模式隐藏，避免误触退出专注）
-        if (!this.isImmersive()) {
-          Row() {
-            Text('☰')
-              .fontSize(16)
-              .fontColor(this.app !== null && this.app.ui.showSidebar
-                ? this.colors().textPrimary : this.colors().textTertiary)
-          }
-          .width(44)
-          .height(DESKTOP_CHROME_HEIGHT_VP)
-          .justifyContent(FlexAlign.Center)
-          .alignItems(VerticalAlign.Center)
-          .accessibilityText(this.app !== null && this.app.ui.showSidebar ? '收起侧栏' : '展开侧栏')
-          .hoverEffect(HoverEffect.Highlight)
-          .focusable(true)
-          .tabStop(true)
-          .onClick(() => this.toggleSidebar())
-        }
-
-        // ② 标题 + 副标题（章节 · 字数 · 保存状态）：全应用唯一标题来源
-        Column() {
-          Text(this.barTitle())
-            .fontSize(14).fontWeight(FontWeight.Medium)
-            .fontColor(this.colors().textPrimary)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-            .accessibilityText('书名：' + this.barTitle())
-          if (this.subtitle() !== '') {
-            Text(this.subtitle())
-              .fontSize(11)
-              .fontColor(this.colors().textTertiary)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              .width('100%')
-              .margin({ top: 1 })
-              .accessibilityText('文档状态：' + this.subtitle())
-              .onClick(() => this.onStatusClick())
-          }
-        }
-        .height(DESKTOP_CHROME_HEIGHT_VP)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Start)
-        .constraintSize({ maxWidth: this.titleMaxWidth() })
-        .margin({ left: 4, right: 8 })
-        .id('weaverWindowTitle')
-        .onTouch((event: TouchEvent) => this.onTitleTouch(event))
-        .onMouse((event: MouseEvent) => this.onTitleMouse(event))
-
-        // ③ 可拖拽空白：占满剩余宽度；双击空白区切换最大化/还原
-        Row() { }
-          .layoutWeight(1)
-          .height('100%')
-          .id('weaverWindowDragRegion')
-          .onTouch((event: TouchEvent) => this.onTitleTouch(event))
-          .onMouse((event: MouseEvent) => this.onTitleMouse(event))
-          .gesture(TapGesture({ count: 2 }).onAction(() => {
-            this.toggleMaximize()
-          }))
-
-        // ④ 常用工具上移到顶栏（文档级动作集中在这里，编辑器内部不再重复一条工具条）
-        if (this.hasDoc() && !this.isImmersive()) {
-          Scroll() {
-            EditorTools({ app: this.app, compact: this.compactTools(), immersive: false })
-          }
-          .width(this.editorToolsWidth()).height(DESKTOP_CHROME_HEIGHT_VP)
-          .scrollable(ScrollDirection.Horizontal)
-          .scrollBar(BarState.Off)
-        }
-
-        // ⑤ 沉浸退出 / 应用级动作；窄宽度时低频动作收进「⋯」
-        if (this.isImmersive()) {
-          this.headerAction('退出专注', () => this.exitImmersive())
-        } else if (this.compactTools()) {
-          this.headerAction('⋯', () => this.openMoreMenu())
-        } else {
-          this.headerAction('导出', () => this.onExport())
-          this.headerAction('导入', () => this.onImport())
-          this.headerAction('设置', () => this.openSettings())
-        }
-
-        // 自绘关闭入口先严格保存；保存失败时保持窗口与草稿打开。
-        this.windowButton('─', '最小化', 'weaverWindowMinimize', () => this.minimize())
-        this.windowButton(this.maxGlyph(), this.maxLabel(), 'weaverWindowMaximize', () => this.toggleMaximize())
-        this.windowButton('✕', '关闭窗口', 'weaverWindowClose', () => this.close())
-      }
-      .width('100%')
-      .height(DESKTOP_CHROME_HEIGHT_VP)
-      .onAreaChange((oldValue: Area, newValue: Area) => {
-        const w: number = Number(newValue.width)
-        if (Math.abs(w - this.headerWidth) > 20) {
-          this.headerWidth = w
-        }
-      })
+    // 透明窗口条：只承载窗口拖动与双击最大化，**不再绘制背景、分隔线、品牌或动作**。
+    // 品牌在侧栏头部，文稿标题在正文内，目录开关在列表头部；视觉上与内容融为一体。
+    Row() {
     }
     .width('100%')
-    // 总高 = 48 + safeTop：safeTop 由标题栏自己吸纳，AppShell 不再额外加顶部 padding
     .height(this.barHeight())
-    .padding({ top: this.safeTop })
-    // 沉浸材质背景：模糊 + 渐变 + 下沿 1px 高光（T3 MaterialSurface，自动降级）
-    .attributeModifier(glassBarStyle(this.themeId()))
+    .padding({ top: this.safeTop, right: this.titleButtonWidth })
+    .backgroundColor(Color.Transparent)
+    .onTouch((event: TouchEvent) => this.onTitleTouch(event))
+    .onMouse((event: MouseEvent) => this.onTitleMouse(event))
+    .gesture(TapGesture({ count: 2 }).onAction(() => {
+      this.toggleMaximize()
+    }))
   }
 
-  /** 应用级动作按钮：统一 44vp 命中高度 + hover + 键盘焦点 */
-  @Builder
-  headerAction(label: string, action: () => void) {
-    Row() {
-      Text(label).fontSize(12).fontColor(this.colors().textSecondary)
-    }
-    .height(DESKTOP_CHROME_HEIGHT_VP)
-    .padding({ left: 10, right: 10 })
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .accessibilityText(label)
-    .hoverEffect(HoverEffect.Highlight)
-    .focusable(true)
-    .tabStop(true)
-    .onClick(action)
-  }
-
-
-  @Builder
-  windowButton(glyph: string, label: string, controlId: string, action: () => void) {
-    Row() {
-      Text(glyph).fontSize(13).fontColor(this.colors().textSecondary)
-    }
-    .width(46).height(DESKTOP_CHROME_HEIGHT_VP)
-    .id(controlId)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .hoverEffect(HoverEffect.Highlight)
-    .focusable(true)
-    .tabStop(true)
-    .accessibilityText(label)
-    .onClick(action)
-  }
 
 }

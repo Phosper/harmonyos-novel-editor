@@ -8,6 +8,7 @@ import { relationalStore } from '@kit.ArkData'
 import { ChapterDao, ChapterFilter } from '../database/ChapterDao'
 import type { ChapterOrderStat } from '../database/ChapterDao'
 import { IdGenerator } from '../utils/IdGenerator'
+import { countChars } from '../utils/TextLimit'
 import type { ChapterModel } from '../model/Chapter'
 import { ChapterFormat, TRASH_RETENTION_DAYS } from '../model/Chapter'
 import { LibId, LibCounts } from '../constants/DesignTokens'
@@ -61,7 +62,7 @@ export class ChapterRepository {
   }
 
   async createChapter(bookId: string, title?: string,
-    format: ChapterFormat = ChapterFormat.TXT): Promise<ChapterModel> {
+    format: ChapterFormat = ChapterFormat.TXT, content: string = ''): Promise<ChapterModel> {
     // 序号与排序都取书籍内口径：全表口径会让不同项目的「无标题 N」重复，
     // 也会让同一本书内的 sort_order 被别的项目插入打乱。
     const stat: ChapterOrderStat = await this.dao.countAndMaxOrder(bookId)
@@ -72,10 +73,10 @@ export class ChapterRepository {
       id: IdGenerator.generate(),
       bookId: bookId,
       title: displayTitle,
-      content: '',
+      content: content,
       format: format,
       order: stat.maxOrder + 1,
-      wordCount: 0,
+      wordCount: countChars(content),
       caretOffset: 0,
       createdAt: now,
       updatedAt: now,

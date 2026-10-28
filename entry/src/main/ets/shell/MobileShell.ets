@@ -15,6 +15,8 @@ import { app, fireAndLog } from '../store/AppStores'
 import { ShellDialog } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
 import { nav, Routes } from './Navigator'
+import { LongTakeNavParam, takePendingLongTake } from './LongTakeBridge'
+import { ezCustomTransition, LongTakeTransitionParam } from '../thirdparty/ezcustomtransition/Index'
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
 import { MobileTabBar, MobileTabItem } from './MobileTabBar'
@@ -27,6 +29,8 @@ export struct MobileShell {
   /** 导出 / 导入逻辑仍由 AppShell 持有，通过事件回传，避免重复实现 */
   @Event onExport: () => void = () => {}
   @Event onImport: () => void = () => {}
+  /** 一镜到底转场期间禁用 Navigation 交互 */
+  @Local navInteractive: boolean = true
 
   private colors(): WeaverColorSet {
     return tokensFor(app.ui.themeId)
@@ -49,7 +53,7 @@ export struct MobileShell {
     if (tab === MobileTab.PROJECT) {
       return '项目'
     }
-    return app.project.bookName === '' ? 'Weaver' : app.project.bookName
+    return app.project.bookName === '' ? '语流' : app.project.bookName
   }
 
   // ===================== 结构 =====================
@@ -79,6 +83,13 @@ export struct MobileShell {
     Navigation(nav) {
       this.narrowHome()
     }
+    .customNavContentTransition((from: NavContentInfo, to: NavContentInfo, operation: NavigationOperation) => {
+      return ezCustomTransition.customNavContentTransition(from, to, operation, {
+        onTransitionStart: () => { this.navInteractive = false },
+        onTransitionEnd: () => { this.navInteractive = true }
+      })
+    })
+    .enabled(this.navInteractive)
     .mode(NavigationMode.Stack)
     .hideNavBar(false)
     .hideTitleBar(true)
@@ -112,6 +123,13 @@ export struct MobileShell {
         Navigation(nav) {
           this.mediumHome()
         }
+        .customNavContentTransition((from: NavContentInfo, to: NavContentInfo, operation: NavigationOperation) => {
+          return ezCustomTransition.customNavContentTransition(from, to, operation, {
+            onTransitionStart: () => { this.navInteractive = false },
+            onTransitionEnd: () => { this.navInteractive = true }
+          })
+        })
+        .enabled(this.navInteractive)
         .mode(NavigationMode.Stack)
         .hideNavBar(false)
         .hideTitleBar(true)
@@ -162,8 +180,9 @@ export struct MobileShell {
         .accessibilityText('设置')
         .onClick(() => nav.pushPath({ name: Routes.SETTINGS }))
     }
-    .width('100%').height(WeaverMobile.TITLEBAR_H)
-    .padding({ left: 16, right: 10 })
+    // 阔直板（Pura X View）：高度压到 40vp，左右让位大圆角
+    .width('100%').height(app.ui.wideBar ? 40 : WeaverMobile.TITLEBAR_H)
+    .padding({ left: app.ui.wideBar ? app.ui.cornerInset : 16, right: app.ui.wideBar ? app.ui.cornerInset : 10 })
     // 自绘顶栏不是系统标题栏 → 用 backgroundBlurStyle + 渐变 + 1px 下沿高光
     .attributeModifier(glassBarStyle(app.ui.themeId))
   }
@@ -175,7 +194,9 @@ export struct MobileShell {
     ProjectSidebar({
       app: app,
       onCreateProject: () => app.ui.requestDialog(ShellDialog.NEW_PROJECT),
-      onDeleteProject: (id: string) => this.requestDeleteProject(id)
+      onDeleteProject: (id: string) => this.requestDeleteProject(id),
+      // 侧栏左下角设置入口：手机/平板走路由页（与顶栏「设置」同一目的地）
+      onSettings: () => nav.pushPath({ name: Routes.SETTINGS })
     })
   }
 
@@ -184,6 +205,7 @@ export struct MobileShell {
     DocListPane({
       app: app,
       showHeader: true,
+      enableLongTake: true,
       onOpenDoc: (id: string) => this.openDoc(id),
       onRenameDoc: (id: string, current: string) => app.ui.requestDialog(ShellDialog.RENAME_DOC, id, current, '', app.project.currentBookId),
       onDeleteDoc: (id: string, title: string) => app.ui.requestDialog(ShellDialog.DELETE_DOC, id, '', title)
@@ -200,10 +222,17 @@ export struct MobileShell {
   }
 
   private openDoc(id: string): void {
+    // 点击当下抓好的转场参数（宽屏常驻第三栏时为空）
+    const transition: LongTakeTransitionParam | undefined = takePendingLongTake()
     // openChapter 现在按 id 读取完整正文，读库可能失败 → then 链末端必须接住拒绝
     fireAndLog(app.openChapter(id).then(() => {
       if (!nav.getAllPathName().includes(Routes.WORKSPACE)) {
-        nav.pushPath({ name: Routes.WORKSPACE })
+        if (transition !== undefined) {
+          const navParam: LongTakeNavParam = { longTakeTransitionParam: transition }
+          nav.pushPath({ name: Routes.WORKSPACE, param: navParam })
+        } else {
+          nav.pushPath({ name: Routes.WORKSPACE })
+        }
       }
     }), 'MobileShell.openDoc')
   }

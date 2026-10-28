@@ -21,5 +21,7 @@ struct Index {
     }
     .width('100%').height('100%')
     .linearGradient({ angle: 180, colors: pageGlow(app.ui.themeId) })
+    // 背景必须画到状态栏/导航条下面，否则未铺满时露出系统黑底（平板实测上下黑边）
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

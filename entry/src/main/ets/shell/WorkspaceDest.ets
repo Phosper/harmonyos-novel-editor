@@ -10,14 +10,16 @@
 //   - 更多：`bindSheet` 底部弹层（替代 showActionMenu）；设置作为**二级页**（nav.pushPath）。
 import { inputMethod } from '@kit.IMEKit'
 import { tokensFor, WeaverColorSet, WeaverRadii } from '../constants/DesignTokens'
+import { Motion } from '../constants/Motion'
 import { app, fireAndLog } from '../store/AppStores'
 import { ShellDialog, UiStore } from '../store/UiStore'
 import { nav } from './Navigator'
 import { EditorPane } from './EditorPane'
 import { DocListPane } from './DocListPane'
-import { SettingsPanel } from './SettingsPanel'
+import { FOCUS_EDITOR_ID, toggleFocusAnimated } from './FocusTransition'
 import { glassBarStyle, glassVeilStyle } from './MaterialSurface'
 import { sheetMaterial } from '../constants/LightTokens'
+import { LongTakeSession, LongTakeTransitionDelegate, LongTakeTransitionParam } from '../thirdparty/ezcustomtransition/Index'
 
 @ComponentV2
 export struct WorkspaceDest {
@@ -30,8 +32,10 @@ export struct WorkspaceDest {
   /** 「更多」底部弹层（bindSheet）显隐 */
   @Local moreOpen: boolean = false
   /** 弹层内的层级：0=更多动作，1=设置（在弹层内二级跳转，非独立页面） */
-  @Local sheetPage: number = 0
   private workspaceVisible: boolean = false
+  /** 一镜到底：动画会话 + 上一页传入的参数（无参数时走普通转场） */
+  @Local longTakeSession: LongTakeSession = new LongTakeSession()
+  @Local longTakeParam: LongTakeTransitionParam | undefined = undefined
 
   /** 抽屉蒙层在 padding 内容区内、盖不到状态栏条：开关抽屉时同步压暗/还原状态栏 */
   @Monitor('listOpen', 'ui.breakPoint')
@@ -77,7 +81,7 @@ export struct WorkspaceDest {
     if (doc !== '') {
       return book !== '' ? book + ' · ' + doc : doc
     }
-    return book !== '' ? book : 'Weaver'
+    return book !== '' ? book : '语流'
   }
 
   /** 收起键盘（开弹层/抽屉前调用，避免键盘顶起面板） */
@@ -101,14 +105,13 @@ export struct WorkspaceDest {
     this.listOpen = false
   }
 
-  build() {
-    NavDestination() {
+  @Builder
+  contentBody() {
       if (app.ui.isWide) {
-        // 宽屏/电脑：第三栏只承载编辑器。
-        // 标题已在统一窗口头（书名 · 章节）出现，这里不再叠一条同名 topBar；
-        // 字数/保存态/文档动作由 EditorPane 内部工具条承担。
+        // 宽屏/电脑：第三栏承载编辑器；文稿标题内联在正文上方（窗口头已透明融合）。
         Column() {
           EditorPane({ app: app }).layoutWeight(1)
+            .geometryTransition(FOCUS_EDITOR_ID)
         }
         .width('100%').height('100%')
         .backgroundColor(this.colors().bgPrimary)
@@ -139,7 +142,8 @@ export struct WorkspaceDest {
           Stack() {
             Column() {
               this.topBar()
-              EditorPane({ app: app }).layoutWeight(1)
+              EditorPane({ app: app, showTitle: false }).layoutWeight(1)
+                .geometryTransition(FOCUS_EDITOR_ID)
             }
             .width('100%').height('100%')
             .backgroundColor(this.colors().bgPrimary)
@@ -170,13 +174,42 @@ export struct WorkspaceDest {
         .autoHide(false)
         .width('100%').height('100%')
       }
+  }
+
+  build() {
+    NavDestination() {
+      if (this.longTakeParam) {
+        // 一镜到底：由 delegate 在动画期间接管布局与背景
+        LongTakeTransitionDelegate({
+          longTakeSession: this.longTakeSession,
+          contentBuilder: (): void => {
+            this.contentBody()
+          }
+        })
+      } else {
+        this.contentBody()
+      }
     }
+    // 动画期间背景色由 session 动态管理；普通进入用主题底色
+    .backgroundColor(this.longTakeParam ? this.longTakeSession.navDestinationBgColor : this.colors().bgPrimary)
     .hideTitleBar(true)
+    .onReady((navDestContext: NavDestinationContext) => {
+      const info = navDestContext.pathInfo
+      if (info !== undefined && info.param !== undefined) {
+        const record = info.param as Record<string, Object>
+        this.longTakeParam = record['longTakeTransitionParam'] as LongTakeTransitionParam
+      }
+      if (this.longTakeParam) {
+        this.longTakeSession.init(navDestContext, this.longTakeParam, {
+          pop: () => { nav.pop() }
+        })
+      }
+    })
     .onShown(() => this.showWorkspace())
     .onHidden(() => this.releaseDrawer())
     .onBackPressed(() => this.closeDrawerForBack())
     .width('100%').height('100%')
-    // 「更多」：原生底部弹层（设置作为二级页从中进入）
+    // 「更多」：原生底部弹层（设置不再从这里进：唯一入口是侧栏左下角账号行）
     .bindSheet(this.moreOpen, this.moreSheet(), {
       height: 400,
       dragBar: true,
@@ -191,70 +224,46 @@ export struct WorkspaceDest {
 
   @Builder
   moreSheet() {
-    if (this.sheetPage === 1) {
-      // 二级：设置（在弹层内跳转，带返回）
-      Column() {
-        Row() {
-          Text('‹ 更多')
-            .fontSize(16).fontColor(this.colors().brand)
-            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-            .onClick(() => { this.sheetPage = 0 })
-        }
-        .width('100%')
-        SettingsPanel()
-      }
-      .width('100%')
-    } else {
-      // 一级：更多动作
-      Column() {
-        Text('更多')
-          .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.colors().textPrimary)
-          .width('100%').padding({ left: 16, top: 4, bottom: 8 })
+    // 一级动作。设置入口已收敛到侧栏左下角账号行（账号 + 设置同一页），这里不再重复。
+    Column() {
+      Text('更多')
+        .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.colors().textPrimary)
+        .width('100%').padding({ left: 16, top: 4, bottom: 8 })
 
-        Text('撤销').fontSize(16).fontColor(this.colors().textPrimary)
-          .width('100%').height(52).padding({ left: 16, right: 16 })
-          .clickEffect({ level: ClickEffectLevel.LIGHT })
-          .onClick(() => { this.moreOpen = false; app.editor.undo() })
-        Text('重做').fontSize(16).fontColor(this.colors().textPrimary)
-          .width('100%').height(52).padding({ left: 16, right: 16 })
-          .clickEffect({ level: ClickEffectLevel.LIGHT })
-          .onClick(() => { this.moreOpen = false; app.editor.redo() })
-        Text('一键排版').fontSize(16).fontColor(this.colors().textPrimary)
-          .width('100%').height(52).padding({ left: 16, right: 16 })
-          .clickEffect({ level: ClickEffectLevel.LIGHT })
-          .onClick(() => { this.moreOpen = false; app.formatActiveDoc() })
-        Text('收藏 / 取消收藏').fontSize(16).fontColor(this.colors().textPrimary)
-          .width('100%').height(52).padding({ left: 16, right: 16 })
-          .clickEffect({ level: ClickEffectLevel.LIGHT })
-          .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleFav(app.editor.activeId), 'toggleFav') })
-        Text('移入 / 移出灵感池').fontSize(16).fontColor(this.colors().textPrimary)
-          .width('100%').height(52).padding({ left: 16, right: 16 })
-          .clickEffect({ level: ClickEffectLevel.LIGHT })
-          .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleInspiration(app.editor.activeId), 'toggleInspiration') })
-
-        // 专注写作：手机/平板进入窗口内沉浸编辑（桌面还可用窗口头顶栏按钮与 F11）
-        Row() {
-          Text('专注写作').fontSize(16).fontColor(this.colors().textPrimary).layoutWeight(1)
-          Text('隐藏侧栏与列表').fontSize(12).fontColor(this.colors().textTertiary)
-        }
+      Text('撤销').fontSize(16).fontColor(this.colors().textPrimary)
         .width('100%').height(52).padding({ left: 16, right: 16 })
         .clickEffect({ level: ClickEffectLevel.LIGHT })
-        .onClick(() => {
-          this.moreOpen = false
-          app.ui.toggleImmersiveEditing()
-        })
-
-        // 设置：在弹层内进入二级（保持同一个弹层，不跳独立页）
-        Row() {
-          Text('设置').fontSize(16).fontColor(this.colors().textPrimary).layoutWeight(1)
-          Text('>').fontSize(15).fontColor(this.colors().textTertiary)
-        }
+        .onClick(() => { this.moreOpen = false; app.editor.undo() })
+      Text('重做').fontSize(16).fontColor(this.colors().textPrimary)
         .width('100%').height(52).padding({ left: 16, right: 16 })
         .clickEffect({ level: ClickEffectLevel.LIGHT })
-        .onClick(() => { this.sheetPage = 1 })
+        .onClick(() => { this.moreOpen = false; app.editor.redo() })
+      Text('一键排版').fontSize(16).fontColor(this.colors().textPrimary)
+        .width('100%').height(52).padding({ left: 16, right: 16 })
+        .clickEffect({ level: ClickEffectLevel.LIGHT })
+        .onClick(() => { this.moreOpen = false; app.formatActiveDoc() })
+      Text('收藏 / 取消收藏').fontSize(16).fontColor(this.colors().textPrimary)
+        .width('100%').height(52).padding({ left: 16, right: 16 })
+        .clickEffect({ level: ClickEffectLevel.LIGHT })
+        .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleFav(app.editor.activeId), 'toggleFav') })
+      Text('移入 / 移出灵感池').fontSize(16).fontColor(this.colors().textPrimary)
+        .width('100%').height(52).padding({ left: 16, right: 16 })
+        .clickEffect({ level: ClickEffectLevel.LIGHT })
+        .onClick(() => { this.moreOpen = false; fireAndLog(app.toggleInspiration(app.editor.activeId), 'toggleInspiration') })
+
+      // 专注写作：手机/平板进入窗口内沉浸编辑（桌面还可用窗口头顶栏按钮与 F11）
+      Row() {
+        Text('专注写作').fontSize(16).fontColor(this.colors().textPrimary).layoutWeight(1)
+        Text('隐藏侧栏与列表').fontSize(12).fontColor(this.colors().textTertiary)
       }
-      .width('100%')
+      .width('100%').height(52).padding({ left: 16, right: 16 })
+      .clickEffect({ level: ClickEffectLevel.LIGHT })
+      .onClick(() => {
+        this.moreOpen = false
+        toggleFocusAnimated(this.getUIContext())
+      })
     }
+    .width('100%')
   }
 
   @Builder
@@ -268,34 +277,47 @@ export struct WorkspaceDest {
       } else {
         // 手机（窄屏）：☰ 目录；大屏/折叠屏展开时侧栏常驻，不显示 ☰
         if (app.ui.isNarrow) {
-          Text('☰ 目录')
-            .fontSize(15).fontColor(this.colors().brand)
-            .padding({ right: 10, top: 10, bottom: 10 })
-            .accessibilityText('文稿目录')
-            .onClick(() => {
-              this.dismissKeyboard()
-              this.listOpen = true
-            })
+          Row() {
+            SymbolGlyph($r('sys.symbol.open_sidebar'))
+              .fontSize(18)
+              .fontColor([this.colors().brand])
+            Text('目录')
+              .fontSize(14).fontColor(this.colors().brand)
+              .margin({ left: 4 })
+          }
+          .height(44)
+          .padding({ left: 4, right: 10 })
+          .alignItems(VerticalAlign.Center)
+          .accessibilityText('文稿目录')
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.dismissKeyboard()
+            this.listOpen = true
+          })
         }
         Text(this.titleText())
           .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.colors().textPrimary)
           .layoutWeight(1).maxLines(1).textAlign(TextAlign.Center)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text('⋮')
-          .fontSize(20).fontColor(this.colors().textSecondary)
-          .padding({ left: 10, top: 4, bottom: 4 })
-          .accessibilityText('更多')
-          .onClick(() => {
-            this.dismissKeyboard()
-            this.sheetPage = 0
-            this.moreOpen = true
-          })
+        Row() {
+          SymbolGlyph($r('sys.symbol.dot_grid_2x2'))
+            .fontSize(18)
+            .fontColor([this.colors().textSecondary])
+        }
+        .width(44).height(44)
+        .justifyContent(FlexAlign.Center)
+        .accessibilityText('更多')
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          this.dismissKeyboard()
+          this.moreOpen = true
+        })
       }
     }
     .width('100%')
-    .height(app.ui.isWide || !app.ui.immersive ? 52 : 0)
+    .height(app.ui.isWide || !app.ui.immersive ? (app.ui.wideBar ? 48 : 52) : 0)
     .clip(true)
-    .animation({ duration: 180, curve: Curve.EaseOut })
+    .animation({ duration: Motion.normal, curve: Motion.standardCurve })
     .padding({ left: 16, right: 16 })
     // 自绘顶栏：手机/平板上它是本屏第 ① 层实时模糊（专注模式高度为 0，不产生绘制）；
     // lg 三栏下桌面标题栏已占第 ① 层，这里降成薄纱（零模糊），守住"每屏 ≤2 层模糊"的预算。

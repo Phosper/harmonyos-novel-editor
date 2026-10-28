@@ -320,9 +320,9 @@ export default function flowTextTest(): void {
       expect(lines.length > 1).assertTrue();
       const boundary: number = lines[0].endIndex;
       expect(lines[1].startIndex).assertEqual(boundary);
-      const down = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.UPSTREAM);
-      const up = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.DOWNSTREAM);
-      // UPSTREAM 贴上一行行尾；DOWNSTREAM 贴下一行行首
+      const down = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.DOWNSTREAM);
+      const up = HitTester.caretPositionFor(boundary, lines, 0, 0, 16, CaretAffinity.UPSTREAM);
+      // 新版 DOWNSTREAM 贴上一行行尾；UPSTREAM 贴下一行行首。
       expect(down.y < up.y).assertTrue();
       expect(down.x > up.x).assertTrue();
       expect(Math.abs(down.x - lines[0].width) < 0.5).assertTrue();
@@ -337,7 +337,7 @@ export default function flowTextTest(): void {
       const first: LayoutLine = lines[0];
       const box0 = HitTester.lineBox(first);
       const caret = HitTester.caretPositionFor(first.startIndex, lines, 12, 8, 16,
-        CaretAffinity.UPSTREAM);
+        CaretAffinity.DOWNSTREAM);
       expect(Math.abs(caret.y - box0.top) < 0.01).assertTrue();
       expect(Math.abs(caret.height - box0.height) < 0.01).assertTrue();
     });
@@ -351,7 +351,7 @@ export default function flowTextTest(): void {
       m.updateHandleDrag(5);
       expect(m.anchor).assertEqual(5); expect(m.head).assertEqual(4);
       expect(m.startOffset).assertEqual(4); expect(m.endOffset).assertEqual(5);
-      expect(m.headAffinity).assertEqual(CaretAffinity.DOWNSTREAM);
+      expect(m.headAffinity).assertEqual(CaretAffinity.UPSTREAM);
       m.endHandleDrag();
       m.setSelection(4, 1);
       expect(m.startOffset).assertEqual(1); expect(m.endOffset).assertEqual(4);

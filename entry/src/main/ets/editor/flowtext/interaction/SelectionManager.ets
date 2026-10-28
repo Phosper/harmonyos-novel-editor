@@ -20,6 +20,7 @@ export class SelectionManager {
   private anchorValue: number = 0;
   /** 选区活动端（光标所在端） */
   private headValue: number = 0;
+  /** A shared soft-wrap offset retains the visual side chosen by pointer or navigation. */
   private collapsedAffinity: CaretAffinity = CaretAffinity.DOWNSTREAM;
   /** 全文，用于把选区两端吸附到字符边界（未设置时退化为仅钳制范围） */
   private source: string = '';
@@ -43,7 +44,7 @@ export class SelectionManager {
    */
   get headAffinity(): CaretAffinity {
     if (this.anchorValue === this.headValue) { return this.collapsedAffinity; }
-    return this.anchorValue < this.headValue ? CaretAffinity.UPSTREAM : CaretAffinity.DOWNSTREAM;
+    return this.anchorValue < this.headValue ? CaretAffinity.DOWNSTREAM : CaretAffinity.UPSTREAM;
   }
 
   /** 当前选区（start<=end，派生自 anchor/head） */
@@ -138,6 +139,7 @@ export class SelectionManager {
   clear(): void {
     this.anchorValue = 0;
     this.headValue = 0;
+    this.collapsedAffinity = CaretAffinity.DOWNSTREAM;
     this.dragActive = false;
     this.handleDragging = 0;
     this.syncView();

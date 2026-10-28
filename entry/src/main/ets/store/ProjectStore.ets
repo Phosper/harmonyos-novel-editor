@@ -160,6 +160,26 @@ export class ProjectStore {
 
   // ===== 列表项同步（就地更新，保留身份） =====
 
+  /** 草稿预览只更新当前项目的已有列表项，不修改列表投影或数据库正文。 */
+  updateDocPreview(id: string, title: string, content: string, wordCount: number, isEdited: boolean = true): void {
+    const chapter: ChapterModel | undefined = this.chapters.find((c: ChapterModel): boolean =>
+      c.id === id && c.bookId === this.currentBookId)
+    if (chapter === undefined) {
+      return
+    }
+    const item: DocItem | undefined = this.docItems.find((d: DocItem): boolean => d.id === id)
+    if (item === undefined) {
+      return
+    }
+    item.title = title
+    item.subTitle = ProjectStore.summaryOf(content)
+    item.wordCount = wordCount
+    item.badge = wordCount > 0 ? wordCount.toString() + ' 字' : ''
+    if (isEdited) {
+      item.modified = formatRelativeTime(Date.now())
+    }
+  }
+
   private syncDocItems(): void {
     const existing: Map<string, DocItem> = new Map<string, DocItem>()
     for (const item of this.docItems) {
@@ -216,10 +236,28 @@ export class ProjectStore {
 
   /** 供列表显示的摘要（空白文稿给出引导文案） */
   static summaryOf(content: string): string {
-    const flat: string = content.replace(new RegExp('\\s+', 'g'), ' ').trim()
-    if (flat === '') {
+    // 只累计可见摘要；不为每次输入扫描、替换整篇长文，前导空白也不能误判为空稿。
+    const whitespace: RegExp = new RegExp('\\s')
+    let flat: string = ''
+    let pendingSpace: boolean = false
+    for (let i: number = 0; i < content.length; i++) {
+      const ch: string = content.charAt(i)
+      if (whitespace.test(ch)) {
+        pendingSpace = flat.length > 0
+        continue
+      }
+      if (pendingSpace) {
+        flat += ' '
+        pendingSpace = false
+      }
+      flat += ch
+      if (flat.length > SUMMARY_MAX) {
+        return flat.substring(0, SUMMARY_MAX) + '…'
+      }
+    }
+    if (flat.length === 0) {
       return '空白文稿，点击开始写作…'
     }
-    return flat.length > SUMMARY_MAX ? flat.substring(0, SUMMARY_MAX) + '…' : flat
+    return flat
   }
 }

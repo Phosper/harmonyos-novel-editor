@@ -1,0 +1,899 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语流 · 思路板 原型（嵌套版）</title>
+<style>
+  :root{
+    --paper:#f3f1ec; --card:#fff; --ink:#1c1c1e; --sub:#6e6e73; --faint:#a6a6ab;
+    --line:#e6e2d9; --line2:#d7d1c4; --active:#f0eee8;
+    --amber:#a8551a; --amber-soft:#fbf1e6; --amber-line:#e8d3bd;
+    --blue-soft:#eef4ff; --blue-line:#c9dbfa; --blue-ink:#1f5fd0;
+    --green-soft:#e9f6ee; --green-line:#c8e6d3; --green-ink:#1a7f37;
+    --purple-soft:#f1ecfb; --purple-line:#d9cdf2; --purple-ink:#5b4a80;
+    --red:#b93a2b; --red-soft:#fdeeec;
+    --shadow:0 10px 30px rgba(60,45,25,.10), 0 1px 2px rgba(60,45,25,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#0f0f11; --card:#1a1a1c; --ink:#ececee; --sub:#9a9aa0; --faint:#6e6e73;
+      --line:#2b2b30; --line2:#3a3a42; --active:#232327;
+      --amber:#e2a877; --amber-soft:#2b2018; --amber-line:#4a3524;
+      --blue-soft:#16233d; --blue-line:#2b4370; --blue-ink:#8fb6ff;
+      --green-soft:#12281b; --green-line:#204a33; --green-ink:#6ed99a;
+      --purple-soft:#241d33; --purple-line:#3d3157; --purple-ink:#c3b3e8;
+      --red:#ff8f80; --red-soft:#2c1715;
+      --shadow:0 10px 30px rgba(0,0,0,.55);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--paper);color:var(--ink);
+    font:14.5px/1.6 -apple-system,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;padding:24px 18px 70px}
+  .wrap{max-width:1220px;margin:0 auto}
+  .pagehead{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .pagehead h1{font-size:21px;margin:0;letter-spacing:-.01em}
+  .pagehead .meta{font-size:12.5px;color:var(--faint)}
+  .pagehead .badge{margin-left:auto;font-size:11.5px;padding:3px 10px;border-radius:99px;
+    background:var(--amber-soft);border:1px solid var(--amber-line);color:var(--amber)}
+
+  .app{display:grid;grid-template-columns:236px 1fr;height:720px;background:var(--card);
+       border:1px solid var(--line2);border-radius:18px;overflow:hidden;box-shadow:var(--shadow)}
+
+  .rail{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+  .rail .head{padding:12px 14px 8px;display:flex;align-items:center;gap:8px}
+  .rail .head b{font-size:13.5px}
+  .rail .head span{margin-left:auto;font-size:11.5px;color:var(--faint)}
+  .boards{padding:4px 8px;overflow:auto;flex:1}
+  .board{display:flex;gap:9px;align-items:flex-start;padding:9px 10px;border-radius:10px;cursor:pointer}
+  .board:hover,.board.on{background:var(--active)}
+  .board .ico{flex:none;width:22px;height:22px;border-radius:7px;display:grid;place-items:center;
+    font-size:11px;font-weight:700;background:var(--blue-soft);color:var(--blue-ink)}
+  .board[data-type="free"] .ico{background:var(--purple-soft);color:var(--purple-ink)}
+  .board .txt{min-width:0}
+  .board .txt b{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .board .txt span{font-size:11px;color:var(--faint)}
+  .rail .foot{padding:10px 12px;border-top:1px solid var(--line)}
+
+  .main{position:relative;display:flex;flex-direction:column;min-width:0;background:var(--paper)}
+  .topbar{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--card);
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .topbar .name{font-size:13.5px;font-weight:600}
+  .topbar .name em{font-style:normal;color:var(--faint);font-weight:400;margin-left:6px;font-size:12px}
+  .topbar .right{margin-left:auto;display:flex;gap:6px}
+
+  .btn{font:inherit;font-size:12.5px;padding:7px 11px;border:1px solid var(--line2);background:var(--card);
+    color:var(--ink);border-radius:8px;cursor:pointer;white-space:nowrap}
+  .btn:hover{border-color:var(--ink)}
+  .btn.primary{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+  .btn.danger{color:var(--red);border-color:var(--red-soft)}
+  .btn.ghost{border-color:transparent;background:none;color:var(--sub)}
+  .btn.ghost:hover{background:var(--active);color:var(--ink)}
+
+  .canvas{position:relative;flex:1;overflow:hidden;cursor:grab;
+    background-color:var(--paper);background-image:radial-gradient(var(--line2) 1px,transparent 1px);
+    background-size:20px 20px}
+  .canvas.dragging{cursor:grabbing}
+  .world{position:absolute;left:0;top:0;width:2600px;height:1800px}
+  #edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+
+  .card{position:absolute;width:226px;background:var(--card);border:1px solid var(--line2);
+    border-radius:12px;padding:13px 14px;cursor:grab;user-select:none;
+    transition:border-color .15s,box-shadow .15s}
+  .card:hover{border-color:var(--ink);box-shadow:0 3px 12px rgba(0,0,0,.07)}
+  .card.sel{border-color:var(--ink);outline:2px solid var(--ink);outline-offset:-1px}
+  .card.wide{width:344px;cursor:default}
+  .badge-writing{display:inline-block;font-size:10px;padding:1px 7px;border-radius:99px;
+    background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber-line);margin-bottom:6px}
+  .card .ttl{font-size:15.5px;font-weight:700;line-height:1.35}
+  .card.wide .ttl{font-size:16px}
+  .card .meta{font-size:11.5px;color:var(--faint);margin-top:2px}
+  .card .tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
+  .card .tags span{font-size:10.5px;padding:1px 7px;border-radius:99px;background:var(--active);color:var(--sub)}
+  .card .foot{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+    font-size:11.5px;color:var(--sub);display:flex;justify-content:space-between;gap:6px;align-items:center}
+  .card .foot em{font-style:normal;color:var(--faint)}
+
+  /* C 型容器：有子卡时才出现左侧脊线 */
+  .cbody{margin:10px 0 0 1px;padding:1px 0 3px 10px;border-left:3px solid var(--ink);border-radius:0 0 0 2px}
+  .cmouth{margin:6px 0 2px}
+  .row.open{background:var(--amber-soft);border-radius:7px}
+  .cmouth.row-mouth{margin:2px 0 3px}
+  .cmouth .gap{height:30px;border:1.5px dashed var(--amber);border-radius:8px;
+    background:var(--amber-soft);opacity:.95}
+  .card.open{border-color:var(--amber)}
+  .card.open .cbody{border-left-color:var(--amber)}
+  .card.dragging{opacity:.94;box-shadow:0 14px 30px rgba(0,0,0,.18)}
+  .row{display:flex;align-items:center;gap:6px;padding:5px 7px;border-radius:7px;cursor:pointer;font-size:12.5px}
+  .row:hover{background:var(--card)}
+  .row .num{flex:none;color:var(--amber);font-weight:700;font-size:11px;min-width:24px}
+  .row .rt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .rm{flex:none;color:var(--faint);font-size:10.5px}
+  .row .ract{flex:none;display:none;gap:1px}
+  .row:hover .ract{display:flex}
+  .row .ract button{border:0;background:none;color:var(--faint);cursor:pointer;font-size:10.5px;
+    padding:2px 3px;border-radius:4px;line-height:1}
+  .row .ract button:hover{background:var(--line);color:var(--ink)}
+  .row.drag{opacity:.5}
+
+  .hint{position:absolute;left:14px;bottom:12px;font-size:11.3px;color:var(--faint);
+    background:rgba(243,241,236,.84);padding:4px 9px;border-radius:8px}
+
+  .drawer{position:absolute;top:0;right:0;bottom:0;width:392px;max-width:90%;background:var(--card);
+    border-left:1px solid var(--line2);box-shadow:-12px 0 30px rgba(0,0,0,.08);
+    transform:translateX(102%);transition:transform .24s cubic-bezier(.4,0,.2,1);
+    display:flex;flex-direction:column;z-index:6}
+  .drawer.open{transform:translateX(0)}
+  .dh{padding:16px 18px 12px;border-bottom:1px solid var(--line)}
+  .dh .r1{display:flex;align-items:flex-start;gap:10px}
+  .dh h3{font-size:18px;margin:0;letter-spacing:-.01em}
+  .dh .alias{font-size:11.5px;color:var(--faint);margin-top:2px}
+  .dh .x{margin-left:auto;border:0;background:none;font-size:17px;color:var(--faint);
+    cursor:pointer;width:30px;height:30px;border-radius:8px}
+  .dh .x:hover{background:var(--active);color:var(--ink)}
+  .dh .tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
+  .dh .tags span{font-size:11px;padding:1px 8px;border-radius:99px;background:var(--active);color:var(--sub)}
+  .dh .sum{margin-top:10px;font-size:12.8px;color:var(--sub);background:var(--active);border-radius:9px;padding:8px 11px}
+  .dh .where{margin-top:9px;font-size:11.5px;color:var(--faint)}
+  .db{flex:1;overflow:auto}
+  .ev{display:flex;gap:9px;padding:10px 18px;border-bottom:1px solid var(--line)}
+  .k{flex:none;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:5px;height:19px;line-height:17px}
+  .k.quote{background:var(--green-soft);color:var(--green-ink);border:1px solid var(--green-line)}
+  .k.judge{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber-line)}
+  .k.note{background:var(--purple-soft);color:var(--purple-ink);border:1px solid var(--purple-line)}
+  .evmain{flex:1;min-width:0}
+  .evtext{font-size:13.3px;line-height:1.65}
+  .evsrc{font-size:11.3px;color:var(--faint);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .jump{border:0;background:none;color:var(--blue-ink);font-size:11.3px;cursor:pointer;padding:0;text-decoration:underline}
+  .df{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
+
+  .libsearch{padding:12px 18px;border-bottom:1px solid var(--line)}
+  .libsearch input{width:100%;font:inherit;font-size:13px;padding:8px 11px;border-radius:9px;
+    border:1px solid var(--line2);background:var(--paper);color:var(--ink);outline:none}
+  .libsearch input:focus{border-color:var(--ink)}
+  .librow{display:flex;gap:10px;align-items:center;padding:11px 18px;border-bottom:1px solid var(--line)}
+  .librow .lb{flex:1;min-width:0}
+  .librow .lb b{display:block;font-size:13.5px}
+  .librow .lb span{font-size:11.3px;color:var(--faint)}
+  .librow .btn{font-size:11.5px;padding:5px 9px}
+
+  .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,16px);background:rgba(0,0,0,.87);
+    color:#fff;font-size:12.5px;padding:9px 16px;border-radius:99px;opacity:0;pointer-events:none;
+    transition:opacity .2s,transform .2s;z-index:90;max-width:86vw;text-align:center}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  .guide{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-top:14px}
+  .gd{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 13px;font-size:12.3px;color:var(--sub)}
+  .gd b{display:block;color:var(--ink);font-size:12.6px;margin-bottom:3px}
+  .gd i{font-style:normal;color:var(--amber);font-weight:700;margin-right:5px}
+  .spec{margin-top:14px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px}
+  .spec h3{font-size:14.5px;margin:0 0 8px}
+  .spec ul{margin:0;padding-left:18px;font-size:13px;color:var(--sub)}
+  .spec li{margin:4px 0}
+  .spec b{color:var(--ink)}
+  .spec table{width:100%;border-collapse:collapse;font-size:12.8px;margin-top:6px}
+  .spec th,.spec td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+  .spec th{color:var(--sub);font-weight:600;white-space:nowrap;width:92px}
+  .spec .note{font-size:12px;color:var(--faint);margin:10px 0 0}
+  .spec details{margin-top:10px;font-size:12.3px;color:var(--sub)}
+  .spec details summary{cursor:pointer;color:var(--sub)}
+  footer{margin-top:18px;font-size:11.6px;color:var(--faint);line-height:1.8}
+
+  @media (max-width:980px){
+    .app{grid-template-columns:1fr;height:auto}
+    .rail{display:none}
+    .canvas{height:560px;flex:none}
+    .drawer{position:fixed;width:92%}
+    .guide{grid-template-columns:1fr 1fr}
+  }
+  @media print{.drawer,.toast{display:none}.app{height:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="pagehead">
+    <h1>语流 · 思路板（嵌套版）</h1>
+    <span class="meta">写作卡 + 任意卡可嵌套 · 三层：章 / 节 / 目</span>
+    <span class="badge">可点原型 · 规格同步 r2</span>
+  </div>
+
+  <div class="app">
+    <aside class="rail">
+      <div class="head"><b>白板</b><span id="boardCount"></span></div>
+      <div class="boards" id="boards"></div>
+      <div class="foot"><button class="btn" id="newBoard" style="width:100%">＋ 新建白板</button></div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="name" id="boardName"></div>
+        <div class="right">
+          <button class="btn" id="openLib">所有卡片</button>
+          <button class="btn ghost" id="resetDemo">重置</button>
+        </div>
+      </div>
+
+      <div class="canvas" id="canvas">
+        <div class="world" id="world"><svg id="edges"></svg></div>
+        <div class="hint">拖动卡片移动 · 靠近另一张卡会张开缺口，松手即嵌套 · 行尾 ↗ 移出 · 拖空白平移</div>
+      </div>
+
+      <aside class="drawer" id="drawer" aria-label="详情"></aside>
+    </main>
+  </div>
+
+  <div class="guide">
+    <div class="gd"><b><i>①</i>拖进去</b>把「均势」拖到写作卡上，它会变成「一、均势」。</div>
+    <div class="gd"><b><i>②</i>再嵌一层</b>把「维也纳体系」拖到「均势」这一行上，成为节（二级）。</div>
+    <div class="gd"><b><i>③</i>第三层</b>再往「维也纳体系」里拖一张卡，成为目；第四层会被拦住。</div>
+    <div class="gd"><b><i>④</i>移出</b>行尾 ↗ 把它拖回画布，仍是一张独立卡。</div>
+    <div class="gd"><b><i>⑤</i>写初稿</b>写作卡底部「写成初稿」，按三层标题生成。</div>
+  </div>
+
+  <div class="spec">
+    <h3>规格摘要（与 AI 施工单一致）</h3>
+    <table>
+      <tr><th>卡片</th><td>只有两种：<b>概念卡</b>（装素材：引文/判断/笔记）与<b>写作卡</b>（装子卡，多一个「写成初稿」）。<b>任何卡都能装子卡</b>，章节就是子卡本身。</td></tr>
+      <tr><th>嵌套归属</th><td>父子关系属于「贴放」，不属于卡片：同一张卡在不同白板可以有不同父卡；内容共享，位置独立。</td></tr>
+      <tr><th>层数</th><td>三层：章 <b>一、</b> → 节 <b>（一）</b> → 目 <b>1.</b>；第四层拦截并提示「拆成独立写作卡」。写作卡本身不计层。</td></tr>
+      <tr><th>张嘴阈值</th><td>拖动时指针进入目标外扩 <b>30</b> 内才张嘴（原型用 px，实现用 <b>vp</b>）；行优先，外扩 <b>8</b>；目标不变时不重建节点。</td></tr>
+      <tr><th>子卡行</th><td>缩进行（每层 +14），行尾 <b>▲ ▼ ↗</b>；点击打开素材抽屉。</td></tr>
+      <tr><th>移除 / 删除</th><td>从白板移除 ≠ 删除卡片；删除卡片会从所有白板消失，<b>子卡上提为顶层并散开</b>。</td></tr>
+      <tr><th>写成初稿</th><td><b>新建一篇</b>文稿；深度映射为标题 1/2/3；标题写入 <b>format_runs</b>，<b>不往正文写 #</b>。</td></tr>
+      <tr><th>白板</th><td>课程白板（绑一门课）/ 自由白板（不绑）；写作卡<b>不是</b>白板。卡片库与白板无关。</td></tr>
+      <tr><th>首版不做</th><td>图片素材、跨书白板、自动连线、AI 生成、导出图片、第四层嵌套。</td></tr>
+    </table>
+    <p class="note">
+      规格唯一来源：桌面 <code>AI-README-语流思路板实现.md</code>（v2026-10-22-r2）。本页只用于交互与视觉校对，冲突以施工单为准。<br>
+      示例数据（均势 / 无政府状态 / 维也纳体系 / 主权与不干涉）仅用于演示，不是内置模板。
+    </p>
+    <details>
+      <summary>相对上一版（r1）改了什么</summary>
+      <div>取消了「独立白板」这一层：原来那张卡会打开一块单独画布，现在就是画布上的一张卡；章节从「卡内的一行」变成「子卡本身」；子卡显示从完整卡片改为缩进行；新增三层上限与 C 型张嘴。</div>
+    </details>
+  </div>
+
+  <footer>
+    这是交互原型，不是真实应用：不保存、不联网、不导出，刷新恢复初始状态。<br>
+    规格以桌面 <code>AI-README-语流思路板实现.md</code> 为准（2026-10-22 r2）；研究记录见工程内 <code>docs/research/07</code>（同版）。
+  </footer>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  var BOARDS = [
+    { id:'course', type:'course', name:'国际关系理论', desc:'课程白板' },
+    { id:'free',   type:'free',   name:'临时摊开',     desc:'自由白板' }
+  ];
+
+  var CARDS = {
+    anarchy: { id:'anarchy', title:'无政府状态', alias:'anarchy', tags:['现实主义'],
+      summary:'国际体系的底色：没有高于国家的权威。',
+      ev:[
+        {k:'quote', t:'「国际体系的无政府状态迫使国家以自助方式追求安全。」', s:'《国际关系理论》2 章 3 段'},
+        {k:'judge', t:'无政府状态是理论假设，不是经验描述——不能拿它当可证伪的命题。', s:'我的判断'},
+        {k:'note',  t:'三个范式对无政府的解读不同：霍布斯式 / 洛克式 / 康德式。', s:'无出处'}
+      ]},
+    balance: { id:'balance', title:'均势', alias:'balance of power', tags:['现实主义','维也纳体系'],
+      summary:'我想搞清楚：均势是理论假设，还是历史事实？',
+      ev:[
+        {k:'quote', t:'「均势是这一逻辑的自然结果。」', s:'《国际关系理论》2 章 3 段'},
+        {k:'quote', t:'「欧洲大国通过均势与协调机制维持了近百年的相对和平。」', s:'《国际关系史》4 章 1 段'},
+        {k:'judge', t:'1815–1914 几乎没出现「均势」二字，但维也纳体系实质上就是均势政治。', s:'我的判断'},
+        {k:'note',  t:'均势解释不了冷战——核武器改变了成本结构。', s:'无出处'}
+      ]},
+    vienna: { id:'vienna', title:'维也纳体系', alias:'Congress of Vienna', tags:['历史'],
+      summary:'1815 年后的欧洲协调机制。',
+      ev:[
+        {k:'quote', t:'「1815 年维也纳会议后，欧洲大国通过均势与协调机制维持和平。」', s:'《国际关系史》4 章 1 段'},
+        {k:'judge', t:'维也纳体系是均势的制度化，不只是力量对比。', s:'我的判断'}
+      ]},
+    sovereignty: { id:'sovereignty', title:'主权与不干涉', alias:'sovereignty', tags:['国际法'],
+      summary:'主权平等是基石，人道主义干预是它的裂缝。',
+      ev:[
+        {k:'quote', t:'「主权平等与不干涉原则构成国际法的基础。」', s:'《国际法》2 章'},
+        {k:'judge', t:'人道主义干预是主权规范的例外，不是对它的否定。', s:'我的判断'},
+        {k:'note',  t:'可以把「保护的责任」看作主权含义的一次收缩。', s:'无出处'}
+      ]},
+    writing: { id:'writing', kind:'writing', title:'国际关系理论课程期末论文', alias:'', tags:['课程论文'],
+      summary:'核心问题：均势是理论假设，还是历史事实？', ev:[] }
+  };
+
+  var PLACE = {
+    course: [
+      { card:'anarchy',     x:60,  y:60,  parent:null, order:0 },
+      { card:'balance',     x:370, y:170, parent:null, order:1 },
+      { card:'vienna',      x:700, y:40,  parent:null, order:2 },
+      { card:'sovereignty', x:680, y:330, parent:null, order:3 },
+      { card:'writing',     x:250, y:430, parent:null, order:4 }
+    ],
+    free: [
+      { card:'writing',     x:70,  y:50,  parent:null, order:0 },
+      { card:'balance',     x:70,  y:200, parent:'writing', order:0 },
+      { card:'vienna',      x:70,  y:240, parent:'writing', order:1 },
+      { card:'sovereignty', x:640, y:90,  parent:null, order:1 },
+      { card:'anarchy',     x:640, y:280, parent:null, order:2 }
+    ]
+  };
+
+  var LINKS = {
+    course: [
+      { from:'anarchy', to:'balance', label:'前提', dash:false },
+      { from:'balance', to:'vienna', label:'历史例证', dash:false },
+      { from:'balance', to:'sovereignty', label:'张力', dash:true }
+    ],
+    free: []
+  };
+
+  var state = { board:'course', panX:26, panY:22, sel:null };
+  var els = {};      // 顶层卡片元素
+  var rowEls = {};   // 行元素（任意层级）
+  var draggingCard = null;
+  var draggingRow = null;
+  var openTargetId = null;
+
+  var canvas  = document.getElementById('canvas');
+  var world   = document.getElementById('world');
+  var edges   = document.getElementById('edges');
+  var drawer  = document.getElementById('drawer');
+  var toastEl = document.getElementById('toast');
+
+  function toast(msg){
+    toastEl.textContent = msg; toastEl.classList.add('show');
+    clearTimeout(toast._t); toast._t = setTimeout(function(){ toastEl.classList.remove('show'); }, 2100);
+  }
+  function board(){ return BOARDS.filter(function(b){return b.id===state.board;})[0]; }
+  function list(){ return PLACE[state.board]; }
+  function find(cardId){ return list().filter(function(p){return p.card===cardId;})[0]; }
+  function childrenOf(cardId){
+    return list().filter(function(p){ return p.parent===cardId; })
+                 .sort(function(a,b){ return a.order-b.order; });
+  }
+  function parentOf(cardId){ var p=find(cardId); return p ? p.parent : null; }
+  function depthOf(cardId){ var d=0, p=parentOf(cardId); while(p){ d++; p=parentOf(p);} return d; }
+  function maxSubDepth(cardId){
+    var m=0; childrenOf(cardId).forEach(function(c){ m=Math.max(m, 1+maxSubDepth(c.card)); }); return m;
+  }
+  function isAncestor(a, b){
+    var p=parentOf(b); while(p){ if(p===a) return true; p=parentOf(p); } return false;
+  }
+  function occurrences(cardId){
+    return BOARDS.filter(function(b){
+      return (PLACE[b.id]||[]).some(function(p){ return p.card===cardId; });
+    });
+  }
+  function numbering(depth, index){
+    var cn=['一','二','三','四','五','六','七','八','九','十'];
+    if (depth===1) return (cn[index]||String(index+1)) + '、';
+    if (depth===2) return '（' + (cn[index]||String(index+1)) + '）';
+    return (index+1) + '.';
+  }
+
+  // ---------------- 左栏 ----------------
+  function renderBoards(){
+    document.getElementById('boards').innerHTML = BOARDS.map(function(b){
+      var n = (PLACE[b.id]||[]).length;
+      return '<div class="board '+(b.id===state.board?'on':'')+'" data-id="'+b.id+'" data-type="'+b.type+'">'+
+        '<span class="ico">'+(b.type==='course'?'课':'自')+'</span>'+
+        '<span class="txt"><b>'+b.name+'</b><span>'+b.desc+' · '+n+' 张卡</span></span></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('.board'), function(el){
+      el.addEventListener('click', function(){ switchBoard(el.dataset.id); });
+    });
+    document.getElementById('boardCount').textContent = BOARDS.length + ' 块';
+    var b=board();
+    document.getElementById('boardName').innerHTML = b.name + '<em>'+b.desc+'</em>';
+  }
+
+  // ---------------- 渲染 ----------------
+  function render(){
+    els = {}; rowEls = {};
+    Array.prototype.slice.call(world.querySelectorAll('.card')).forEach(function(n){ n.remove(); });
+    list().filter(function(p){ return !p.parent; }).forEach(renderTopCard);
+    renderEdges();
+  }
+
+  function renderTopCard(p){
+    var c = CARDS[p.card]; if (!c) return;
+    var el = document.createElement('div');
+    var isWriting = c.kind === 'writing';
+    el.className = 'card' + (isWriting ? ' wide' : '') + (state.sel===c.id ? ' sel' : '');
+    el.dataset.card = c.id;
+    el.style.left = p.x + 'px';
+    el.style.top  = p.y + 'px';
+    el.setAttribute('tabindex','0');
+    el.setAttribute('role','button');
+    el.setAttribute('aria-label', c.title);
+
+    var kids = childrenOf(c.id);
+    var desc = countKinds(c.id);
+
+    var html = '';
+    if (isWriting) html += '<span class="badge-writing">写作卡</span>';
+    html += '<div class="ttl">'+c.title+'</div>';
+    html += '<div class="meta">' + (isWriting
+      ? (desc.ch + ' 章 · ' + desc.sec + ' 节 · ' + desc.sub + ' 目')
+      : (c.tags.join(' · ') + ' · ' + c.ev.length + ' 条素材')) + '</div>';
+    if (!isWriting) html += '<div class="tags">'+c.tags.map(function(t){return '<span>'+t+'</span>';}).join('')+'</div>';
+    if (kids.length) html += '<div class="cbody">' + rowsHtml(c.id, 1) + '</div>';
+    if (isWriting) html += '<div class="foot"><span>'+desc.ch+' 章</span><button class="btn primary" data-draft="1" style="font-size:11.5px;padding:5px 9px">写成初稿（新建一篇）</button></div>';
+    else html += '<div class="foot"><span>'+kids.length+' 张子卡</span><em>打开 ›</em></div>';
+
+    el.innerHTML = html;
+    world.appendChild(el);
+    els[c.id] = el;
+
+    // 卡片拖动（不拖到行/按钮）
+    bindCardDrag(el, p);
+    el.addEventListener('click', function(e){
+      if (e.target.closest('.row') || e.target.closest('button')) return;
+      if (el.dataset.moved === '1') { el.dataset.moved='0'; return; }
+      openCard(c.id);
+    });
+    el.addEventListener('keydown', function(e){
+      if (e.key==='Enter'){ e.preventDefault(); openCard(c.id); }
+    });
+    var draft = el.querySelector('[data-draft]');
+    if (draft) draft.addEventListener('click', function(e){ e.stopPropagation(); draftTree(c); });
+  }
+
+  function rowsHtml(parentId, depth){
+    var kids = childrenOf(parentId);
+    return kids.map(function(p, i){
+      var c = CARDS[p.card]; if (!c) return '';
+      var row = '<div class="row" data-card="'+c.id+'" data-depth="'+depth+'" style="margin-left:'+((depth-1)*14)+'px">'+
+        '<span class="num">'+numbering(depth, i)+'</span>'+
+        '<span class="rt">'+c.title+'</span>'+
+        '<span class="rm">'+(c.kind==='writing' ? '写作卡' : c.ev.length+' 条')+'</span>'+
+        '<span class="ract">'+
+          '<button data-up="1" title="上移">▲</button>'+
+          '<button data-down="1" title="下移">▼</button>'+
+          '<button data-out="1" title="移出">↗</button>'+
+        '</span></div>';
+      if (childrenOf(c.id).length) row += rowsHtml(c.id, depth+1);
+      return row;
+    }).join('');
+  }
+
+  function countKinds(rootId){
+    var r = { ch:0, sec:0, sub:0 };
+    (function walk(id, d){
+      childrenOf(id).forEach(function(p){
+        if (d===1) r.ch++; else if (d===2) r.sec++; else if (d===3) r.sub++;
+        walk(p.card, d+1);
+      });
+    })(rootId, 1);
+    return r;
+  }
+
+  // ---------------- 拖动卡片 ----------------
+  function bindCardDrag(el, p){
+    var sx=0, sy=0, ox=0, oy=0, moved=0, down=false;
+    el.addEventListener('pointerdown', function(e){
+      if (e.target.closest('.row') || e.target.closest('button')) return;
+      e.stopPropagation(); down=true; moved=0;
+      sx=e.clientX; sy=e.clientY; ox=p.x; oy=p.y;
+      el.setPointerCapture(e.pointerId);
+      el.style.cursor='grabbing';
+      el.classList.add('dragging');
+    });
+    el.addEventListener('pointermove', function(e){
+      if (!down) return;
+      var dx=e.clientX-sx, dy=e.clientY-sy;
+      moved=Math.max(moved, Math.abs(dx)+Math.abs(dy));
+      if (moved>3){
+        p.x=ox+dx; p.y=oy+dy;
+        el.style.left=p.x+'px'; el.style.top=p.y+'px';
+        renderEdges();
+        highlightDropFor(el.dataset.card, e.clientX, e.clientY);
+      }
+    });
+    el.addEventListener('pointerup', function(e){
+      if (!down) return; down=false;
+      el.style.cursor = '';
+      el.dataset.moved = moved>3 ? '1' : '0';
+      el.classList.remove('dragging');
+      closeMouths();
+      if (moved>3) tryDropTop(el, e);
+    });
+    el.addEventListener('pointercancel', function(){ down=false; el.classList.remove('dragging'); closeMouths(); el.style.cursor=''; });
+  }
+
+  // ---------------- 拖动行 ----------------
+  world.addEventListener('pointerdown', function(e){
+    var row = e.target.closest('.row');
+    if (!row || e.target.closest('button')) return;
+    e.stopPropagation();
+    var cardId = row.dataset.card;
+    var startX=e.clientX, startY=e.clientY, moved=0, down=true;
+    row.classList.add('drag');
+
+    function move(ev){
+      if (!down) return;
+      moved=Math.max(moved, Math.abs(ev.clientX-startX)+Math.abs(ev.clientY-startY));
+      if (moved>4) highlightDropFor(cardId, ev.clientX, ev.clientY);
+    }
+    function up(ev){
+      if (!down) return; down=false;
+      row.classList.remove('drag');
+      world.removeEventListener('pointermove', move);
+      world.removeEventListener('pointerup', up);
+      world.removeEventListener('pointercancel', up);
+      closeMouths();
+      if (moved<=4){ openCard(cardId); return; }
+      tryDropRow(cardId, row, ev);
+    }
+    world.addEventListener('pointermove', move);
+    world.addEventListener('pointerup', up);
+    world.addEventListener('pointercancel', up);
+  });
+
+  // 指针进入卡片外扩 30px 内才算“接近”，取最近的一张
+  function nearestTarget(clientX, clientY, excludeCard){
+    // 行优先：靠近某一行时，目标是那一行代表的卡
+    var bestRow = null;
+    document.querySelectorAll('.row[data-card]').forEach(function(el){
+      var id = el.dataset.card;
+      if (id === excludeCard) return;
+      if (excludeCard && isAncestor(excludeCard, id)) return;
+      var r = el.getBoundingClientRect();
+      if (clientX < r.left-8 || clientX > r.right+8 || clientY < r.top-8 || clientY > r.bottom+8) return;
+      var d = Math.abs(clientY - (r.top + r.height/2));
+      if (!bestRow || d < bestRow.d) bestRow = { el:el, id:id, row:true, d:d };
+    });
+    if (bestRow) return bestRow;
+
+    var best = null;
+    document.querySelectorAll('.card[data-card]').forEach(function(el){
+      var id = el.dataset.card;
+      if (id === excludeCard) return;
+      if (excludeCard && isAncestor(excludeCard, id)) return;
+      var r = el.getBoundingClientRect();
+      if (clientX < r.left-30 || clientX > r.right+30 || clientY < r.top-30 || clientY > r.bottom+30) return;
+      var dx = clientX - (r.left + r.width/2);
+      var dy = clientY - (r.top + r.height/2);
+      var d = Math.sqrt(dx*dx + dy*dy);
+      if (!best || d < best.d) best = { el:el, id:id, row:false, d:d };
+    });
+    return best;
+  }
+
+  function openMouth(el){
+    var body = el.querySelector('.cbody');
+    if (!body){
+      body = document.createElement('div');
+      body.className = 'cbody';
+      var foot = el.querySelector('.foot');
+      if (foot) el.insertBefore(body, foot); else el.appendChild(body);
+    }
+    var m = document.createElement('div');
+    m.className = 'cmouth';
+    m.innerHTML = '<div class="gap"></div>';
+    body.appendChild(m);
+    el.classList.add('open');
+  }
+
+  function openRowMouth(rowEl){
+    var depth = Number(rowEl.dataset.depth) || 1;
+    var m = document.createElement('div');
+    m.className = 'cmouth row-mouth';
+    m.style.marginLeft = (depth * 14) + 'px';
+    m.innerHTML = '<div class="gap" style="height:26px"></div>';
+    var n = rowEl.nextElementSibling;
+    while (n && n.classList.contains('row') && (Number(n.dataset.depth) || 1) > depth) n = n.nextElementSibling;
+    if (n) n.parentNode.insertBefore(m, n); else rowEl.parentNode.appendChild(m);
+    rowEl.classList.add('open');
+  }
+
+  function closeMouths(){
+    openTargetId = null;
+    // 卡片和行共用同一套“缺口”，统一清掉
+    document.querySelectorAll('.cmouth').forEach(function(n){ n.remove(); });
+    document.querySelectorAll('.row.open').forEach(function(n){ n.classList.remove('open'); });
+    document.querySelectorAll('.card.open').forEach(function(el){
+      el.classList.remove('open');
+      var body = el.querySelector('.cbody');
+      if (body && !body.querySelector('.row')) body.remove();
+    });
+  }
+
+  function highlightDropFor(dragId, clientX, clientY){
+    var t = nearestTarget(clientX, clientY, dragId);
+    var key = null;
+    if (t && t.id !== parentOf(dragId) && canNest(dragId, t.id)){
+      key = t.id + (t.row ? '#row' : '');
+    }
+    if (key === openTargetId) return;           // 目标没变，不重建 DOM
+    closeMouths();
+    if (!key) return;
+    if (t.row) openRowMouth(t.el);
+    else {
+      var el = document.querySelector('.card[data-card="'+t.id+'"]');
+      if (el) openMouth(el);
+    }
+    openTargetId = key;
+  }
+
+  function canNest(dragId, targetId){
+    if (!dragId || dragId===targetId) return false;
+    if (isAncestor(dragId, targetId)) return false;          // 不能塞进自己的子孙
+    if (isAncestor(targetId, dragId)) return true;           // 已经是它的祖先，允许（相当于重排）
+    var nd = depthOf(targetId) + 1;
+    if (nd < 1 || nd > 3) return false;
+    if (nd + maxSubDepth(dragId) > 3) return false;
+    return true;
+  }
+
+  function attach(childId, parentId){
+    var p = find(childId);
+    if (!p) return;
+    var sibs = childrenOf(parentId).filter(function(x){ return x.card !== childId; });
+    p.parent = parentId;
+    p.order = sibs.length ? Math.max.apply(null, sibs.map(function(x){return x.order;})) + 1 : 0;
+  }
+
+  function tryDropTop(el, e){
+    var dragId = el.dataset.card;
+    var t = nearestTarget(e.clientX, e.clientY, dragId);
+    if (!t) return;
+    if (!canNest(dragId, t.id)) { toast('最多三层（章 / 节 / 目）；再深建议拆成独立写作卡'); return; }
+    attach(dragId, t.id);
+    deleteCardPosition(dragId);
+    render(); renderBoards();
+    toast('已放进「'+CARDS[t.id].title+'」，成为第 '+childrenOf(t.id).length+' 项');
+  }
+
+  function tryDropRow(cardId, row, e){
+    var t = nearestTarget(e.clientX, e.clientY, cardId);
+    if (t && t.id === parentOf(cardId)){ return; }   // 拖回自己父卡：不动
+    if (t){
+      if (!canNest(cardId, t.id)) { toast('最多三层（章 / 节 / 目）；再深建议拆成独立写作卡'); return; }
+      attach(cardId, t.id); render(); renderBoards();
+      toast('已移入「'+CARDS[t.id].title+'」');
+      return;
+    }
+    // 拖到画布空白 → 移出
+    var cr = canvas.getBoundingClientRect();
+    if (e.clientX>=cr.left && e.clientX<=cr.right && e.clientY>=cr.top && e.clientY<=cr.bottom){
+      var p = find(cardId);
+      if (!p) return;
+      p.parent = null;
+      p.x = e.clientX - cr.left - state.panX - 100;
+      p.y = e.clientY - cr.top - state.panY - 20;
+      var sibs = list().filter(function(q){ return !q.parent; });
+      p.order = sibs.length;
+      render(); renderBoards();
+      toast('已移出，成为画布上的独立卡片');
+    }
+  }
+
+  function deleteCardPosition(cardId){
+    var p = find(cardId);
+    if (p) { p.x = 80; p.y = 80; }   // 嵌进父卡后位置不再使用
+  }
+
+  // ---------------- 连线 ----------------
+  function rectOf(cardId){
+    var el = els[cardId] || rowEls[cardId];
+    if (!el) el = world.querySelector('[data-card="'+cardId+'"]');
+    if (!el) return null;
+    var x=0,y=0,n=el;
+    while (n && n!==world){ x+=n.offsetLeft; y+=n.offsetTop; n=n.offsetParent; }
+    return { x:x, y:y, w:el.offsetWidth, h:el.offsetHeight };
+  }
+  function anchorPoint(r, toward){
+    var cx=r.x+r.w/2, cy=r.y+r.h/2, dx=toward.x-cx, dy=toward.y-cy;
+    if (!dx && !dy) return {x:cx,y:cy};
+    var s=Math.min(Math.abs(dx)<1e-6?Infinity:(r.w/2)/Math.abs(dx),
+                   Math.abs(dy)<1e-6?Infinity:(r.h/2)/Math.abs(dy));
+    return {x:cx+dx*s, y:cy+dy*s};
+  }
+  function renderEdges(){
+    rowEls = {};
+    world.querySelectorAll('.row').forEach(function(n){ rowEls[n.dataset.card]=n; });
+    var parts=[];
+    (LINKS[state.board]||[]).forEach(function(l){
+      var ra=rectOf(l.from), rb=rectOf(l.to);
+      if (!ra || !rb) return;
+      var ca={x:ra.x+ra.w/2,y:ra.y+ra.h/2}, cb={x:rb.x+rb.w/2,y:rb.y+rb.h/2};
+      var p1=anchorPoint(ra,cb), p2=anchorPoint(rb,ca);
+      var mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2, dx=p2.x-p1.x, dy=p2.y-p1.y;
+      var len=Math.sqrt(dx*dx+dy*dy)||1, nx=-dy/len, ny=dx/len, bow=Math.min(54,len*.18);
+      var c1={x:mx+nx*bow,y:my+ny*bow}, dash=l.dash?' stroke-dasharray="5 5"':'';
+      parts.push('<path d="M'+p1.x+' '+p1.y+' C'+c1.x+' '+c1.y+' '+c1.x+' '+c1.y+' '+p2.x+' '+p2.y+
+        '" fill="none" stroke="var(--sub)" stroke-width="1.6"'+dash+'/>');
+      var ang=Math.atan2(p2.y-c1.y,p2.x-c1.x), ah=8;
+      parts.push('<path d="M'+(p2.x-ah*Math.cos(ang-.42))+' '+(p2.y-ah*Math.sin(ang-.42))+
+        ' L'+p2.x+' '+p2.y+' L'+(p2.x-ah*Math.cos(ang+.42))+' '+(p2.y-ah*Math.sin(ang+.42))+
+        '" fill="none" stroke="var(--sub)" stroke-width="1.4"'+dash+'/>');
+      var lx=mx+nx*bow*.55, ly=my+ny*bow*.55, tw=l.label.length*11+14;
+      parts.push('<rect x="'+(lx-tw/2)+'" y="'+(ly-9)+'" width="'+tw+'" height="18" rx="9" fill="var(--paper)" stroke="var(--line)"/>');
+      parts.push('<text x="'+lx+'" y="'+(ly+3.6)+'" text-anchor="middle" font-size="10.5" fill="var(--sub)">'+l.label+'</text>');
+    });
+    edges.innerHTML = parts.join('');
+  }
+
+  // ---------------- 行内按钮（上移/下移/移出） ----------------
+  world.addEventListener('click', function(e){
+    var btn = e.target.closest('.ract button');
+    if (!btn) return;
+    e.stopPropagation();
+    var row = e.target.closest('.row');
+    var cardId = row.dataset.card;
+    var p = find(cardId); if (!p) return;
+    var sibs = childrenOf(p.parent);
+    var idx = sibs.findIndex(function(x){ return x.card===cardId; });
+    if (btn.dataset.up){
+      if (idx>0){ var t=p.order; p.order=sibs[idx-1].order; sibs[idx-1].order=t; render(); }
+    } else if (btn.dataset.down){
+      if (idx<sibs.length-1){ var t2=p.order; p.order=sibs[idx+1].order; sibs[idx+1].order=t2; render(); }
+    } else if (btn.dataset.out){
+      p.parent = null;
+      p.x = 80 + Math.random()*160; p.y = 80 + Math.random()*120;
+      p.order = list().filter(function(q){ return !q.parent; }).length;
+      render(); renderBoards(); toast('已移出，成为画布上的独立卡片');
+    }
+  });
+
+  // 平移
+  var panning=false, psx=0, psy=0, pox=0, poy=0;
+  canvas.addEventListener('pointerdown', function(e){
+    if (e.target.closest('.card') || e.target.closest('.drawer')) return;
+    panning=true; psx=e.clientX; psy=e.clientY; pox=state.panX; poy=state.panY;
+    canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', function(e){
+    if (!panning) return;
+    state.panX=pox+(e.clientX-psx); state.panY=poy+(e.clientY-psy);
+    world.style.transform='translate('+state.panX+'px,'+state.panY+'px)';
+  });
+  canvas.addEventListener('pointerup', function(){ panning=false; canvas.classList.remove('dragging'); });
+
+  // ---------------- 抽屉 ----------------
+  function closeDrawer(){ drawer.classList.remove('open'); state.sel=null; render(); }
+  function openCard(id){
+    var c=CARDS[id]; if (!c) return;
+    state.sel=id; render();
+    if (c.kind==='writing') openWriting(c); else openConcept(c);
+  }
+  function head(c, extra){
+    return '<div class="dh"><div class="r1"><div><h3>'+c.title+'</h3>'+
+      (c.alias?'<div class="alias">'+c.alias+'</div>':'')+'</div>'+
+      '<button class="x" aria-label="关闭">✕</button></div>'+
+      '<div class="tags">'+c.tags.map(function(t){return '<span>'+t+'</span>';}).join('')+'</div>'+
+      (c.summary?'<div class="sum">'+c.summary+'</div>':'')+(extra||'')+'</div>';
+  }
+  function openConcept(c){
+    var where=occurrences(c.id);
+    var whereText=where.length?'出现在：'+where.map(function(b){return b.name;}).join(' / '):'还没有放到任何白板';
+    var p=find(c.id);
+    var depth=p?depthOf(c.id):0;
+    var lvl = depth===0?'顶层卡片':(depth===1?'第 1 层（章）':(depth===2?'第 2 层（节）':'第 3 层（目）'));
+    var listHtml=c.ev.map(function(ev){
+      var label=ev.k==='quote'?'引文':(ev.k==='judge'?'判断':'笔记');
+      var jump=ev.k==='quote'?'<button class="jump" data-jump="1">跳回原文</button>':'';
+      return '<div class="ev"><span class="k '+ev.k+'">'+label+'</span><div class="evmain">'+
+        '<div class="evtext">'+ev.t+'</div><div class="evsrc"><span>'+ev.s+'</span>'+jump+'</div></div></div>';
+    }).join('');
+    drawer.innerHTML=head(c,'<div class="where">'+whereText+' · 内容由所有白板共享 · 当前：'+lvl+'</div>')+
+      '<div class="db">'+listHtml+'</div>'+
+      '<div class="df"><button class="btn" id="addEv">＋ 添加素材</button>'+
+      '<button class="btn" id="detach">从父卡移出</button>'+
+      '<button class="btn danger" id="del">删除卡片</button></div>';
+    drawer.classList.add('open');
+    drawer.querySelector('.x').addEventListener('click', closeDrawer);
+    var dt=document.getElementById('detach');
+    if (!p || !p.parent){ dt.disabled=true; dt.style.opacity='.45'; dt.style.cursor='not-allowed'; }
+    dt.addEventListener('click', function(){
+      if (!p || !p.parent) return;
+      p.parent=null; p.x=100+Math.random()*120; p.y=120+Math.random()*80;
+      closeDrawer(); render(); renderBoards(); toast('已移出，成为独立卡片');
+    });
+    document.getElementById('del').addEventListener('click', function(){
+      var used=0;
+      BOARDS.forEach(function(b){
+        PLACE[b.id]=(PLACE[b.id]||[]).filter(function(q){ return q.card!==c.id; });
+      });
+      // 子卡上提一层，并散开，避免叠在同一点
+      BOARDS.forEach(function(b){
+        var promoted = 0;
+        (PLACE[b.id]||[]).forEach(function(q){
+          if (q.parent===c.id){
+            q.parent=null;
+            q.x = 120 + promoted*250; q.y = 140 + promoted*40; promoted++;
+          }
+        });
+      });
+      delete CARDS[c.id];
+      closeDrawer(); render(); renderBoards();
+      toast('已删除「'+c.title+'」；它的子卡留在了画布上');
+    });
+    document.getElementById('addEv').addEventListener('click', function(){ toast('示例：新增一条引文 / 判断 / 笔记'); });
+    drawer.addEventListener('click', function(e){
+      if (e.target.closest('[data-jump]')) toast('示例：跳到对应章节并选中那段原文');
+    }, { once:true });
+  }
+  function openWriting(c){
+    var d=countKinds(c.id);
+    var kids=childrenOf(c.id);
+    var body=kids.length?kids.map(function(p,i){
+      var cc=CARDS[p.card];
+      return '<div class="ev"><span class="k note">章</span><div class="evmain">'+
+        '<div class="evtext">'+numbering(1,i)+' '+cc.title+'</div>'+
+        '<div class="evsrc"><span>'+childrenOf(cc.id).length+' 节 · '+cc.ev.length+' 条材料</span></div></div></div>';
+    }).join(''):'<div class="ev"><div class="evmain"><div class="evtext" style="color:var(--faint)">还没有章：把卡片拖进写作卡。</div></div></div>';
+    drawer.innerHTML=head(c,'<div class="where">写作卡 · '+d.ch+' 章 / '+d.sec+' 节 / '+d.sub+' 目</div>')+
+      '<div class="db">'+body+'</div>'+
+      '<div class="df"><button class="btn primary" id="gen">写成初稿（新建一篇）</button>'+
+      '<button class="btn" id="delW">删除卡片</button></div>';
+    drawer.classList.add('open');
+    drawer.querySelector('.x').addEventListener('click', closeDrawer);
+    document.getElementById('gen').addEventListener('click', function(){ draftTree(c); });
+    document.getElementById('delW').addEventListener('click', function(){
+      BOARDS.forEach(function(b){ PLACE[b.id]=(PLACE[b.id]||[]).filter(function(q){ return q.card!==c.id; }); });
+      BOARDS.forEach(function(b){
+        var i=0;
+        (PLACE[b.id]||[]).forEach(function(q){ if(q.parent===c.id){ q.parent=null; q.x=120+i*250; q.y=140+i*40; i++; } });
+      });
+      delete CARDS[c.id]; closeDrawer(); render(); renderBoards();
+      toast('写作卡已删除；里面的卡留在了画布上');
+    });
+  }
+
+  function draftTree(c){
+    var d=countKinds(c.id);
+    if (d.ch===0){ toast('写作卡里还没有章'); return; }
+    toast('已新建一篇文稿：'+d.ch+' 个一级标题 / '+d.sec+' 个二级 / '+d.sub+' 个三级（示例，未写入）');
+  }
+
+  // ---------------- 卡片库 ----------------
+  function openLibrary(){
+    drawer.innerHTML='<div class="dh"><div class="r1"><div><h3>所有卡片</h3>'+
+      '<div class="alias">卡片是全局的；白板上只是它的位置</div></div>'+
+      '<button class="x" aria-label="关闭">✕</button></div></div>'+
+      '<div class="libsearch"><input id="libq" placeholder="搜索标题、标签…"></div><div class="db" id="liblist"></div>';
+    drawer.classList.add('open');
+    drawer.querySelector('.x').addEventListener('click', closeDrawer);
+    function paint(q){
+      var items=Object.keys(CARDS).map(function(k){return CARDS[k];}).filter(function(c){
+        if(!q) return true;
+        return (c.title+' '+c.tags.join(' ')+' '+(c.alias||'')).toLowerCase().indexOf(q.toLowerCase())>=0;
+      });
+      document.getElementById('liblist').innerHTML=items.map(function(c){
+        var where=occurrences(c.id), here=!!find(c.id);
+        var btn=here?'<button class="btn" disabled style="opacity:.45">已在当前白板</button>'
+                    :'<button class="btn" data-add="'+c.id+'">放到当前白板</button>';
+        return '<div class="librow"><div class="lb"><b>'+c.title+
+          (c.kind==='writing'?' <span style="color:var(--amber);font-size:11px">写作卡</span>':'')+'</b>'+
+          '<span>'+where.length+' 块白板 · '+(c.kind==='writing'?'可装子卡':c.ev.length+' 条素材')+'</span></div>'+btn+'</div>';
+      }).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('[data-add]'), function(b){
+        b.addEventListener('click', function(){
+          list().push({ card:b.dataset.add, x:120+Math.random()*240, y:120+Math.random()*200, parent:null, order:list().length });
+          closeDrawer(); render(); renderBoards(); toast('已放到「'+board().name+'」');
+        });
+      });
+    }
+    paint('');
+    document.getElementById('libq').addEventListener('input', function(e){ paint(e.target.value); });
+  }
+
+  function switchBoard(id){
+    state.board=id; state.sel=null; drawer.classList.remove('open'); render(); renderBoards();
+  }
+
+  document.getElementById('openLib').addEventListener('click', openLibrary);
+  document.getElementById('newBoard').addEventListener('click', function(){ toast('示例：新建一块白板'); });
+  document.getElementById('resetDemo').addEventListener('click', function(){ location.reload(); });
+
+  renderBoards(); render();
+  world.style.transform='translate('+state.panX+'px,'+state.panY+'px)';
+})();
+</script>
+</body>
+</html>

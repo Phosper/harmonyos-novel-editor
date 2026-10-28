@@ -69,7 +69,9 @@ class StoreDouble {
   async querySql(sql, args = []) {
     const all = [...this.tables.get('chapters').values()];
     let rows;
-    if (sql.startsWith('SELECT id, book_id')) {
+    if (sql.startsWith('SELECT title FROM chapters WHERE is_trash = 0 AND book_id = ?')) {
+      rows = all.filter(ch => !ch.is_trash && ch.book_id === args[0]).map(ch => ({title: ch.title}));
+    } else if (sql.startsWith('SELECT id, book_id')) {
       rows = all.filter(ch => ch.is_trash === args[0] && (args.length < 2 || ch.book_id === args[1]) &&
         (!sql.includes('is_fav = 1') || ch.is_fav === 1) && (!sql.includes('is_inspiration = 1') || ch.is_inspiration === 1));
     } else if (sql.includes('c_all')) {
@@ -80,6 +82,9 @@ class StoreDouble {
       const counts = new Map();
       for (const ch of all.filter(ch => !ch.is_trash)) counts.set(ch.book_id, (counts.get(ch.book_id) || 0) + 1);
       rows = [...counts].map(([book_id, c]) => ({book_id, c}));
+    } else if (sql.startsWith('SELECT COUNT(*) AS c, COALESCE(MAX(sort_order), -1) AS m')) {
+      const scoped = all.filter(ch => !ch.is_trash && ch.book_id === args[0]);
+      rows = [{c: scoped.length, m: scoped.length > 0 ? Math.max(...scoped.map(ch => ch.sort_order)) : -1}];
     } else {
       throw new Error('Unsupported SQL in data regression double: ' + sql);
     }
@@ -127,19 +132,21 @@ function load(file) {
 }
 for (const file of [
   'model/Book', 'model/Chapter', 'model/Character', 'model/WorldSetting', 'model/Inspiration', 'model/Relationship',
-  'constants/DesignTokens', 'utils/TextLimit', 'utils/IdGenerator', 'utils/TimeUtil',
+  'constants/DesignTokens', 'editor/flowtext/model/EditorTypes', 'editor/flowtext/model/FormatCodec',
+  'utils/TextLimit', 'utils/IdGenerator', 'utils/TimeUtil', 'utils/ImportService',
   'database/BaseDao', 'database/BookDao', 'database/ChapterDao', 'database/CharacterDao',
   'database/WorldSettingDao', 'database/InspirationDao', 'database/RelationshipDao',
   'repository/BookRepository', 'repository/ChapterRepository', 'repository/MaterialRepository', 'repository/RelationshipRepository',
   'store/Repos', 'store/StoreModels', 'store/EditorStore', 'store/ProjectStore', 'store/MaterialStore', 'store/RelationStore', 'store/AppStores'
 ]) load(file + '.ets');
-const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, HistoryEntry, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES, MAX_HISTORY_BYTES, MAX_HISTORY, runInTransaction, chapterRepo})', context);
+const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, HistoryEntry, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES, MAX_HISTORY_BYTES, MAX_HISTORY, runInTransaction, chapterRepo, ImportService, ImportKind, FormatCodec, ParagraphKind})', context);
 function chapter(id = 'a', bookId = 'book-a', content = 'previous saved text') {
   return {id, book_id: bookId, title: 'Chapter ' + id, content, format: 'txt', format_runs: '', sort_order: 0,
     word_count: content.length, caret_offset: 0, is_fav: 0, is_inspiration: 0, is_trash: 0, created_at: 1, updated_at: 1};
 }
 function fixture() {
   store = new StoreDouble(); timers.clear(); clockOffset = 0;
+  api.ImportService.pickAndRead = async () => [];
   const app = new api.AppStores();
   app.project.currentBookId = 'book-a';
   app.project.books = [{id: 'book-a', name: 'Book A', mode: api.BookMode.PROFESSIONAL}, {id: 'book-b', name: 'Book B', mode: api.BookMode.PROFESSIONAL}];
@@ -152,6 +159,19 @@ function fixture() {
   doc.dirty = true; doc.rev = 1; doc.active = true;
   app.editor.openDocs = [doc]; app.editor.activeId = doc.id;
   return {app, doc};
+}
+function importedFile(fileName, text, kind = api.ImportKind.TEXT) {
+  return {fileName, text, kind, uri: 'file:///' + fileName,
+    format: kind === api.ImportKind.MD ? api.ChapterFormat.MD : api.ChapterFormat.TXT};
+}
+function rejectImportedContent(content) {
+  // Fail either an atomic insert or the old create-empty-then-update path.
+  store.onInsert = async (table, value) => {
+    if (table === 'chapters' && value.content === content) throw new Error('disk full');
+  };
+  store.onUpdate = async value => {
+    if (value.content === content) throw new Error('disk full');
+  };
 }
 let checks = 0;
 async function check(name, run) { await run(); checks++; console.log('PASS ' + name); }
@@ -194,6 +214,52 @@ function assertHistoryBudget(editor) {
   await check('history estimates UTF-16 text and formatting without encoding or copying snapshots', () => {
     const entry = new api.HistoryEntry('doc', '中😀a', '中😀a'.length, '[{"bold":true}]');
     assert.equal(entry.estimatedBytes, ('doc'.length + '中😀a'.length + '[{"bold":true}]'.length) * 2 + 128);
+  });
+  await check('history version notifies real edits, undo, redo and forks while empty operations stay silent', () => {
+    const {app, doc} = fixture(); const editor = app.editor;
+    assert.equal(editor.historyVersion, 0);
+    editor.undo(); editor.redo(); editor.discard('missing');
+    editor.setEditorState(doc.draft, doc.runsJson, doc.caret);
+    assert.equal(editor.historyVersion, 0);
+    editStep(editor, 'A1'); let version = editor.historyVersion;
+    assert.ok(version > 0); assert.equal(editor.canUndo, true);
+    editor.setEditorState('A1 merged typing', '', 3);
+    assert.equal(editor.historyVersion, version, 'typing merged into one recovery point does not change history');
+    editStep(editor, 'A2'); assert.ok(editor.historyVersion > version); version = editor.historyVersion;
+    editor.undo(); assert.ok(editor.historyVersion > version); version = editor.historyVersion;
+    assert.equal(doc.draft, 'A1 merged typing'); assert.equal(editor.canRedo, true);
+    editor.redo(); assert.ok(editor.historyVersion > version); version = editor.historyVersion;
+    assert.equal(doc.draft, 'A2'); assert.equal(editor.canRedo, false);
+    editor.redo(); assert.equal(editor.historyVersion, version);
+    editor.undo(); version = editor.historyVersion;
+    editor.setEditorState('A branch', '', 2);
+    assert.ok(editor.historyVersion > version); assert.equal(editor.canRedo, false);
+    assertHistoryBudget(editor);
+  });
+  await check('history version covers pruning and document drops without changing close or cross-document history', async () => {
+    const {app} = fixture(); const editor = app.editor;
+    const other = new api.OpenDoc('b', 'B', api.ChapterFormat.TXT, '', 'B original', 0);
+    editor.openDocs.push(other); store.seed('chapters', chapter('b'));
+    for (let i = 0; i <= api.MAX_HISTORY; i++) {
+      const version = editor.historyVersion;
+      editStep(editor, 'A' + i);
+      assert.ok(editor.historyVersion > version, 'an append must notify even when capacity pruning keeps the count equal');
+      assertHistoryBudget(editor);
+    }
+    let version = editor.historyVersion;
+    await editor.activate('b'); assert.equal(editor.historyVersion, version);
+    editStep(editor, 'B1'); editor.undo(); version = editor.historyVersion;
+    const bHistory = historyEntries(editor).filter(entry => entry.docId === 'b');
+    await editor.close('a');
+    assert.equal(editor.historyVersion, version, 'closing a tab retains its recovery points');
+    editor.discard('a'); assert.ok(editor.historyVersion > version); version = editor.historyVersion;
+    assert.deepEqual(historyEntries(editor).filter(entry => entry.docId === 'b'), bHistory);
+    assert.ok(historyEntries(editor).every(entry => entry.docId === 'b')); assertHistoryBudget(editor);
+    editor.discard('a'); assert.equal(editor.historyVersion, version);
+    editor.reset(); assert.ok(editor.historyVersion > version); version = editor.historyVersion;
+    assert.equal(editor.canUndo, false); assert.equal(editor.canRedo, false); assertHistoryBudget(editor);
+    editor.reset(); editor.undo(); editor.redo(); editor.discard('b');
+    assert.equal(editor.historyVersion, version);
   });
   await check('long formatted documents keep bounded history and the latest transaction remains reversible', () => {
     const {app, doc} = fixture(); const editor = app.editor;
@@ -527,6 +593,284 @@ function assertHistoryBudget(editor) {
     assert.equal(app.project.books.length, 1); assert.equal(app.project.projects.length, 1);
     assert.notEqual(app.project.currentBookId, 'book-a'); assert.equal(app.project.projects[0].id, app.project.currentBookId);
     assert.equal(app.project.projects[0].active, true);
+  });
+  await check('a delayed chapter creation cannot open its original project chapter inside the replacement project', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('chapters', chapter('b', 'book-b', 'Book B content'));
+    const entered = deferred(), resume = deferred();
+    store.onInsert = async (table, value) => {
+      if (table === 'chapters' && value.title === 'Created in A') { entered.resolve(); await resume.promise; }
+    };
+    const creating = app.createChapter('Created in A'); await entered.promise;
+    await app.selectBook('book-b'); await app.project.reloadChapters(); await app.openChapter('b');
+    resume.resolve(); const created = await creating;
+    assert.equal(store.get('chapters', created.id).book_id, 'book-a');
+    assert.equal(app.project.currentBookId, 'book-b'); assert.equal(app.editor.activeId, 'b');
+    assert.deepEqual(copy(app.editor.openDocs.map(ch => ch.id)), ['b']);
+    assert.equal(app.project.docItems.find(item => item.id === 'b').selected, true);
+  });
+  await check('a late entry point cannot open a foreign project chapter in the current project', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('chapters', chapter('b', 'book-b', 'Book B content'));
+    await app.selectBook('book-b'); await app.project.reloadChapters(); await app.openChapter('b');
+    await app.openChapter('a');
+    assert.equal(app.project.currentBookId, 'book-b'); assert.equal(app.editor.activeId, 'b');
+    assert.deepEqual(copy(app.editor.openDocs.map(ch => ch.id)), ['b']);
+    assert.equal(app.project.docItems.find(item => item.id === 'b').selected, true);
+  });
+  await check('a delayed new chapter cannot steal focus from a newer document open in the same project', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('chapters', chapter('other', 'book-a', 'Other content'));
+    await app.project.reloadChapters();
+    const entered = deferred(), resume = deferred();
+    store.onInsert = async (table, value) => {
+      if (table === 'chapters' && value.title === 'Created slowly') { entered.resolve(); await resume.promise; }
+    };
+    const creating = app.createChapter('Created slowly'); await entered.promise;
+    await app.openChapter('other'); resume.resolve(); const created = await creating;
+    assert.ok(store.get('chapters', created.id)); assert.equal(app.editor.activeId, 'other');
+    assert.ok(!app.editor.openDocs.some(ch => ch.id === created.id));
+    assert.ok(app.project.docItems.some(item => item.id === created.id), 'the newly persisted chapter must still appear in the current project list');
+    assert.equal(app.project.docItems.find(item => item.id === 'other').selected, true);
+  });
+  await check('mixed text and backup imports keep every ordinary file in the initial project', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    api.ImportService.pickAndRead = async () => [
+      importedFile('Before.txt', 'First import'),
+      importedFile('Restored.json', JSON.stringify({app: 'Weaver', book: {name: 'Restored', mode: 'professional'}}), api.ImportKind.BACKUP),
+      importedFile('After.md', 'Second import', api.ImportKind.MD)
+    ];
+    const result = await app.importFiles();
+    const rows = [...store.tables.get('chapters').values()].filter(ch => ['Before', 'After'].includes(ch.title));
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map(ch => ch.book_id), ['book-a', 'book-a']);
+    assert.equal(rows.find(ch => ch.title === 'After').format, api.ChapterFormat.MD);
+    const restored = [...store.tables.get('books').values()].find(book => book.name === 'Restored（导入）');
+    assert.ok(restored); assert.ok(rows.every(ch => ch.book_id !== restored.id));
+    assert.match(result, /导入\s*2\s*篇文稿/); assert.match(result, /恢复\s*1\s*个备份项目/);
+  });
+  await check('an import captures its target before the picker returns and a project switch occurs', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    const entered = deferred(), resume = deferred();
+    api.ImportService.pickAndRead = async () => { entered.resolve(); await resume.promise; return [importedFile('Picked.txt', 'Picked content')]; };
+    const importing = app.importFiles(); await entered.promise;
+    await app.selectBook('book-b'); resume.resolve();
+    const result = await importing;
+    const imported = [...store.tables.get('chapters').values()].find(ch => ch.title === 'Picked');
+    assert.equal(app.project.currentBookId, 'book-b'); assert.equal(imported.book_id, 'book-a');
+    assert.equal(imported.content, 'Picked content'); assert.equal(imported.word_count, 'Picked content'.length);
+    assert.match(result, /导入\s*1\s*篇文稿/);
+  });
+  await check('a failed ordinary import cannot leave an empty chapter behind', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    api.ImportService.pickAndRead = async () => [importedFile('Rejected.txt', 'Rejected content')];
+    rejectImportedContent('Rejected content');
+    let result = '';
+    try { result = await app.importFiles(); } catch {}
+    assert.ok(![...store.tables.get('chapters').values()].some(ch => ch.title === 'Rejected'), 'failed import must not persist an empty shell');
+    assert.equal(store.tables.get('chapters').size, 1);
+    assert.match(result, /(?:失败\s*1\s*个|1\s*个[^，]*失败)/);
+  });
+  await check('ordinary import failures are isolated and later files still commit with an accurate summary', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    api.ImportService.pickAndRead = async () => [
+      importedFile('First.txt', 'First committed'), importedFile('Rejected.txt', 'Rejected content'),
+      importedFile('Last.txt', 'Last committed')
+    ];
+    rejectImportedContent('Rejected content');
+    let result = '';
+    try { result = await app.importFiles(); } catch {}
+    const rows = [...store.tables.get('chapters').values()];
+    assert.equal(rows.find(ch => ch.title === 'First').content, 'First committed');
+    assert.equal(rows.find(ch => ch.title === 'Last')?.content, 'Last committed', 'a failed middle file must not abort later imports');
+    assert.ok(!rows.some(ch => ch.title === 'Rejected'));
+    assert.match(result, /导入\s*2\s*篇文稿/); assert.match(result, /(?:失败\s*1\s*个|1\s*个[^，]*失败)/);
+  });
+  await check('a refresh failure after importing still reports already committed files as successful', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    api.ImportService.pickAndRead = async () => [importedFile('Committed.txt', 'Committed before refresh')];
+    app.project.reloadChapters = async () => { throw new Error('list refresh unavailable'); };
+    let result = '', failure;
+    try { result = await app.importFiles(); } catch (error) { failure = error; }
+    assert.equal([...store.tables.get('chapters').values()].find(ch => ch.title === 'Committed').content, 'Committed before refresh');
+    assert.equal(failure, undefined, 'a later list failure must not report persisted content as an import failure');
+    assert.match(result, /导入\s*1\s*篇文稿/);
+  });
+  await check('draft previews update stable visible rows without rewriting list projections or saved chapters', async () => {
+    const {app} = fixture(); await app.project.reloadChapters();
+    const items = app.project.docItems, item = items[0], model = app.project.chapters[0];
+    const beforeModel = copy(model), beforeSaved = copy(store.get('chapters', 'a')), beforeRoutes = store.routes.length;
+    app.editor.setEditorState('  实时\n\t预览正文  ', '', 3, 'a');
+    app.project.updateDocPreview('a', '新标题', app.editor.content, 7);
+    assert.equal(app.project.docItems, items); assert.equal(app.project.docItems[0], item);
+    assert.equal(item.title, '新标题'); assert.equal(item.subTitle, '实时 预览正文');
+    assert.equal(item.wordCount, 7); assert.equal(item.badge, '7 字');
+    assert.equal(app.project.chapters[0], model); assert.deepEqual(copy(model), beforeModel);
+    assert.deepEqual(copy(store.get('chapters', 'a')), beforeSaved); assert.equal(store.routes.length, beforeRoutes);
+    assert.equal(app.editor.activeDoc.dirty, true);
+  });
+  await check('draft previews accept the current snapshots after real undo and redo operations', async () => {
+    const {app} = fixture(); await app.project.reloadChapters();
+    const item = app.project.docItems[0], initialText = app.editor.content;
+    const publish = () => app.project.updateDocPreview(app.editor.activeId, app.editor.title, app.editor.content, app.editor.wordCount);
+    editStep(app.editor, '新的草稿'); publish(); assert.equal(item.subTitle, '新的草稿');
+    const initialRev = app.editor.contentRev;
+    app.editor.undo(); publish();
+    assert.ok(app.editor.contentRev > initialRev); assert.equal(item.subTitle, initialText);
+    app.editor.redo(); publish();
+    assert.equal(item.subTitle, '新的草稿'); assert.equal(item.wordCount, app.editor.wordCount);
+    assert.equal(app.project.docItems[0], item); assert.equal(store.get('chapters', 'a').content, 'previous saved text');
+  });
+  await check('metadata reloads retain every open unsaved draft preview without writing its body', async () => {
+    for (const action of ['favourite', 'inspiration', 'format']) {
+      const {app, doc} = fixture();
+      store.seed('chapters', chapter('second', 'book-a', 'Second saved body'));
+      const other = new api.OpenDoc('second', 'Second draft title', api.ChapterFormat.TXT, '', '另一个草稿😀', 0);
+      other.dirty = true; app.editor.openDocs.push(other);
+      await app.project.reloadChapters();
+      editStep(app.editor, '  未保存\n草稿😀  ');
+      app.project.updateDocPreview('a', doc.title, doc.draft, app.editor.wordCount);
+      const item = app.project.docItems.find(row => row.id === 'a');
+      if (action === 'favourite') await app.toggleFav('a');
+      if (action === 'inspiration') await app.toggleInspiration('a');
+      if (action === 'format') await app.setChapterFormat(api.ChapterFormat.MD);
+      assert.equal(item.subTitle, '未保存 草稿😀', action + ' must keep the visible draft');
+      assert.equal(item.wordCount, app.editor.wordCount, action + ' must keep the draft count');
+      assert.equal(item.badge, app.editor.wordCount + ' 字');
+      assert.equal(app.project.docItems.find(row => row.id === 'a'), item);
+      const second = app.project.docItems.find(row => row.id === 'second');
+      assert.equal(second.title, other.title); assert.equal(second.subTitle, other.draft);
+      assert.equal(second.wordCount, 6);
+      assert.equal(store.get('chapters', 'a').content, 'previous saved text');
+      assert.equal(store.get('chapters', 'second').content, 'Second saved body');
+      assert.equal(doc.dirty, true); assert.equal(other.dirty, true);
+      assert.equal(app.project.chapters.find(row => row.id === 'a').content, 'previous saved text');
+    }
+  });
+  await check('opening a clean document preserves the list modification time', async () => {
+    const {app} = fixture(); app.editor.reset();
+    await app.project.reloadChapters();
+    const item = app.project.docItems[0], modified = item.modified;
+    await app.openChapter('a');
+    assert.equal(app.editor.activeDoc.dirty, false);
+    assert.equal(item.modified, modified, 'opening a saved chapter is not a new edit');
+    assert.equal(item.subTitle, 'previous saved text');
+    assert.equal(item.selected, true);
+  });
+  await check('a late format write never refreshes or overlays the replacement project', async () => {
+    const {app, doc} = fixture();
+    await app.project.reloadChapters();
+    const entered = deferred(), resume = deferred();
+    store.onUpdate = async values => { if (values.format === 'md') { entered.resolve(); await resume.promise; } };
+    const pending = app.setChapterFormat(api.ChapterFormat.MD); await entered.promise;
+    store.seed('chapters', chapter('b', 'book-b', 'B saved body'));
+    app.project.setCurrentBook('book-b'); app.editor.reset();
+    await app.project.reloadChapters(); await app.openChapter('b');
+    editStep(app.editor, 'B 的新草稿');
+    app.project.updateDocPreview('b', app.editor.title, app.editor.content, app.editor.wordCount);
+    const item = app.project.docItems[0], before = copy(item);
+    let reloads = 0; const reload = app.project.reloadChapters.bind(app.project);
+    app.project.reloadChapters = async () => { reloads++; await reload(); };
+    resume.resolve(); await pending;
+    assert.equal(store.get('chapters', 'a').format, 'md', 'the captured write still belongs to its original chapter');
+    assert.equal(app.editor.activeId, 'b'); assert.equal(app.editor.format, api.ChapterFormat.TXT);
+    assert.equal(doc.format, api.ChapterFormat.TXT, 'detached old editor state is not republished');
+    assert.equal(reloads, 0); assert.deepEqual(copy(item), before);
+    assert.equal(store.get('chapters', 'b').content, 'B saved body');
+  });
+  await check('draft previews reject unknown ids and visible rows whose project ownership does not match', async () => {
+    const {app} = fixture(); await app.project.reloadChapters();
+    const item = app.project.docItems[0], before = copy(item);
+    app.project.updateDocPreview('unknown', '错误标题', '错误正文', 99);
+    assert.deepEqual(copy(item), before);
+    app.project.chapters[0].bookId = 'book-b';
+    app.project.updateDocPreview('a', '错误项目', '错误正文', 99);
+    assert.deepEqual(copy(item), before);
+  });
+  await check('late preview callbacks cannot update another project after the user switches', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('chapters', chapter('b', 'book-b', 'B original'));
+    await app.selectBook('book-b'); await app.project.reloadChapters();
+    const item = app.project.docItems[0], before = copy(item);
+    app.project.updateDocPreview('a', '旧项目迟到标题', '旧项目迟到正文', 999);
+    assert.equal(app.project.currentBookId, 'book-b'); assert.equal(app.project.docItems.length, 1);
+    assert.equal(app.project.docItems[0], item); assert.deepEqual(copy(item), before);
+    assert.equal(store.get('chapters', 'a').content, 'previous saved text');
+  });
+  await check('empty draft previews clear old counts and show the existing empty-document prompt', async () => {
+    const {app} = fixture(); await app.project.reloadChapters();
+    const item = app.project.docItems[0];
+    app.project.updateDocPreview('a', '空文稿', '', 0);
+    assert.equal(item.title, '空文稿'); assert.equal(item.subTitle, '空白文稿，点击开始写作…');
+    assert.equal(item.wordCount, 0); assert.equal(item.badge, '');
+    app.project.updateDocPreview('a', '空文稿', '\n\t\r  ', 0);
+    assert.equal(item.subTitle, '空白文稿，点击开始写作…');
+  });
+  await check('draft summaries retain leading-whitespace content and cap long previews without changing normalization', async () => {
+    const {app} = fixture(); await app.project.reloadChapters();
+    const item = app.project.docItems[0];
+    app.project.updateDocPreview('a', '长前导空白', ' '.repeat(400) + '真正正文', 4);
+    assert.equal(item.subTitle, '真正正文');
+    app.project.updateDocPreview('a', '长文', '前缀'.repeat(100000), 200000);
+    assert.equal(item.subTitle, '前缀'.repeat(36) + '…');
+    app.project.updateDocPreview('a', '末尾空白', 'a'.repeat(72) + '\t\n ', 72);
+    assert.equal(item.subTitle, 'a'.repeat(72));
+    app.project.updateDocPreview('a', '空白归一化', '  A\r\n\tB\u00a0C  ', 3);
+    assert.equal(item.subTitle, 'A B C');
+  });
+  await check('six-field list and todo indentation survives history, autosave and backup snapshots', async () => {
+    const {app, doc} = fixture();
+    const original = '0,6,0,0,4,2;6,12,0,0,5,1';
+    const changed = '0,6,1,0,4,1;6,12,0,0,6,2';
+    const originalRuns = api.FormatCodec.decode(original);
+    assert.equal(originalRuns[0].heading, api.ParagraphKind.BULLET); assert.equal(originalRuns[0].indent, 2);
+    assert.equal(originalRuns[1].heading, api.ParagraphKind.TODO); assert.equal(originalRuns[1].indent, 1);
+    assert.equal(api.FormatCodec.encode(originalRuns), original);
+    doc.draft = '嵌套列表项\n待办事项内容'; doc.runsJson = original;
+    editStep(app.editor, doc.draft, changed, 8);
+    app.editor.undo(); assert.equal(doc.runsJson, original);
+    assert.equal(doc.draft, '嵌套列表项\n待办事项内容');
+    app.editor.redo(); assert.equal(doc.runsJson, changed);
+    await app.editor.flushActive();
+    assert.equal(store.get('chapters', 'a').format_runs, changed);
+    assert.equal(doc.dirty, false);
+    const backup = await app.exportBackupData();
+    assert.equal(backup.chapters.find(ch => ch.id === 'a').formatRuns, changed);
+    assertHistoryBudget(app.editor);
+  });
+  await check('a delayed restore cannot refresh or select the replacement project', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    store.seed('chapters', {...chapter('trashed'), is_trash: 1});
+    const entered = deferred(), resume = deferred();
+    store.onUpdate = async (values, predicate) => {
+      if (predicate.matches(store.get('chapters', 'trashed'))) { entered.resolve(); await resume.promise; }
+    };
+    const pending = app.restoreChapter('trashed'); await entered.promise;
+    store.seed('chapters', chapter('b', 'book-b', 'B body'));
+    app.project.setCurrentBook('book-b'); app.editor.reset();
+    await app.project.reloadChapters(); await app.openChapter('b');
+    let reloads = 0; const reload = app.project.reloadChapters.bind(app.project);
+    app.project.reloadChapters = async () => { reloads++; await reload(); };
+    resume.resolve(); await pending;
+    assert.equal(store.get('chapters', 'trashed').is_trash, 0);
+    assert.equal(reloads, 0); assert.equal(app.editor.activeId, 'b');
+    assert.deepEqual(copy(app.project.docItems.map(row => row.id)), ['b']);
+    assert.equal(app.project.docItems[0].selected, true);
+  });
+  await check('a format update cannot republish an editor session closed and reopened during the write', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    const entered = deferred(), resume = deferred();
+    store.onUpdate = async values => { if (values.format === 'md') { entered.resolve(); await resume.promise; } };
+    const pending = app.setChapterFormat(api.ChapterFormat.MD); await entered.promise;
+    await app.closeTab('a'); await app.openChapter('a');
+    const replacement = app.editor.activeDoc;
+    assert.notEqual(replacement, doc);
+    let reloads = 0; app.project.reloadChapters = async () => { reloads++; };
+    resume.resolve(); await pending;
+    assert.equal(store.get('chapters', 'a').format, 'md');
+    assert.equal(doc.format, api.ChapterFormat.TXT);
+    assert.equal(replacement.format, api.ChapterFormat.TXT);
+    assert.equal(reloads, 0);
   });
   console.log('Data regression: ' + checks + ' checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -7,7 +7,7 @@
 import { LayoutLine } from '../render/TextLayoutEngine';
 import { CursorState } from './CursorState';
 import { GraphemeUtil } from '../model/GraphemeUtil';
-import { CaretAffinity, LineBox } from '../model/EditorTypes';
+import { CaretAffinity, LineBox, ParagraphKind } from '../model/EditorTypes';
 
 export class HitTester {
   /**
@@ -39,8 +39,13 @@ export class HitTester {
    * 这样无论点哪儿，光标都停在合法边界上，且符合用户直觉。
    */
   private static snapToNearestBoundary(source: string, raw: number): number {
-    if (raw <= 0 || raw >= source.length) {
-      return raw < 0 ? 0 : source.length;
+    // 注意 raw === 0 必须落到 0：旧写法把它和"超出行尾"合并成 source.length，
+    // 于是点首行左侧留白（含列表段落的符号槽）会把光标甩到全文末尾。
+    if (raw <= 0) {
+      return 0;
+    }
+    if (raw >= source.length) {
+      return source.length;
     }
     if (GraphemeUtil.isBoundary(source, raw)) {
       return raw;
@@ -70,14 +75,16 @@ export class HitTester {
       const last = lines[lines.length - 1];
       return last.endIndex;
     }
-    const contentX: number = x - paddingLeftPx;
+    // 行内坐标要减掉本行的文本列左偏移（列表缩进 + 项目符号槽），
+    // 否则点列表首行的文字会整体偏左一个符号槽宽。
+    const contentX: number = x - paddingLeftPx - targetLine.inset;
+    if (contentX <= 0) {
+      return targetLine.startIndex;
+    }
     if (targetLine.nativeLine !== null) {
       return Math.max(targetLine.startIndex, Math.min(targetLine.endIndex,
         targetLine.startIndex + targetLine.indexMap.fromScalar(targetLine.nativeLine.getStringIndexForPosition(
           { x: contentX * targetLine.pxPerVp, y: 0 }) - targetLine.nativeStartIndex)));
-    }
-    if (contentX <= 0) {
-      return targetLine.startIndex;
     }
     if (contentX >= targetLine.width) {
       return targetLine.endIndex;
@@ -104,6 +111,36 @@ export class HitTester {
   }
 
   /**
+   * 项目符号槽命中：返回该符号所在行的下标，未命中返回 -1。
+   *
+   * 只对**段落首行**的列表/待办段落生效（续行没有符号）；命中区在槽位左右各放宽 2vp，
+   * 手指点在符号边缘也能切换，不需要精确压在 1.2 字号的圆点上。
+   * 调用方拿到行下标后用 line.startIndex 定位段落，再走文档的 toggleTodoAt。
+   */
+  static markerLineAt(x: number, y: number, lines: LayoutLine[], paddingLeftPx: number,
+    paddingTopPx: number): number {
+    const contentY: number = y - paddingTopPx;
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: LayoutLine = lines[i];
+      if (!line.markerOn || line.markerW <= 0) {
+        continue;
+      }
+      // 只有待办（○/✓）的符号可点；列表的 • 不响应点击，
+      // 否则"点一下项目符号"会把无序列表悄悄变成待办项。
+      if (line.paraKind !== ParagraphKind.TODO && line.paraKind !== ParagraphKind.TODO_DONE) {
+        continue;
+      }
+      if (contentY < line.yOffset || contentY >= line.yOffset + line.step) {
+        continue;
+      }
+      const left: number = paddingLeftPx + line.markerX;
+      const right: number = left + line.markerW;
+      return (x >= left - 2 && x <= right + 2) ? i : -1;
+    }
+    return -1;
+  }
+
+  /**
    * 一行文字的可见盒（内容坐标，vp）。
    * 光标、选区高亮、手柄全部使用同一函数，避免"高亮 24vp、光标 19vp"的错位。
    * ascent 在 OH 中为负值，LayoutLine 已取绝对值；leading 恒为 0，不重复相加。
@@ -123,8 +160,8 @@ export class HitTester {
    *
    * y/height 取该行的可见盒（与选区高亮、手柄完全一致）。
    * 软换行边界处同一个 offset 有两个视觉位置，由 affinity 选边：
-   *   - UPSTREAM：贴上一行行尾（正向选择 head）；
-   *   - DOWNSTREAM：贴下一行行首（反向选择 head / 默认折叠光标）。
+   *   - DOWNSTREAM：贴上一行行尾（正向选择 head / 折叠光标）；
+   *   - UPSTREAM：贴下一行行首（反向选择 head）。
    */
   static caretPositionFor(offset: number, lines: LayoutLine[], paddingLeftPx: number, paddingTopPx: number,
     fontSizeVp: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): CursorState {
@@ -159,7 +196,7 @@ export class HitTester {
         if (isLast || lines[i + 1].startIndex !== offset) {
           return line;
         }
-        return affinity === CaretAffinity.UPSTREAM ? line : lines[i + 1];
+        return affinity === CaretAffinity.DOWNSTREAM ? line : lines[i + 1];
       }
     }
     return lines[lines.length - 1];
@@ -250,24 +287,26 @@ export class HitTester {
 
   /** 行内字符偏移 → x（px） */
   static offsetToX(line: LayoutLine, offset: number, paddingLeftPx: number): number {
+    // 本行文字列起点 = 列左边缘 + 列表缩进/符号槽
+    const columnX: number = paddingLeftPx + line.inset;
     if (line.nativeLine !== null) {
       const nativeX: number = line.nativeLine.getOffsetForStringIndex(
         line.nativeStartIndex + line.indexMap.toScalar(Math.max(0, Math.min(line.endIndex - line.startIndex,
           offset - line.startIndex))));
       // 行 API 返回 px；异常值回退到行首，避免 NaN 把整个绘制坐标污染成空白页
-      return Number.isFinite(nativeX) ? paddingLeftPx + nativeX / line.pxPerVp : paddingLeftPx;
+      return Number.isFinite(nativeX) ? columnX + nativeX / line.pxPerVp : columnX;
     }
     if (offset <= line.startIndex) {
-      return paddingLeftPx;
+      return columnX;
     }
     if (offset >= line.endIndex) {
-      return paddingLeftPx + line.width;
+      return columnX + line.width;
     }
     // 兜底：run.positions 是 run 局部坐标，必须加各自的 runOffsetX
-    let lastX: number = paddingLeftPx;
+    let lastX: number = columnX;
     for (let r = 0; r < line.runs.length; r++) {
       const run = line.runs[r];
-      const originX: number = paddingLeftPx + run.runOffsetX;
+      const originX: number = columnX + run.runOffsetX;
       if (offset <= run.textStart) {
         return originX;
       }

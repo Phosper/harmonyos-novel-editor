@@ -1,10 +1,13 @@
 // 界面状态 —— 主题 / 断点 / 侧栏 / 中部视图 / 对话框请求
 import { BookMode } from '../model/Book'
 import { prefs } from '../utils/PreferenceHelper'
+import { AvatarService } from '../utils/AvatarService'
 import { Logger } from '../utils/Logger'
 import { BreakPoint } from '../utils/BreakPoint'
 import { DeviceClass, DeviceSnapshot } from '../utils/DeviceProfile'
 import { applySystemBars, applySystemBarsDimmed } from '../utils/SystemBars'
+import { refreshDecorColorScheme, syncDesktopDecorButtons } from '../utils/DesktopWindowChrome'
+import { applyAppColorMode } from '../utils/AppChromeMode'
 import { EditorViewMode, MobileTab, PAPER_THEMES, PaperTheme, DEFAULT_THEME_ID, themeById, WeaverTheme } from '../constants/DesignTokens'
 import type { CanvasTextEditorController } from '../editor/flowtext/CanvasTextEditor'
 
@@ -32,6 +35,10 @@ export class UiStore {
   /** 稿纸字号（编辑器正文字号/行距仍独立于主题配色） */
   @Trace paperTheme: PaperTheme = PAPER_THEMES[0]
   @Trace mode: BookMode = BookMode.PROFESSIONAL
+  /** 本地账号昵称：空串 = 未登录（账号服务接入前先做本机身份，见 PreferenceHelper.getNickname） */
+  @Trace nickname: string = ''
+  /** 自定义头像的沙箱路径（空串 = 系统占位人像）；导入时已复制进 filesDir */
+  @Trace avatarPath: string = ''
   /** 记住上次的浅色主题，退出深色时还原 */
   private lastLightThemeId: string = DEFAULT_THEME_ID
 
@@ -49,8 +56,25 @@ export class UiStore {
   @Trace freeWindowMode: boolean = false
   /** 是否键鼠优先（modality === POINTER，仅实测到指针输入后为真）：驱动 hover / 右键 / 焦点环 / 快捷键 */
   @Trace pointerPrimary: boolean = false
+  /** 软键盘遮挡高度（vp，0 = 未弹出）：页面据此让位，编辑器据此把光标滚进可视区 */
+  @Trace keyboardHeight: number = 0
+  /** 折叠屏是否处于展开/半折叠（平板级可视面积）；与 deviceClass 一起决定 tabletMode */
+  @Trace foldExpanded: boolean = false
+  /** 短屏设备（Pura X View 744vp 等）：chrome 更紧凑 */
+  @Trace shortScreen: boolean = false
+  /** 屏幕最大圆角（vp）：贴边控件让位用 */
+  @Trace cornerRadius: number = 0
+  /** 阔直板（Pura X View 类）：横竖屏都用更紧凑的 chrome */
+  @Trace wideBar: boolean = false
+
+  /** 贴边安全间距：大圆角设备（Pura X View）左右至少留 16–28vp，避免被圆角裁切 */
+  get cornerInset(): number {
+    return Math.max(16, Math.min(this.cornerRadius, 28))
+  }
   /** 兼容旧调用：等价于 deviceClass === PC（不再参与布局判断） */
   @Trace isPcDevice: boolean = false
+  /** 原生三键区宽度（vp，来自 getTitleButtonRect；0 表示未测到）——顶栏右侧避让用 */
+  @Trace titleButtonWidthVp: number = 0
 
   // 第一栏（侧栏）显隐
   @Trace showSidebar: boolean = true
@@ -143,7 +167,7 @@ export class UiStore {
   @Trace dialogTarget: string = ''
   @Trace dialogInitial: string = ''
   @Trace dialogSubject: string = ''
-  /** 重命名所属项目与弹框代次：异步写入不能影响后来打开的项目或弹框。 */
+  /** 弹框归属与代次，防止迟到写入影响后来选择的项目和弹框。 */
   @Trace dialogOwnerBookId: string = ''
   @Trace dialogRevision: number = 0
 
@@ -179,6 +203,17 @@ export class UiStore {
     return this.deviceClass === DeviceClass.TABLET
   }
 
+  /**
+   * 是否"平板形态"：平板设备，且**不是** MatePad Edge 电脑模式 / PC 自由窗口。
+   * 用于区分电脑与平板两套 chrome：电脑 = 方形状态底 + 紧凑字号；
+   * 平板 = 圆形状态底 + 放大字号/热区。
+   */
+  get tabletMode(): boolean {
+    // 折叠屏展开/半折叠的可视面积是平板级；折叠屏在 deviceType 上常被报成 phone，不能只用 deviceClass
+    const tabletLike: boolean = this.deviceClass === DeviceClass.TABLET || this.foldExpanded
+    return tabletLike && !this.freeWindowMode
+  }
+
   /** 是否走桌面沉浸标题栏：只由自由窗口模式决定（平板电脑模式同样走桌面 chrome） */
   get usesDesktopChrome(): boolean {
     return this.freeWindowMode
@@ -193,6 +228,13 @@ export class UiStore {
    * 用一份设备快照整体刷新设备相关状态（AppShell 订阅 DeviceProfile 后调用）。
    * 断点也由快照给出，保证 store 与 AppShell 的 @Local 永远同一份真相。
    */
+  /** 软键盘高度写入（去重，避免每帧刷新） */
+  setKeyboardHeight(height: number): void {
+    if (Math.abs(this.keyboardHeight - height) > 0.5) {
+      this.keyboardHeight = height
+    }
+  }
+
   applyDeviceSnapshot(snapshot: DeviceSnapshot): void {
     if (this.deviceClass !== snapshot.deviceClass) {
       this.deviceClass = snapshot.deviceClass
@@ -207,6 +249,33 @@ export class UiStore {
     if (this.breakPoint !== snapshot.breakPoint) {
       this.breakPoint = snapshot.breakPoint
     }
+    if (this.titleButtonWidthVp !== snapshot.titleButtonWidthVp) {
+      this.titleButtonWidthVp = snapshot.titleButtonWidthVp
+    }
+    this.setKeyboardHeight(snapshot.keyboardHeightVp)
+    this.shortScreen = snapshot.shortScreen
+    this.cornerRadius = snapshot.cornerRadiusVp
+    this.wideBar = snapshot.wideBar
+    if (this.foldExpanded !== snapshot.foldExpanded) {
+      this.foldExpanded = snapshot.foldExpanded
+    }
+  }
+
+  /**
+   * 顶栏/工具行右侧需要避让的宽度（vp）。
+   *
+   * 原生三键由系统绘制在窗口右上角，**压在页面内容之上**。原先写死 148vp 只够
+   * 3×48vp 的理论宽度，实际三键区（含系统内边距）更宽，最右侧的「专注」图标
+   * 会被最大化按钮盖掉一半（用户实测截图）。这里改为「实测三键宽 + 24vp 呼吸」，
+   * 测不到时退回 144 + 24，宁可多留白也不让图标被压住。
+   */
+  get captionInset(): number {
+    if (!this.freeWindowMode) {
+      return 0
+    }
+    // 下限 168：实测宽度可能只算按钮本身（不含系统内边距），偏小时反而比旧值更窄
+    const measured: number = this.titleButtonWidthVp > 0 ? this.titleButtonWidthVp : 144
+    return Math.max(measured + 24, 168)
   }
 
   // ===== 对话框 =====
@@ -246,6 +315,9 @@ export class UiStore {
     } else {
       applySystemBars(t.dark, t.colors.bgPrimary)
     }
+    // 原生三键颜色跟随**实际主题**（不再依赖 DesktopTitleBar 挂载）：
+    // 浅色稿纸下必须是深色图标，深色主题下才是白色图标。
+    syncDesktopDecorButtons(t.dark)
   }
 
   /** 是否有"盖不到状态栏条的蒙层"在展示（抽屉）：状态栏需同步压暗/还原。
@@ -267,7 +339,13 @@ export class UiStore {
     if (!this.darkMode) {
       this.lastLightThemeId = id
     }
+    // 系统 chrome（窗口三键、系统菜单/对话框）跟随应用主题，而不是系统深浅
+    applyAppColorMode(this.darkMode)
     this.syncSystemBars()
+    // 明暗变了：让系统按新的 colorMode 重建三键（仅桌面窗口）
+    if (this.freeWindowMode) {
+      refreshDecorColorScheme(this.darkMode)
+    }
     await prefs.setThemeId(id)
   }
 
@@ -303,6 +381,47 @@ export class UiStore {
     await prefs.setMode(this.mode)
   }
 
+  // ===== 账号（本机身份） =====
+
+  /**
+   * 是否已登录。
+   * 只是昵称非空的派生判断 —— 不要另存一个 loggedIn 布尔量，两份真相会不一致。
+   */
+  isLoggedIn(): boolean {
+    return this.nickname !== ''
+  }
+
+  /** 登录：昵称写内存 + 首选项；空昵称视为取消，不写入 */
+  async signIn(name: string): Promise<void> {
+    const trimmed: string = name.trim()
+    if (trimmed === '') {
+      return
+    }
+    this.nickname = trimmed
+    await prefs.setNickname(trimmed)
+    Logger.info('UiStore: signIn nickname=' + trimmed)
+  }
+
+  async signOut(): Promise<void> {
+    // 只清身份，不删头像文件：重新登录同一昵称时头像还在；文件在换头像/移除时清理
+    this.nickname = ''
+    await prefs.setNickname('')
+    Logger.info('UiStore: signOut')
+  }
+
+  /** 设置自定义头像（调用方负责把图片复制进沙箱后传绝对路径） */
+  async setAvatar(path: string): Promise<void> {
+    this.avatarPath = path
+    await prefs.setAvatarPath(path)
+    Logger.info('UiStore: avatar updated')
+  }
+
+  async removeAvatar(): Promise<void> {
+    this.avatarPath = ''
+    await prefs.setAvatarPath('')
+    Logger.info('UiStore: avatar removed')
+  }
+
   // ===== 侧栏 =====
 
   toggleSidebar(): void {
@@ -319,10 +438,19 @@ export class UiStore {
     }
     this.themeId = themeId
     this.darkMode = themeById(themeId).dark
+    // 首帧前就把系统 chrome 的对齐关系定下来，避免启动瞬间白三键/深色菜单
+    applyAppColorMode(this.darkMode)
     if (!this.darkMode) {
       this.lastLightThemeId = themeId
     }
     this.mode = await prefs.getMode()
+    this.nickname = await prefs.getNickname()
+    this.avatarPath = await prefs.getAvatarPath()
+    // 沙箱文件被系统清掉（清理缓存/换机恢复）时不要把死路径留在界面上
+    if (this.avatarPath !== '' && !AvatarService.exists(this.avatarPath)) {
+      this.avatarPath = ''
+      await prefs.setAvatarPath('')
+    }
     const paperId: string = await prefs.getPaperTheme()
     const found: PaperTheme | undefined = PAPER_THEMES.find((p: PaperTheme) => p.id === paperId)
     this.paperTheme = found !== undefined ? found : PAPER_THEMES[0]

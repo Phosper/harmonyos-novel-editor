@@ -11,7 +11,7 @@
 import { drawing, common2D } from '@kit.ArkGraphics2D';
 import { LayoutLine, GlyphRunData } from './TextLayoutEngine';
 import { CursorState } from '../interaction/CursorState';
-import { SelectionInfo, PreviewInfo, ViewportInfo } from '../model/EditorTypes';
+import { SelectionInfo, PreviewInfo, ViewportInfo, ParagraphKind } from '../model/EditorTypes';
 import { HitTester } from '../interaction/HitTester';
 import {
   TypewriterScaleOptions,
@@ -118,6 +118,14 @@ export class GlyphRenderer {
   private dimBrush: drawing.Brush = new drawing.Brush();
   /** 光标所在行的打字机缩放与基线（draw 里预计算，drawCaret 保持原签名） */
   private caretScalePending: number = 1;
+  /**
+   * 项目符号画笔（圆环 + 对勾都用几何绘制）。
+   *
+   * 为什么不用字体字形：• ○ ✓ 命中率依赖设备默认字体是否覆盖这些码点，
+   * 缺字形时整块空白（表现为"勾选后符号消失"）。几何绘制与字体无关，
+   * 也与 HarmonyOS Symbol 的"圆环 + 对勾"观感更接近。
+   */
+  private markerPen: drawing.Pen = new drawing.Pen();
   private caretPivotYPending: number = 0;
 
   constructor(opts: RenderTheme) {
@@ -129,6 +137,10 @@ export class GlyphRenderer {
     this.caretBrush.setAntiAlias(true);
     this.previewBrush.setAntiAlias(true);
     this.dimBrush.setAntiAlias(true);
+    // 圆环/对勾是细线：必须显式开抗锯齿（Pen 默认关闭），转角与线帽取圆头
+    this.markerPen.setAntiAlias(true);
+    this.markerPen.setJoinStyle(drawing.JoinStyle.ROUND_JOIN);
+    this.markerPen.setCapStyle(drawing.CapStyle.ROUND_CAP);
   }
 
   /** vp → px（绘制模块按物理 px 解释坐标；布局/触摸为 vp，绘制需换算） */
@@ -191,7 +203,9 @@ export class GlyphRenderer {
     focusLineStart: number = -1,
     focusLineEnd: number = -1,
     scaleEnabled: boolean = false,
-    caretLineIndex: number = -1): void {
+    caretLineIndex: number = -1,
+    placeholder: string = '',
+    placeholderColor: common2D.Color = { alpha: 255, red: 154, green: 160, blue: 166 }): void {
     const canvas = ctx.canvas;
     canvas.clear(this.opts.backgroundColor);
 
@@ -202,6 +216,12 @@ export class GlyphRenderer {
     // 预上屏文字已经进入真实排版（previewCache 的 lines），由 drawText 分段着色，
     // 不能再叠加一层 drawPreview —— 旧实现会在同一位置画两遍且基线偏移约 4-6vp。
     this.drawText(canvas, lines, viewport, anims, preview, dimEnabled, focusLineStart, focusLineEnd, scaleEnabled);
+    // 空文稿占位文字：走 Canvas 绘制，与光标共用同一条排版行/基线/左内边距，
+    // 不再用 EditorPane 的 Text 叠加层（两套排版参数导致首次聚焦时光标与占位错位）。
+    if (placeholder !== '' && lines.length > 0) {
+      this.drawPlaceholder(canvas, lines[0], placeholder, placeholderColor, viewport,
+        scaleEnabled, focusLineStart, focusLineEnd);
+    }
     if (caret !== null && caret.visible) {
       // 光标必须与所在行的文字使用**同一缩放与轴心**，否则放大段里光标会水平偏移。
       // 行号由编辑器按 caretOffset 精确给出；y 区间只作兜底（不能用 line.step，会与下一行重叠）。
@@ -269,7 +289,10 @@ export class GlyphRenderer {
         continue;
       }
       const baselineY: number = this.pv(this.opts.paddingTopVp + line.baseline - viewport.scrollY);
-      const lineX: number = this.pv(this.opts.paddingLeftVp);
+      // columnX = 文本列左边缘；lineX = 本行文字起点（列左边缘 + 列表缩进/符号槽）。
+      // 悬挂缩进下续行与首行共用同一个 inset，因此这里不需要区分首行/续行。
+      const columnX: number = this.pv(this.opts.paddingLeftVp);
+      const lineX: number = columnX + this.pv(line.inset);
 
       // 打字机视觉层级（纯绘制层，不改排版）：
       //   距离 → 淡化权重（0/1 之间在 1 行内连续过渡）；距离 → 缩放（当前段 1.08×，逐行递减到 0.90×）。
@@ -290,6 +313,10 @@ export class GlyphRenderer {
         canvas.translate(-pivotX, -baselineY);
       }
       this.textBrush.setColor(lineColor);
+      // 项目符号画在符号槽内（只有段落首行有 markerOn），删除线盖住整行文字
+      if (line.markerOn && line.markerW > 0) {
+        this.drawMarker(canvas, line, columnX, baselineY, lineColor);
+      }
       for (let r = 0; r < line.runs.length; r++) {
         const run = line.runs[r];
         if (run.glyphs.length === 0 || run.font === null) {
@@ -349,6 +376,9 @@ export class GlyphRenderer {
           }
         }
       }
+      if (line.strike && line.width > 0.5) {
+        this.drawStrikethrough(canvas, line, lineX, baselineY, lineColor);
+      }
       if (scaled) {
         canvas.restore();
       }
@@ -361,6 +391,69 @@ export class GlyphRenderer {
         this.drawAnimatedGlyph(canvas, anims.exits[i], viewport, this.opts.textColor);
       }
     }
+  }
+
+  /**
+   * 段落项目符号，全部用几何绘制（槽位由排版算好）：
+   *   • 列表   → 实心圆点（层级越深越小）
+   *   ○ 待办   → 空心圆环
+   *   ✓ 已完成 → 空心圆环 + 对勾路径
+   *
+   * 不用字体字形的原因见 markerPen 的注释：缺字形会整块消失。
+   */
+  private drawMarker(canvas: DrawingCanvas, line: LayoutLine, columnX: number, baselineY: number,
+    color: common2D.Color): void {
+    const fontSizePx: number = this.pv(this.opts.fontSizeVp);
+    const slotW: number = this.pv(line.markerW);
+    const cx: number = columnX + this.pv(line.markerX) + slotW / 2;
+    // 基线 - 0.32em ≈ 一行文字的视觉中心（x-height 中段），与文字重心对齐
+    const cy: number = baselineY - fontSizePx * 0.32;
+    if (line.paraKind === ParagraphKind.BULLET) {
+      // 层级越深点越小：• → ·（与常见排版软件的 3 级圆点层次一致）
+      let r: number = fontSizePx * 0.20;
+      if (line.paraIndent === 1) {
+        r = fontSizePx * 0.15;
+      } else if (line.paraIndent >= 2) {
+        r = fontSizePx * 0.10;
+      }
+      this.textBrush.setColor(color);
+      canvas.attachBrush(this.textBrush);
+      canvas.drawCircle(cx, cy, Math.max(1, r));
+      canvas.detachBrush();
+      return;
+    }
+    // 圆环直径约 0.8em，控制在符号槽内；对勾按半径比例缩放，字号变化自动跟随
+    const radius: number = Math.max(1, Math.min(slotW * 0.34, fontSizePx * 0.42));
+    // 画笔属性改动后必须重新 attachPen 才生效（官方文档明确要求）
+    this.markerPen.setColor(color);
+    this.markerPen.setStrokeWidth(Math.max(1, fontSizePx * 0.085));
+    canvas.attachPen(this.markerPen);
+    canvas.drawCircle(cx, cy, radius);
+    if (line.paraKind === ParagraphKind.TODO_DONE) {
+      // 对勾：两段折线，圆头线帽/转角由 markerPen 统一设置
+      const path: drawing.Path = new drawing.Path();
+      path.moveTo(cx - radius * 0.52, cy + radius * 0.02);
+      path.lineTo(cx - radius * 0.12, cy + radius * 0.42);
+      path.lineTo(cx + radius * 0.56, cy - radius * 0.44);
+      canvas.drawPath(path);
+    }
+    canvas.detachPen();
+  }
+
+  /** 已完成待办的删除线：横跨本行文字（line.width 为实测行宽） */
+  private drawStrikethrough(canvas: DrawingCanvas, line: LayoutLine, lineX: number,
+    baselineY: number, color: common2D.Color): void {
+    const thickness: number = Math.max(1, this.pv(this.opts.fontSizeVp) * 0.06);
+    const y: number = baselineY - this.pv(this.opts.fontSizeVp) * 0.32;
+    this.textBrush.setColor(color);
+    canvas.attachBrush(this.textBrush);
+    canvas.drawRect({
+      left: lineX,
+      top: y,
+      right: lineX + this.pv(line.width),
+      bottom: y + thickness
+    });
+    canvas.detachBrush();
   }
 
   /**
@@ -400,14 +493,48 @@ export class GlyphRenderer {
     if (!enabled || line.width <= 0.5) {
       return wanted;
     }
+    // 缩放轴心是文本列左边缘，所以 inset 本身也会被一起放大：
+    // 放大后的右边界 = 列宽 × s 里的 (inset + line.width) 部分。
+    // 上界取 columnWidth / (inset + width)，只减 inset 会算出偏大的比例（右移 1–2vp）。
     const available: number = this.opts.viewWidthVp > 0
       ? this.opts.viewWidthVp - this.opts.paddingLeftVp - this.opts.paddingRightVp
       : this.opts.textColumnWidthVp;
-    if (available <= 0.5) {
+    const span: number = line.inset + line.width;
+    if (available <= 0.5 || span <= 0.5) {
       return Math.min(wanted, 1);
     }
-    const fit: number = available / line.width;
+    const fit: number = available / span;
     return Math.min(wanted, Math.max(0.5, fit));
+  }
+
+  /** 空文稿占位：与正文第一行同字号、同基线、同左内边距 */
+  private drawPlaceholder(canvas: DrawingCanvas, line: LayoutLine, text: string,
+    color: common2D.Color, viewport: ViewportInfo,
+    scaleEnabled: boolean, focusFirst: number, focusLast: number): void {
+    const font: drawing.Font = new drawing.Font();
+    font.setSize(this.pv(this.opts.fontSizeVp));
+    const blob: drawing.TextBlob = drawing.TextBlob.makeFromString(
+      text, font, drawing.TextEncoding.TEXT_ENCODING_UTF8);
+    // 空文稿若已被设为列表/待办，占位文字要让开项目符号槽，不能压在 • 上
+    const x: number = this.pv(this.opts.paddingLeftVp + line.inset);
+    const y: number = this.pv(this.opts.paddingTopVp + line.baseline - viewport.scrollY);
+    // 打字机模式下光标按当前行缩放，占位必须用同一变换，避免空文稿时错位
+    const s: number = this.lineScaleAt(0, scaleEnabled, focusFirst, focusLast);
+    const scaled: boolean = Math.abs(s - 1) > 0.001;
+    if (scaled) {
+      const px: number = this.textPivotPx();
+      canvas.save();
+      canvas.translate(px, y);
+      canvas.scale(s, s);
+      canvas.translate(-px, -y);
+    }
+    this.textBrush.setColor(color);
+    canvas.attachBrush(this.textBrush);
+    canvas.drawTextBlob(blob, x, y);
+    canvas.detachBrush();
+    if (scaled) {
+      canvas.restore();
+    }
   }
 
   /** 淡化权重 → 字色（0=正文色，1=淡化色，中间线性插值，切换时平滑过渡） */
@@ -571,7 +698,8 @@ export class GlyphRenderer {
       let x0: number;
       let x1: number;
       if (isEmptyLine) {
-        x0 = this.opts.paddingLeftVp;
+        // 空行也要从本行的文字列起点开始高亮（列表段落右侧有符号槽）
+        x0 = this.opts.paddingLeftVp + line.inset;
         x1 = x0 + blankWidth;
       } else {
         const selStart: number = Math.max(line.startIndex, selection.startOffset);

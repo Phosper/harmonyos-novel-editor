@@ -34,7 +34,7 @@ enum WeaverHairline {
   ALL = 3
 }
 
-/** 六种玻璃面形状（同时是缓存槽位下标） */
+/** 五种玻璃面形状（同时是缓存槽位下标） */
 const SHAPE_BAR: number = 0
 const SHAPE_TAB_BAR: number = 1
 const SHAPE_CARD: number = 2
@@ -86,7 +86,7 @@ export class WeaverGlassModifier implements AttributeModifier<CommonAttribute> {
   }
 }
 
-// 4 主题 × 6 形状，首次使用时构造并缓存
+// 4 主题 × 5 形状，首次使用时构造并缓存
 const MODIFIER_CACHE: Array<Array<WeaverGlassModifier | null>> = [
   [null, null, null, null, null, null],
   [null, null, null, null, null, null],

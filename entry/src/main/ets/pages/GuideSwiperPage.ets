@@ -80,7 +80,7 @@ struct GuideContent {
         .layoutWeight(1).width('100%').indicator(true).loop(false)
 
         Column() {
-          Button('开始使用 Weaver')
+          Button('开始使用 语流')
             .width('80%').height(46).fontSize(16)
             .backgroundColor(this.colors().brand).fontColor(this.colors().onBrand)
             .borderRadius(WeaverRadii.MD)
@@ -108,7 +108,7 @@ struct GuideSwiperPage {
   private usesDesktopChrome(): boolean {
     const free: boolean | undefined = AppStorage.get<boolean>('freeWindowMode')
     const pc: boolean | undefined = AppStorage.get<boolean>('isPcDevice')
-    return free !== undefined ? free : pc === true
+    return (free !== undefined && free) || (pc !== undefined && pc)
   }
 
   build() {

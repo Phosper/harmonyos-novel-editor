@@ -39,6 +39,60 @@ export const GLASS_ANIM_DURATION: number = 180
 export const GLASS_MAX_BLUR_LAYERS: number = 2
 
 /**
+ * 顶栏操作图标（以华为电子邮件标准电脑应用为准）。
+ * 注意：这些只是布局尺寸，**不是玻璃材质** —— 顶栏按钮按 Email 做裸图标，
+ * 没有底色/描边/阴影/实时模糊，圆只作为 hover/按下时的极淡反馈底。
+ */
+export const TOP_ICON_SIZE: number = 40
+export const TOP_ICON_HIT_POINTER: number = 44
+export const TOP_ICON_HIT_TOUCH: number = 48
+export const TOP_ICON_FONT: number = 20
+export const TOP_ICON_MARGIN: number = 4
+/**
+ * 状态底圆角：桌面应用用**方形/圆角矩形**（Email 的「更多」高亮就是 8vp 圆角矩形），
+ * 圆形底是平板 App 的语言，电脑模式不使用。
+ */
+export const TOP_ICON_RADIUS: number = 8
+
+/** 平板触摸档：更大的视觉圆与热区（44 / 56 / 24 / 6） */
+export const TOP_ICON_SIZE_TOUCH: number = 44
+export const TOP_ICON_HIT_TABLET: number = 56
+export const TOP_ICON_FONT_TOUCH: number = 24
+export const TOP_ICON_MARGIN_TOUCH: number = 6
+
+/**
+ * 顶栏图标的形态参数（由设备形态 + 输入形态决定，组件不自己拍数字）：
+ *   · 桌面（PC / MatePad Edge 电脑模式）：40vp **方形**（8vp 圆角）、44/48 热区、20vp 图标；
+ *   · 平板（触摸平板、非电脑模式）：44vp **圆形**、56 热区、24vp 图标。
+ * 圆形底是平板 App 的语言，方形底是电脑 App 的语言 —— 两者不能混用。
+ */
+export class TopIconMetrics {
+  visualSize: number = TOP_ICON_SIZE
+  hitSize: number = TOP_ICON_HIT_POINTER
+  iconSize: number = TOP_ICON_FONT
+  gap: number = TOP_ICON_MARGIN
+  circular: boolean = false
+}
+
+export function topIconMetrics(pointerPrimary: boolean, tabletMode: boolean,
+  desktopMode: boolean): TopIconMetrics {
+  const metrics: TopIconMetrics = new TopIconMetrics()
+  if (tabletMode) {
+    metrics.visualSize = TOP_ICON_SIZE_TOUCH
+    metrics.hitSize = TOP_ICON_HIT_TABLET
+    metrics.iconSize = TOP_ICON_FONT_TOUCH
+    metrics.gap = TOP_ICON_MARGIN_TOUCH
+    metrics.circular = true
+    return metrics
+  }
+  // 电脑（PC / MatePad Edge 电脑模式）：不论鼠标还是触摸都保持方形底；
+  // 非电脑（手机）仍用圆形，触摸热区 48。
+  metrics.hitSize = pointerPrimary ? TOP_ICON_HIT_POINTER : TOP_ICON_HIT_TOUCH
+  metrics.circular = !desktopMode
+  return metrics
+}
+
+/**
  * 单块玻璃面的完整描述。
  * 用 class 而不是 interface：字段都有默认值，`new WeaverGlassSpec()` 后再赋值即可，
  * 避免每帧构造大对象字面量（ArkTS 也要求对象字面量有明确类型上下文）。
@@ -302,7 +356,9 @@ function makeSpec(themeId: string, kind: WeaverGlassKind): WeaverGlassSpec {
   ]
 
   // 1px 高光描边 / 分隔线：浅色用既有 divider（浅灰），深色同样是浅灰 → 形成玻璃边缘高光
-  spec.borderColor = kind === WeaverGlassKind.SHEEN ? glassAlpha(colors.brand, dark ? 0.34 : 0.18) : colors.divider
+  spec.borderColor = kind === WeaverGlassKind.SHEEN
+    ? glassAlpha(colors.brand, dark ? 0.34 : 0.18)
+    : colors.divider
 
   // 阴影：只有 chrome / panel 有（卡片与行靠描边区分，避免列表里出现大片灰影）
   if (kind === WeaverGlassKind.CHROME) {

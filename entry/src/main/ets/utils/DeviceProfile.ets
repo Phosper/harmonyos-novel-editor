@@ -12,10 +12,10 @@
 // 监听统一收口：windowSizeChange / freeWindowModeChange / avoidAreaChange / windowStatusChange
 // 全部在本模块注册一次，UI 侧只订阅 `onChange`。避免 AppShell、标题栏各自注册造成
 // 重复刷新与解绑遗漏。
-import { window } from '@kit.ArkUI'
+import { display, window } from '@kit.ArkUI'
 import { deviceInfo } from '@kit.BasicServicesKit'
 import { BreakPoint, breakPointFrom } from './BreakPoint'
-import { readSafeArea, safeTopVp, safeBottomVp, watchSafeArea } from './SafeArea'
+import { readSafeArea, safeTopVp, safeBottomVp, keyboardHeightVp, watchSafeArea } from './SafeArea'
 import { DESKTOP_CHROME_HEIGHT_VP, readTitleButtonWidthVp } from './DesktopWindowChrome'
 import { Logger } from './Logger'
 
@@ -52,12 +52,24 @@ export class DeviceSnapshot {
   windowStatus: number = 0
   breakPoint: BreakPoint = BreakPoint.SM
   modality: InputModality = InputModality.TOUCH
+  /** 是否折叠形态设备（display.isFoldable()）；不能靠 deviceType 判断 */
+  foldable: boolean = false
+  /** 是否处于「展开 / 半折叠」：这两种折叠态的可视面积是平板级 */
+  foldExpanded: boolean = false
+  /** 可视高度 < 800vp 的短屏设备（如 Pura X View 744vp）：chrome 需要更紧凑 */
+  shortScreen: boolean = false
+  /** 屏幕四角最大圆角（vp）：Pura X View 圆角更大，贴边控件需额外让位 */
+  cornerRadiusVp: number = 0
+  /** 阔直板（Pura X View 类：440×744、16:9.5、非折叠）：chrome 需要更紧凑 */
+  wideBar: boolean = false
   /** 顶部标题栏高度（含安全区，vp）；0 表示当前没有自绘标题栏 */
   chromeHeightVp: number = 0
   /** 原生三键区宽度（保留原生三键时内容需右避让，vp） */
   titleButtonWidthVp: number = 0
   safeTopVp: number = 0
   safeBottomVp: number = 0
+  /** 软键盘遮挡高度（vp）：0 表示未弹出 */
+  keyboardHeightVp: number = 0
 
   /** SINGLE: SM；DOUBLE: MD；TRIPLE: LG */
   get tier(): LayoutTier {
@@ -82,7 +94,76 @@ export class DeviceSnapshot {
 }
 
 /** 设备形态归类：**只**用于 chrome 与命中区风格，不参与断点判断 */
-export function detectDeviceClass(): DeviceClass {
+export /**
+ * 折叠形态：折叠屏在 deviceType 上普遍返回 phone，必须用 display.isFoldable() 判断；
+ * 展开态 / 半折叠态的可视面积是平板级，用于把 chrome 与字号切到平板档。
+ * 读取失败按「非折叠」降级，不影响主流程。
+ */
+class ScreenMetrics {
+  widthVp: number = 0
+  heightVp: number = 0
+  cornerVp: number = 0
+}
+
+/**
+ * 阔直板判定（Pura X View 类）：短边 400–520vp、长边 700–800vp、长宽比 < 1.9。
+ * 用 min/max 而不是 width/height，保证**横竖屏都能识别**（旋转后宽高互换）。
+ * 普通直板机长宽比约 2.2，不命中；折叠屏由 foldable 排除；电脑模式由 freeWindow 排除。
+ */
+function isWideBar(metrics: ScreenMetrics): boolean {
+  if (metrics.widthVp <= 0 || metrics.heightVp <= 0) {
+    return false
+  }
+  const shortSide: number = Math.min(metrics.widthVp, metrics.heightVp)
+  const longSide: number = Math.max(metrics.widthVp, metrics.heightVp)
+  return shortSide >= 400 && shortSide < 520 && longSide >= 700 && longSide <= 800 &&
+    longSide / shortSide < 1.9
+}
+
+/** 短屏与圆角：Pura X View（440x744，圆角更大）等设备据此收紧 chrome、给贴边控件让位 */
+function readScreenMetrics(): ScreenMetrics {
+  const metrics: ScreenMetrics = new ScreenMetrics()
+  try {
+    const d: display.Display = display.getDefaultDisplaySync()
+    const density: number = d.densityPixels > 0 ? d.densityPixels : 1
+    metrics.widthVp = d.width / density
+    metrics.heightVp = d.height / density
+    // getRoundedCorner 是 Display 实例方法（API 23+），不是模块函数
+    const corners: Array<display.RoundedCorner> = d.getRoundedCorner()
+    let maxPx: number = 0
+    for (const corner of corners) {
+      if (corner.radius > maxPx) {
+        maxPx = corner.radius
+      }
+    }
+    metrics.cornerVp = maxPx / density
+  } catch (e) {
+    Logger.warn('DeviceProfile: read screen metrics failed: ' + String(e))
+  }
+  return metrics
+}
+
+class FoldInfo {
+  foldable: boolean = false
+  expanded: boolean = false
+}
+
+function readFoldInfo(): FoldInfo {
+  const info: FoldInfo = new FoldInfo()
+  try {
+    info.foldable = display.isFoldable()
+    if (info.foldable) {
+      const status: display.FoldStatus = display.getFoldStatus()
+      info.expanded = status === display.FoldStatus.FOLD_STATUS_EXPANDED ||
+        status === display.FoldStatus.FOLD_STATUS_HALF_FOLDED
+    }
+  } catch (e) {
+    Logger.warn('DeviceProfile: read fold status failed: ' + String(e))
+  }
+  return info
+}
+
+function detectDeviceClass(): DeviceClass {
   let type: string = ''
   try {
     type = deviceInfo.deviceType
@@ -152,6 +233,8 @@ export class DeviceProfileService {
   private freeListener: ((isFree: boolean) => void) | null = null
   private sizeListener: ((size: window.Size) => void) | null = null
   private statusListener: ((status: window.WindowStatusType) => void) | null = null
+  /** 折叠状态变化（展开/折叠/半折叠）：尺寸不一定变，必须单独监听 */
+  private foldListener: ((status: display.FoldStatus) => void) | null = null
   /** isInFreeWindowMode 是否可用（API < 22 或裁剪设备上只警告一次） */
   private freeWindowProbeOk: boolean = true
   /** 是否真的收到过鼠标/笔输入（用于把 MIXED/TOUCH 校正为键鼠优先） */
@@ -179,6 +262,7 @@ export class DeviceProfileService {
       this.bindWindow(w)
       this.bound = true
     }
+    this.bindFoldListener()
     if (this.safeDisposer === null) {
       // avoidAreaChange 也统一收口到这里（SafeArea 内部只允许一个监听）
       this.safeDisposer = watchSafeArea(() => {
@@ -195,8 +279,9 @@ export class DeviceProfileService {
     this.activeListeners = []
   }
 
-  /** 切换窗口时保留页面订阅，仅释放旧窗口的监听。 */
+  /** 切换窗口只释放窗口监听，保留仍在使用的页面订阅。 */
   private releaseWindow(): void {
+    this.unbindFoldListener()
     const w: window.Window | null = this.win
     if (w !== null && this.bound) {
       try {
@@ -242,8 +327,16 @@ export class DeviceProfileService {
     next.windowStatus = this.readWindowStatus()
     next.breakPoint = this.readBreakPoint()
     next.modality = modalityFor(next.deviceClass, next.freeWindow, this.pointerSeen)
+    const fold: FoldInfo = readFoldInfo()
+    next.foldable = fold.foldable
+    next.foldExpanded = fold.expanded
+    const metrics: ScreenMetrics = readScreenMetrics()
+    next.shortScreen = !next.freeWindow && metrics.heightVp > 0 && metrics.heightVp < 800
+    next.cornerRadiusVp = metrics.cornerVp
+    next.wideBar = !next.freeWindow && !next.foldable && isWideBar(metrics)
     next.safeTopVp = safeTopVp()
     next.safeBottomVp = safeBottomVp()
+    next.keyboardHeightVp = keyboardHeightVp()
     // 标题栏高度**含**安全区：AppShell 只按 chromeHeight 让位，不再叠加 safeTop（防双算）
     next.chromeHeightVp = next.freeWindow ? DESKTOP_CHROME_HEIGHT_VP + next.safeTopVp : 0
     next.titleButtonWidthVp = this.readTitleButtonWidth()
@@ -300,8 +393,43 @@ export class DeviceProfileService {
 
   // ===================== 内部 =====================
 
+  /** 折叠态可能不改变窗口尺寸（半折叠/悬停），单独监听并刷新快照 */
+  private bindFoldListener(): void {
+    if (this.foldListener !== null) {
+      return
+    }
+    try {
+      if (!display.isFoldable()) {
+        return
+      }
+      const cb: (status: display.FoldStatus) => void = (status: display.FoldStatus) => {
+        if (this.foldListener !== cb || this.win === null) { return }
+        this.refresh()
+      }
+      this.foldListener = cb
+      display.on('foldStatusChange', cb)
+    } catch (e) {
+      Logger.warn('DeviceProfile: bind foldStatusChange failed: ' + String(e))
+      this.foldListener = null
+    }
+  }
+
+  private unbindFoldListener(): void {
+    const cb: ((status: display.FoldStatus) => void) | null = this.foldListener
+    if (cb === null) {
+      return
+    }
+    try {
+      display.off('foldStatusChange', cb)
+    } catch (e) {
+      Logger.warn('DeviceProfile: unbind foldStatusChange failed: ' + String(e))
+    }
+    this.foldListener = null
+  }
+
   private bindWindow(w: window.Window): void {
     const free: (isFree: boolean) => void = (isFree: boolean): void => {
+      if (this.win !== w) { return }
       // 电脑模式判据变化：同步给 AppStorage（EntryAbility / 其他模块读取）并重算快照
       AppStorage.setOrCreate<boolean>('freeWindowMode', isFree)
       this.refresh()
@@ -314,6 +442,7 @@ export class DeviceProfileService {
     }
 
     const size: (newSize: window.Size) => void = (newSize: window.Size): void => {
+      if (this.win !== w) { return }
       // 只重算（断点由 UIContext 提供，尺寸变化后需重新读取断点）
       this.refresh()
     }
@@ -325,6 +454,7 @@ export class DeviceProfileService {
     }
 
     const status: (newStatus: window.WindowStatusType) => void = (newStatus: window.WindowStatusType): void => {
+      if (this.win !== w) { return }
       this.refresh()
     }
     this.statusListener = status

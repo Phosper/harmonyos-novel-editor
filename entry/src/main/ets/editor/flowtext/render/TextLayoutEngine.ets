@@ -12,8 +12,13 @@
  *     在 vp 坐标系中恰好等于期望的 vp 字号，视觉一致。
  */
 import { text, drawing, common2D } from '@kit.ArkGraphics2D';
-import { FormatRun } from '../model/EditorTypes';
+import { FormatRun, MAX_LIST_LEVEL, ParagraphKind, isListParagraph } from '../model/EditorTypes';
 import { TextIndexMap } from '../model/TextIndexMap';
+
+/** 列表每层缩进步长（vp） */
+const LIST_INDENT_STEP_VP: number = 24;
+/** 项目符号槽宽 = 字号 × 该比例（保证 • / ○ / ✓ 不压到正文） */
+const MARKER_WIDTH_RATIO: number = 1.2;
 
 /** 字形段：同一字体样式的连续字形（坐标为 vp） */
 export class GlyphRunData {
@@ -108,6 +113,24 @@ export class LayoutLine {
   pxPerVp: number = 1;
   ascent: number = 0;
   descent: number = 0;
+  /** 段落种类（ParagraphKind）：4=列表 5=待办 6=已完成待办 */
+  paraKind: number = 0;
+  /** 列表层级 0–2 */
+  paraIndent: number = 0;
+  /**
+   * 文本列相对行左边缘的偏移（vp）：列表层级缩进 + 项目符号槽宽。
+   * **首行与续行取同一个值**（悬挂缩进）：换行后的文字与首行文字左边界对齐，
+   * 项目符号只占首行左侧的槽位，不参与正文折行。
+   */
+  inset: number = 0;
+  /** 本行是否为所在段落的第一条视觉行（只有首行画项目符号） */
+  markerOn: boolean = false;
+  /** 项目符号槽位左边界（vp，相对行左边缘） */
+  markerX: number = 0;
+  /** 项目符号槽位宽度（vp） */
+  markerW: number = 0;
+  /** 已完成待办：文字画删除线 */
+  strike: boolean = false;
 }
 
 export class TextLayoutEngine {
@@ -151,11 +174,7 @@ export class TextLayoutEngine {
     this.runsValue = runs;
   }
 
-  /**
-   * A cache fork needs its own window map and typeset origin. Sharing this engine
-   * would let preview layout change the offsets used by the committed cache.
-   * Native line objects remain self-contained and can safely be retained.
-   */
+  /** Each preview cache needs an independent typeset window and index map. */
   cloneConfiguration(): TextLayoutEngine {
     const copy: TextLayoutEngine = new TextLayoutEngine(this.maxWidthPx / this.pxPerVp,
       this.fontSizePx / this.pxPerVp, this.lineHeightPx / this.pxPerVp,
@@ -295,17 +314,43 @@ export class TextLayoutEngine {
    * Native LineTypeset/Run indices count scalars; document/IME offsets count UTF-16.
    * start 为**文档**偏移，这里换算成窗口内偏移再查表。
    */
-  lineBreak(typeset: text.LineTypeset, start: number): number {
+  lineBreak(typeset: text.LineTypeset, start: number, availableWidthPx: number = -1): number {
     const local: number = start - this.typesetBase;
     const nativeStart: number = this.indexMap.toScalar(local);
-    const count: number = typeset.getLineBreak(nativeStart, this.maxWidthPx);
+    // 列表段落要把项目符号槽位与层级缩进从可用宽度里扣掉，
+    // 否则文字按整列宽折行、再整体右移 → 右侧溢出并被裁剪。
+    const width: number = availableWidthPx > 0 ? Math.min(availableWidthPx, this.maxWidthPx) : this.maxWidthPx;
+    const count: number = typeset.getLineBreak(nativeStart, width);
     return this.indexMap.fromScalar(nativeStart + count) - local;
   }
-  createLayoutLine(typeset: text.LineTypeset, start: number, count: number, y: number): LayoutLine {
+
+  /** 段落种类/层级 → 文本列左偏移（vp）；非列表段落为 0 */
+  static insetVpFor(kind: number, indent: number, fontSizeVp: number): number {
+    if (!isListParagraph(kind)) {
+      return 0;
+    }
+    const level: number = Math.max(0, Math.min(MAX_LIST_LEVEL, indent));
+    return level * LIST_INDENT_STEP_VP + fontSizeVp * MARKER_WIDTH_RATIO;
+  }
+
+  /**
+   * 指定段落的可用折行宽度（px）：列宽减去该段的文本列左偏移。
+   * 下限取 1vp（而不是一个字号）：原生 getLineBreak 要求宽度 > 0，
+   * 但在"极窄列 + 2 级缩进"这种退化场景下，用字号当下限会让结果超过真实可用宽度，
+   * 反而把文字顶出右边界。
+   */
+  availableWidthPx(kind: number, indent: number): number {
+    const insetVp: number = TextLayoutEngine.insetVpFor(kind, indent, this.fontSizePx / this.pxPerVp);
+    return Math.max(this.pxPerVp, this.maxWidthPx - insetVp * this.pxPerVp);
+  }
+
+  createLayoutLine(typeset: text.LineTypeset, start: number, count: number, y: number,
+    paraKind: number = ParagraphKind.BODY, paraIndent: number = 0, markerOn: boolean = true): LayoutLine {
     const local: number = start - this.typesetBase;
     const nativeStart: number = this.indexMap.toScalar(local);
     const nativeCount: number = this.indexMap.toScalar(local + count) - nativeStart;
-    return this.buildLayoutLine(typeset.createLine(nativeStart, nativeCount), start, count, y);
+    return this.buildLayoutLine(typeset.createLine(nativeStart, nativeCount), start, count, y,
+      paraKind, paraIndent, markerOn);
   }
 
   /** 行步进（行高+行距，vp） */
@@ -314,17 +359,20 @@ export class TextLayoutEngine {
   }
 
   /** 从指定排版区间构建一行（输出 vp；公开供 LayoutCache 增量调用） */
-  buildLayoutLineFrom(line: text.TextLine, textStart: number, count: number, yOffsetVp: number): LayoutLine {
-    return this.buildLayoutLine(line, textStart, count, yOffsetVp);
+  buildLayoutLineFrom(line: text.TextLine, textStart: number, count: number, yOffsetVp: number,
+    paraKind: number = ParagraphKind.BODY, paraIndent: number = 0, markerOn: boolean = true): LayoutLine {
+    return this.buildLayoutLine(line, textStart, count, yOffsetVp, paraKind, paraIndent, markerOn);
   }
 
   /** Empty paragraphs also have a caret and occupy one line. */
-  emptyLine(offset: number, y: number): LayoutLine {
+  emptyLine(offset: number, y: number, paraKind: number = ParagraphKind.BODY,
+    paraIndent: number = 0): LayoutLine {
     const line: LayoutLine = new LayoutLine();
     line.startIndex = offset;
     line.endIndex = offset;
     line.consumedEnd = offset;
     line.yOffset = y;
+    this.applyParagraphGeometry(line, paraKind, paraIndent, true);
     line.height = this.lineHeightPx / this.pxPerVp;
     line.step = this.lineStepVp();
     line.ascent = this.fontSizePx * 0.8 / this.pxPerVp;
@@ -333,10 +381,37 @@ export class TextLayoutEngine {
     return line;
   }
 
-  private buildLayoutLine(line: text.TextLine, textStart: number, count: number, yOffsetVp: number): LayoutLine {
+  /**
+   * 写入段落几何：种类、层级、文本列左偏移与项目符号槽位。
+   * 首行与续行使用同一个 inset（悬挂缩进），差别只在 markerOn：
+   * 续行不画符号，但文字继续与首行文字左边界对齐。
+   */
+  private applyParagraphGeometry(line: LayoutLine, kind: number, indent: number, markerOn: boolean): void {
+    const level: number = isListParagraph(kind) ? Math.max(0, Math.min(MAX_LIST_LEVEL, indent)) : 0;
+    line.paraKind = kind;
+    line.paraIndent = level;
+    line.strike = kind === ParagraphKind.TODO_DONE;
+    if (!isListParagraph(kind)) {
+      line.inset = 0;
+      line.markerOn = false;
+      line.markerX = 0;
+      line.markerW = 0;
+      return;
+    }
+    const fontSizeVp: number = this.fontSizePx / this.pxPerVp;
+    const markerW: number = fontSizeVp * MARKER_WIDTH_RATIO;
+    line.markerW = markerW;
+    line.markerX = level * LIST_INDENT_STEP_VP;
+    line.inset = line.markerX + markerW;
+    line.markerOn = markerOn;
+  }
+
+  private buildLayoutLine(line: text.TextLine, textStart: number, count: number, yOffsetVp: number,
+    paraKind: number = ParagraphKind.BODY, paraIndent: number = 0, markerOn: boolean = true): LayoutLine {
     // textStart/count 是文档偏移；窗口内偏移 = 减去 typesetBase
     const localStart: number = textStart - this.typesetBase;
     const layoutLine: LayoutLine = new LayoutLine();
+    this.applyParagraphGeometry(layoutLine, paraKind, paraIndent, markerOn);
     const bounds: text.TypographicBounds = line.getTypographicBounds();
     layoutLine.startIndex = textStart;
     layoutLine.endIndex = textStart + count;
@@ -372,6 +447,8 @@ export class TextLayoutEngine {
       data.textEnd = textStart + layoutLine.indexMap.fromScalar(range.start + range.end - layoutLine.nativeStartIndex);
       data.glyphOffsets = indices.map((index: number): number =>
         layoutLine.indexMap.fromScalar(index - layoutLine.nativeStartIndex) - localRunStart);
+      // Preserve native line-relative positions, including bidi order and shaping bearings.
+      // Only runs actually rebased to zero need their line origin added back.
       data.runOffsetX = this.localRunOriginVp(line, range, positions);
       const advances: common2D.Point[] = run.getAdvances({ start: 0, end: data.glyphs.length });
       for (let g: number = 0; g < data.glyphs.length; g++) {
@@ -391,12 +468,11 @@ export class TextLayoutEngine {
     return layoutLine;
   }
 
-  /** Some API 26 devices rebase each run to x=0; line-positioned runs stay untouched. */
+  /** API 26 devices can return either line-positioned runs or runs rebased to x=0. */
   private localRunOriginVp(line: text.TextLine, range: text.Range, positions: common2D.Point[]): number {
     if (positions.length === 0) { return 0; }
     let minX: number = positions[0].x;
     for (const point of positions) { minX = Math.min(minX, point.x); }
-    // Do not subtract the first glyph: that would discard shaping offsets and bidi placement.
     if (Math.abs(minX) > 0.01) { return 0; }
     try {
       const start: number = line.getOffsetForStringIndex(range.start);

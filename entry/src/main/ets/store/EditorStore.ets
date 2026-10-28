@@ -62,6 +62,11 @@ export class EditorStore {
    */
   @Trace undoStack: HistoryEntry[] = []
   @Trace redoStack: HistoryEntry[] = []
+  /**
+   * 历史深度版本号：@Trace 数组的原地 push 在个别场景没触发工具栏重算，
+   * 用这个显式自增的标量给 canUndo/canRedo 建立稳定依赖（按钮置灰的根因）。
+   */
+  @Trace historyVersion: number = 0
   /** 只在快照增删时记账，每次输入不扫描或编码正文。 */
   private historyBytes: number = 0
   private historyOrder: number = 0
@@ -356,6 +361,7 @@ export class EditorStore {
     const entry: HistoryEntry = new HistoryEntry(doc.id, doc.draft, doc.caret, doc.runsJson, ++this.historyOrder)
     stack.push(entry)
     this.historyBytes += entry.estimatedBytes
+    this.historyVersion++
     // 每个栈的头部都是该栈最早捕获的状态。按入栈顺序裁剪两栈的头部，
     // 保留各文稿剩余步骤的原有顺序，不把别篇文稿的状态拿来回退。
     // 最新恢复点永远保留：若单篇已超过预算，仅允许这一条超限，仍可撤销当前事务。
@@ -364,14 +370,21 @@ export class EditorStore {
       const oldest: HistoryEntry[] = this.undoStack.length === 0 ? this.redoStack :
         (this.redoStack.length === 0 || this.undoStack[0].order < this.redoStack[0].order ?
           this.undoStack : this.redoStack)
-      this.historyBytes -= oldest.splice(0, 1)[0].estimatedBytes
+      this.removeHistoryAt(oldest, 0)
     }
+  }
+
+  private removeHistoryAt(stack: HistoryEntry[], index: number): HistoryEntry {
+    const entry: HistoryEntry = stack.splice(index, 1)[0]
+    this.historyBytes -= entry.estimatedBytes
+    this.historyVersion++
+    return entry
   }
 
   private removeHistoryForDoc(stack: HistoryEntry[], id: string): void {
     for (let i: number = stack.length - 1; i >= 0; i--) {
       if (stack[i].docId === id) {
-        this.historyBytes -= stack.splice(i, 1)[0].estimatedBytes
+        this.removeHistoryAt(stack, i)
       }
     }
   }
@@ -393,9 +406,7 @@ export class EditorStore {
     let index: number = from.length - 1
     while (index >= 0 && from[index].docId !== doc.id) { index-- }
     if (index < 0) { return }
-    // V2 的 @Trace 数组可观测 push/splice 等原地改动，故 canUndo/canRedo 能随栈变化刷新
-    const entry: HistoryEntry = from.splice(index, 1)[0]
-    this.historyBytes -= entry.estimatedBytes
+    const entry: HistoryEntry = this.removeHistoryAt(from, index)
     this.appendHistory(to, doc)
     this.restoring = true
     doc.draft = entry.text
@@ -587,8 +598,11 @@ export class EditorStore {
     this.sessionRev++
     this.openDocs = []
     this.activeId = ''
-    this.undoStack = []
-    this.redoStack = []
+    if (this.undoStack.length > 0 || this.redoStack.length > 0) {
+      this.undoStack = []
+      this.redoStack = []
+      this.historyVersion++
+    }
     this.historyBytes = 0
     this.historyOrder = 0
     this.lastHistoryAt = 0

@@ -13,7 +13,9 @@ export class FormatCodec {
       const r: FormatRun = runs[i];
       const b: string = r.bold ? '1' : '0';
       const it: string = r.italic ? '1' : '0';
-      parts.push(r.startOffset.toString() + ',' + r.endOffset.toString() + ',' + b + ',' + it + ',' + r.heading.toString());
+      // 第 6 段 indent 为可选扩展：旧数据没有该段也能解出（缺省 0）
+      parts.push(r.startOffset.toString() + ',' + r.endOffset.toString() + ',' + b + ',' + it + ',' +
+        r.heading.toString() + ',' + r.indent.toString());
     }
     return parts.join(';');
   }
@@ -33,7 +35,9 @@ export class FormatCodec {
       if (f.length < 5) {
         continue;
       }
-      out.push(new FormatRun(Number(f[0]), Number(f[1]), f[2] === '1', f[3] === '1', Number(f[4])));
+      const indent: number = f.length > 5 ? Number(f[5]) : 0;
+      out.push(new FormatRun(Number(f[0]), Number(f[1]), f[2] === '1', f[3] === '1', Number(f[4]),
+        isNaN(indent) ? 0 : indent));
     }
     return out;
   }

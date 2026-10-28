@@ -46,7 +46,11 @@ const context = vm.createContext({
   deviceInfo, deviceProfile: profile, UIAbility: class {},
   ConfigurationConstant: { ColorMode: { COLOR_MODE_LIGHT: 0, COLOR_MODE_DARK: 1, COLOR_MODE_NOT_SET: -1 } },
   prefs: { async init() {}, async isDarkExplicit() { return true; }, async isFirstLaunch() { return false; } },
-  app: { ui: { syncSystemBars() {}, async applySystemDarkMode() {} }, async flushAll() {}, destroy() {} },
+  app: { ui: { themeId: 'paper', syncSystemBars() {}, async applySystemDarkMode() {} },
+    editor: { snapshotDrafts() { return []; } }, async flushAll() {}, async flushAllStrict() {}, destroy() {} },
+  ezCustomTransition: { init() {} }, rememberAppContext() {}, applyAppColorMode() {},
+  FormatCodec: { encode: JSON.stringify },
+  ExportService: { async saveText() { return true; } },
   KeyboardAvoidMode: { RESIZE: 1 },
   setAppContext() {},
   DEFAULT_THEME_ID: 'paper',
@@ -58,13 +62,14 @@ const barSource = read('shell/PcWindowBar.ets');
 vm.runInContext(compile('class WindowBarProbe {\n' + ['win', 'startMove', 'minimize', 'toggleMaximize', 'close',
   'onTitleTouch', 'onTitleMouse'].map(name => method(barSource, name)).join('\n') + '\n}'), context);
 const titleBarSource = read('shell/DesktopTitleBar.ets');
-vm.runInContext(compile("const TITLE_FALLBACK: string = 'Weaver';\nclass TitleBarProbe {\n" + ['aboutToAppear', 'aboutToDisappear', 'win', 'applyChrome',
+vm.runInContext(compile(titleBarSource.match(/^const TITLE_FALLBACK[^\r\n]*/m)[0] + "\nclass TitleBarProbe {\n" + ['aboutToAppear', 'aboutToDisappear', 'win', 'applyChrome',
   'readStatus', 'refreshTitleButtonRect', 'bindWindowListeners', 'unbindWindowListeners', 'startMove', 'minimize',
   'toggleMaximize', 'close', 'showCloseBlockedDialog', 'exportDraftsBeforeClose', 'hostContext', 'terminate', 'onTitleTouch', 'onTitleMouse', 'barTitle', 'barHeight',
   'maximized', 'maxGlyph', 'maxLabel', 'themeId', 'colors'].map(name => method(titleBarSource, name)).join('\n') + '\n}'), context);
 vm.runInContext(compile(read('entryability/EntryAbility.ets')), context);
 const editorPaneSource = read('shell/EditorPane.ets');
-vm.runInContext(compile('class EditorPaneProbe {\n' + ['onActiveDocChanged', 'aboutToDisappear']
+vm.runInContext(compile('class EditorPaneProbe {\n' + ['onActiveDocChanged', 'aboutToDisappear',
+  'syncActivePreview', 'applyEditorChange', 'beginRename', 'cancelRename', 'commitRename']
   .map(name => method(editorPaneSource, name)).join('\n') + '\n}'), context);
 const api = vm.runInContext('({configureDesktopChrome, WindowBarProbe, TitleBarProbe, EntryAbility, EditorPaneProbe})', context);
 vm.runInContext(compile(read('store/UiStore.ets').split('@ObservedV2')[0]), context);
@@ -77,7 +82,8 @@ function nativeWindow(failures = {}) {
   const native = { calls, status: statuses.FLOATING, free: deviceInfo.deviceType === '2in1' };
   native.isInFreeWindowMode = () => native.free;
   native.keyboardModes = [];
-  native.getUIContext = () => ({ setKeyboardAvoidMode(mode) { native.keyboardModes.push(mode); } });
+  native.prompt = { async showDialog() { return { index: -1 }; }, showToast() {} };
+  native.getUIContext = () => ({ setKeyboardAvoidMode(mode) { native.keyboardModes.push(mode); }, getPromptAction: () => native.prompt });
   function invoke(name, args, asynchronous = true) {
     calls.push([name, ...args]);
     if (failures[name] === 'throw') throw new Error(name + ' sync failure');
@@ -134,7 +140,7 @@ function stage(native) {
 }
 function ability() {
   const result = new api.EntryAbility();
-  result.context = { config: { colorMode: 0 }, getApplicationContext() { return { setColorMode() {} }; } };
+  result.context = { config: { colorMode: 0 }, async terminateSelf() {}, getApplicationContext() { return { setColorMode() {} }; } };
   return result;
 }
 let count = 0;
@@ -148,24 +154,24 @@ async function check(name, action) {
   console.log('PASS ' + name);
 }
 (async () => {
-  await check('custom chrome hides native title and buttons while keeping dock', async () => {
+  await check('fusion chrome hides native title while keeping system buttons and dock', async () => {
     const native = nativeWindow();
     api.configureDesktopChrome(native);
     await settle();
-    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
   });
   await check('a decor failure does not skip the separate title-hover configuration', async () => {
     const native = nativeWindow({ setWindowDecorVisible: 'throw' });
     api.configureDesktopChrome(native);
     await settle();
-    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
     assert.equal(warnings.length, 1);
   });
   await check('a native title-button failure does not skip title-hover configuration', async () => {
     const native = nativeWindow({ setWindowTitleButtonVisible: 'throw' });
     api.configureDesktopChrome(native);
     await settle();
-    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(native.calls, [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
     assert.equal(warnings.length, 1);
   });
   await check('both synchronous and asynchronous title-hover failures are contained', async () => {
@@ -192,7 +198,7 @@ async function check(name, action) {
       assert.deepEqual(native.calls.map(call => call[0]), ['getWindowStatus', expected,
         'setWindowDecorVisible', 'setWindowTitleButtonVisible', 'setTitleAndDockHoverShown']);
       assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false],
-        ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+        ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
     }
   });
   await check('pending maximize and recover operations do not configure native chrome prematurely', async () => {
@@ -275,7 +281,7 @@ async function check(name, action) {
     assert.equal(chromeCalls(native).length, 0, 'starting loadContent is not successful loading');
     windowStage.callbacks[0]({ code: 0 });
     assert.equal(entry.contentReady, true);
-    assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+    assert.deepEqual(chromeCalls(native), [['setWindowDecorVisible', false], ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
   });
   await check('failed UI content loading leaves desktop chrome unconfigured', async () => {
     deviceInfo.deviceType = '2in1';
@@ -353,9 +359,9 @@ async function check(name, action) {
       'getWindowStatus', 'getTitleButtonRect']);
     assert.deepEqual(native.calls[0], ['setWindowDecorHeight', 48], '48vp is inside the official [37,112] range');
     assert.equal(native.calls[1][0], 'setDecorButtonStyle');
-    assert.equal(native.calls[1][1].buttonIconSize, 18);
+    assert.equal(native.calls[1][1].buttonIconSize, undefined, 'system button geometry must keep system defaults');
     assert.deepEqual(native.calls[2], ['setWindowDecorVisible', false]);
-    assert.deepEqual(native.calls[3], ['setWindowTitleButtonVisible', false, false, false]);
+    assert.deepEqual(native.calls[3], ['setWindowTitleButtonVisible', true, true, true]);
     assert.deepEqual(native.calls[4], ['setTitleAndDockHoverShown', false, true]);
   });
   await check('desktop title bar dragging starts only from touch down or a left mouse press', () => {
@@ -405,13 +411,13 @@ async function check(name, action) {
     probe.chromeHeight = 90;
     assert.equal(probe.barHeight(), 90, 'a snapshot chrome height wins over the constant fallback');
   });
-  await check('desktop title bar falls back to the Weaver title for an empty book name', () => {
+  await check('desktop title bar uses the current product name for an empty book name', () => {
     const probe = titleBar(nativeWindow(), { app: { project: { bookName: '   ' }, ui: { themeId: 'paper' } } });
-    assert.equal(probe.barTitle(), 'Weaver');
+    assert.equal(probe.barTitle(), '语流');
     probe.app = { project: { bookName: '长夜' }, ui: { themeId: 'paper' } };
     assert.equal(probe.barTitle(), '长夜');
     probe.app = null;
-    assert.equal(probe.barTitle(), 'Weaver');
+    assert.equal(probe.barTitle(), '语流');
   });
   await check('desktop title bar start and minimize failures are contained', async () => {
     for (const [operation, methodName] of [['startMoving', 'startMove'], ['minimize', 'minimize']]) {
@@ -562,7 +568,7 @@ async function check(name, action) {
     native.emit('freeWindowModeChange', true);
     assert.equal(entry.isDesktop, true);
     assert.deepEqual(chromeCalls(native).slice(-3), [['setWindowDecorVisible', false],
-      ['setWindowTitleButtonVisible', false, false, false], ['setTitleAndDockHoverShown', false, true]]);
+      ['setWindowTitleButtonVisible', true, true, true], ['setTitleAndDockHoverShown', false, true]]);
     native.free = false;
     native.emit('freeWindowModeChange', false);
     assert.equal(entry.isDesktop, false);
@@ -592,7 +598,7 @@ async function check(name, action) {
     assert.equal(probe.app.ui.editorController, current);
     assert.equal(probe.editorController, null);
   });
-  await check('successful content loading enables resize avoidance only after UI is ready', async () => {
+  await check('ability preserves the new shell keyboard avoidance owner without double resize', async () => {
     deviceInfo.deviceType = 'phone';
     const native = nativeWindow();
     const entry = ability();
@@ -601,7 +607,9 @@ async function check(name, action) {
     await settle();
     assert.deepEqual(native.keyboardModes, []);
     windowStage.callbacks[0]({ code: 0 });
-    assert.deepEqual(native.keyboardModes, [1]);
+    assert.deepEqual(native.keyboardModes, []);
+    assert.match(read('shell/AppShell.ets'), /setKeyboardAvoidMode\(KeyboardAvoidMode\.NONE\)/);
+    assert.match(read('shell/AppShell.ets'), /Math\.max\(this\.safeBottom, this\.keyboardHeight\)/);
     entry.onWindowStageDestroy();
   });
   function renameDialog(ownerBookId = 'book-A', currentBookId = ownerBookId) {
@@ -654,6 +662,181 @@ async function check(name, action) {
     probe.showReplace = true;
     probe.onActiveDocChanged();
     assert.equal(probe.showReplace, false);
+  });
+  async function readyNative() {
+    deviceInfo.deviceType = '2in1';
+    const native = nativeWindow();
+    const entry = ability();
+    const windowStage = stage(native);
+    entry.onWindowStageCreate(windowStage);
+    await settle();
+    windowStage.callbacks[0]({ code: 0 });
+    return { entry, native, windowStage };
+  }
+  await check('native close waits for strict persistence and blocks concurrent close requests', async () => {
+    const { entry, native } = await readyNative();
+    let finish;
+    context.app.flushAllStrict = () => new Promise(resolve => { finish = resolve; });
+    const listener = native.handlers.get('windowWillClose')[0];
+    const pending = listener();
+    assert.equal(entry.closePending, true);
+    assert.equal(await listener(), true);
+    finish();
+    assert.equal(await pending, false, 'false grants system close only after persistence succeeds');
+    entry.onWindowStageDestroy();
+  });
+  await check('strict persistence rejection blocks native close and offers recovery actions', async () => {
+    const { entry, native } = await readyNative();
+    context.app.flushAllStrict = async () => { throw new Error('disk full'); };
+    let shown;
+    native.prompt.showDialog = options => { shown = options; return new Promise(() => {}); };
+    assert.equal(await native.handlers.get('windowWillClose')[0](), true);
+    assert.equal(shown.buttons.map(button => button.text).join(','), '重试保存,导出草稿,放弃并退出');
+    assert.equal(await native.handlers.get('windowWillClose')[0](), true, 'existing recovery dialog prevents duplicates');
+    entry.onWindowStageDestroy();
+  });
+  await check('dialog throws or rejects never escape the native close callback as permission to close', async () => {
+    for (const failure of ['throw', 'reject']) {
+      const { entry, native } = await readyNative();
+      context.app.flushAllStrict = async () => { throw new Error('save failed'); };
+      native.prompt.showDialog = () => {
+        if (failure === 'throw') throw new Error('dialog unavailable');
+        return Promise.reject(new Error('dialog dismissed'));
+      };
+      assert.equal(await native.handlers.get('windowWillClose')[0](), true);
+      await settle();
+      assert.equal(entry.closeDialogWindow, null);
+      entry.onWindowStageDestroy();
+    }
+  });
+  await check('native close listeners use the same window and callback through mode changes and teardown', async () => {
+    const { entry, native, windowStage } = await readyNative();
+    const original = native.handlers.get('windowWillClose')[0];
+    native.free = false; native.emit('freeWindowModeChange', false);
+    assert.equal(native.onCount('windowWillClose'), 0);
+    native.free = true; native.emit('freeWindowModeChange', true);
+    assert.equal(native.onCount('windowWillClose'), 1);
+    assert.notEqual(native.handlers.get('windowWillClose')[0], original);
+    entry.onForeground();
+    assert.equal(native.onCount('windowWillClose'), 1, 'foreground must not duplicate the listener');
+    storage.set('mainWindow', nativeWindow());
+    entry.onWindowStageDestroy();
+    assert.equal(native.onCount('windowWillClose'), 0);
+    assert.equal(native.onCount('windowStatusChange'), 0);
+    assert.equal(windowStage.handlers.size, 0);
+  });
+  await check('saving for an old window cannot authorize closing its replacement', async () => {
+    const { entry, native } = await readyNative();
+    let finish;
+    context.app.flushAllStrict = () => new Promise(resolve => { finish = resolve; });
+    const pending = native.handlers.get('windowWillClose')[0]();
+    const replacement = nativeWindow();
+    entry.onWindowStageCreate(stage(replacement));
+    finish();
+    assert.equal(await pending, true);
+    assert.equal(native.onCount('windowWillClose'), 0);
+    entry.onWindowStageDestroy();
+  });
+  await check('cancelled close recovery preserves drafts and explicit discard alone terminates', async () => {
+    for (const index of [-1, 2]) {
+      const { entry, native } = await readyNative();
+      let terminated = 0;
+      entry.context.terminateSelf = async () => { terminated++; };
+      context.app.flushAllStrict = async () => { throw new Error('save failed'); };
+      native.prompt.showDialog = async () => ({ index });
+      assert.equal(await native.handlers.get('windowWillClose')[0](), true);
+      await settle();
+      assert.equal(terminated, index === 2 ? 1 : 0);
+      entry.onWindowStageDestroy();
+    }
+  });
+  await check('retry from close recovery terminates only after the new strict save succeeds', async () => {
+    const { entry, native } = await readyNative();
+    let terminated = 0;
+    entry.context.terminateSelf = async () => { terminated++; };
+    let attempts = 0;
+    context.app.flushAllStrict = async () => {
+      attempts++;
+      if (attempts === 1) throw new Error('temporarily locked');
+    };
+    native.prompt.showDialog = async () => ({ index: 0 });
+    assert.equal(await native.handlers.get('windowWillClose')[0](), true);
+    await settle();
+    assert.equal(attempts, 2);
+    assert.equal(terminated, 1);
+    entry.onWindowStageDestroy();
+  });
+  await check('exporting after a blocked close captures draft text and keeps the window open', async () => {
+    const { entry, native } = await readyNative();
+    let terminated = 0;
+    entry.context.terminateSelf = async () => { terminated++; };
+    context.app.flushAllStrict = async () => { throw new Error('disk full'); };
+    context.app.editor.snapshotDrafts = () => [{ id: 'a', content: 'Unsaved draft' }];
+    let payload;
+    context.ExportService.saveText = async (name, text) => { payload = JSON.parse(text); return false; };
+    native.prompt.showDialog = async () => ({ index: 1 });
+    assert.equal(await native.handlers.get('windowWillClose')[0](), true);
+    await settle();
+    assert.equal(payload.drafts[0].content, 'Unsaved draft');
+    assert.equal(terminated, 0, 'export cancellation may never discard the draft');
+    entry.onWindowStageDestroy();
+  });
+  function inlineRename() {
+    const calls = [];
+    const doc = { id: 'doc-A', title: 'Original', dirty: false };
+    const controller = { focus() { calls.push('focus'); } };
+    const probe = new api.EditorPaneProbe();
+    Object.assign(probe, { renameRevision: 0, renaming: false, editorController: controller,
+      app: { project: { currentBookId: 'book-A' }, editor: { hasDoc: true, activeId: doc.id, activeDoc: doc, title: doc.title },
+        ui: { editorController: controller }, async renameChapter(id, title) { calls.push([id, title]); } } });
+    probe.beginRename(); probe.draftTitle = 'Changed';
+    return { probe, calls, doc, controller };
+  }
+  await check('inline title rename captures its document and refuses commits after a project switch', () => {
+    const { probe, calls } = inlineRename();
+    probe.app.project.currentBookId = 'book-B';
+    probe.commitRename();
+    assert.equal(calls.length, 0);
+  });
+  await check('late inline rename neither changes the next title nor steals its focus', async () => {
+    const { probe, calls } = inlineRename();
+    let finish;
+    probe.app.renameChapter = (id, title) => { calls.push([id, title]); return new Promise(resolve => { finish = resolve; }); };
+    probe.commitRename();
+    probe.app.editor.activeId = 'doc-B';
+    probe.app.editor.activeDoc = { id: 'doc-B' };
+    probe.onActiveDocChanged();
+    finish(); await settle();
+    assert.deepEqual(calls, [['doc-A', 'Changed']]);
+    assert.equal(probe.renaming, false);
+  });
+  await check('inline rename completion cannot focus after cancellation or an editor remount', async () => {
+    for (const action of ['cancelRename', 'aboutToDisappear']) {
+      const { probe, calls } = inlineRename();
+      let finish;
+      probe.app.renameChapter = (id, title) => { calls.push([id, title]); return new Promise(resolve => { finish = resolve; }); };
+      probe.commitRename(); probe[action](); finish(); await settle();
+      assert.deepEqual(calls, [['doc-A', 'Changed']]);
+    }
+  });
+  await check('clean preview keeps its saved modified time and stale edits cannot rewrite another document', () => {
+    const { probe, doc } = inlineRename();
+    const previews = [];
+    probe.app.project.updateDocPreview = (...args) => previews.push(args);
+    Object.assign(probe.app.editor, { content: 'Clean', wordCount: 5,
+      setEditorState(text, runs, caret, owner) { this.content = text; this.wordCount = text.length; doc.dirty = true; } });
+    probe.syncActivePreview();
+    assert.deepEqual(previews[0], ['doc-A', 'Original', 'Clean', 5, false]);
+    probe.applyEditorChange('Stale', [], 5, 'doc-B');
+    assert.equal(previews.length, 1);
+    probe.app.ui.noteTyping = () => {};
+    probe.applyEditorChange('Edited', [], 6, 'doc-A');
+    assert.deepEqual(previews[1], ['doc-A', 'Original', 'Edited', 6, true]);
+  });
+  await check('all document-list rename hosts attach the owning project to their dialogs', () => {
+    for (const file of ['shell/AppShell.ets', 'shell/MobileShell.ets', 'shell/WorkspaceDest.ets']) {
+      assert.match(read(file), /requestDialog\(ShellDialog\.RENAME_DOC, id, current, '', app\.project\.currentBookId\)/, file);
+    }
   });
   console.log(`Window regression: ${count} checks passed`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

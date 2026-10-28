@@ -12,6 +12,8 @@ const KEY_DARK: string = 'weaver_dark'
 const KEY_DARK_EXPLICIT: string = 'weaver_dark_explicit'
 const KEY_ENGINE: string = 'weaver_engine'
 const KEY_THEME: string = 'weaver_theme'
+const KEY_NICK: string = 'weaver_nickname'
+const KEY_AVATAR: string = 'weaver_avatar'
 
 export class PreferenceHelper {
   private static instance: PreferenceHelper | null = null
@@ -137,6 +139,28 @@ export class PreferenceHelper {
 
   async setThemeId(id: string): Promise<void> {
     await this.putString(KEY_THEME, id)
+  }
+
+  /**
+   * 本地账号昵称（空串 = 未登录）。
+   * 账号服务尚未接入：先在本机记住一个身份，侧栏左下角据此显示头像 + 昵称；
+   * 将来换成 Account Kit 时，只需把 UiStore.signIn 换成服务端身份写入。
+   */
+  async getNickname(): Promise<string> {
+    return this.getString(KEY_NICK, '')
+  }
+
+  async setNickname(name: string): Promise<void> {
+    await this.putString(KEY_NICK, name)
+  }
+
+  /** 自定义头像在沙箱里的绝对路径（空串 = 用系统占位人像） */
+  async getAvatarPath(): Promise<string> {
+    return this.getString(KEY_AVATAR, '')
+  }
+
+  async setAvatarPath(path: string): Promise<void> {
+    await this.putString(KEY_AVATAR, path)
   }
 }
 

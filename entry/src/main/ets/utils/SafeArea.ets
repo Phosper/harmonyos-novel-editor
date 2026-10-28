@@ -14,6 +14,8 @@ import { Logger } from './Logger'
 let cachedTopVp: number = 0
 /** 底部（导航条 / Home 指示条）避让高度，vp */
 let cachedBottomVp: number = 0
+/** 软键盘遮挡高度，vp（0 = 未弹出） */
+let cachedKeyboardVp: number = 0
 
 let bound: boolean = false
 let listener: ((data: window.AvoidAreaOptions) => void) | null = null
@@ -28,7 +30,6 @@ let boundWin: window.Window | null = null
  * 密度读取失败时按 1:1 退化，至少不会因为异常中断页面。
  */
 function toVp(px: number): number {
-  // 当前窗口的 UIContext 会随外接屏 / 显示密度变化更新，不能永久缓存默认屏密度。
   if (cachedWin !== null) {
     try {
       return cachedWin.getUIContext().px2vp(px)
@@ -56,6 +57,7 @@ export function readSafeArea(win?: window.Window): void {
   if (cachedWin !== w) {
     cachedTopVp = 0
     cachedBottomVp = 0
+    cachedKeyboardVp = 0
     cachedWin = w
   }
   try {
@@ -70,6 +72,13 @@ export function readSafeArea(win?: window.Window): void {
   } catch (e) {
     Logger.warn('SafeArea: read TYPE_NAVIGATION_INDICATOR failed ' + String(e))
   }
+  try {
+    // 软键盘：输入时必须让内容/光标让位，否则编辑器末行被键盘盖住
+    const kb: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD)
+    cachedKeyboardVp = toVp(kb.bottomRect.height)
+  } catch (e) {
+    Logger.warn('SafeArea: read TYPE_KEYBOARD failed ' + String(e))
+  }
 }
 
 export function safeTopVp(): number {
@@ -78,6 +87,11 @@ export function safeTopVp(): number {
 
 export function safeBottomVp(): number {
   return cachedBottomVp
+}
+
+/** 软键盘遮挡高度（vp）：0 表示未弹出；收起时回到 0 */
+export function keyboardHeightVp(): number {
+  return cachedKeyboardVp
 }
 
 /**
@@ -103,13 +117,16 @@ export function watchSafeArea(onChange: () => void, win?: window.Window): () => 
   boundWin = w
   onAreaChange = onChange
   const nextListener: (data: window.AvoidAreaOptions) => void = (data: window.AvoidAreaOptions): void => {
-    if (boundWin !== w) {
+    if (boundWin !== w || listener !== nextListener) {
       return
     }
     if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
       cachedTopVp = toVp(data.area.topRect.height)
     } else if (data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
       cachedBottomVp = toVp(data.area.bottomRect.height)
+    } else if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
+      // 弹出/收起/切换输入法都会回调：高度 0 即收起
+      cachedKeyboardVp = toVp(data.area.bottomRect.height)
     }
     if (onAreaChange !== null) {
       onAreaChange()

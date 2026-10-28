@@ -1,5 +1,8 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
-import { KeyboardAvoidMode, window } from '@kit.ArkUI';
+import { promptAction, window } from '@kit.ArkUI'
+import { applyAppColorMode, rememberAppContext } from '../utils/AppChromeMode'
+import { refreshDecorColorScheme } from '../utils/DesktopWindowChrome'
+import { ezCustomTransition } from '../thirdparty/ezcustomtransition/Index'
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { prefs } from '../utils/PreferenceHelper';
 import { setAppContext } from '../utils/AppContext';
@@ -7,6 +10,9 @@ import { Logger } from '../utils/Logger';
 import { app } from '../store/AppStores';
 import { configureDesktopChrome, restoreDesktopChrome } from '../utils/DesktopWindowChrome';
 import { deviceProfile } from '../utils/DeviceProfile';
+import { tokensFor, WeaverColorSet } from '../constants/DesignTokens'
+import { ExportService } from '../utils/ExportService'
+import type { EditorDraftSnapshot } from '../store/EditorStore'
 
 export default class EntryAbility extends UIAbility {
   private mainWindow: window.Window | null = null;
@@ -18,13 +24,27 @@ export default class EntryAbility extends UIAbility {
   private freeWindowListener: ((isFree: boolean) => void) | null = null;
   private stageListener: ((event: window.WindowStageEventType) => void) | null = null;
   private windowStage: window.WindowStage | null = null;
+  private closeListener: (() => Promise<boolean>) | null = null
+  private closeWindow: window.Window | null = null
+  private closePending: boolean = false
+  private closeDialogWindow: window.Window | null = null
+
+  /** 窗口状态监听（最大化/还原后重发三键样式） */
+  private decorStatusListener: ((status: window.WindowStatusType) => void) | null = null
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     setAppContext(this.context)
+    // 系统 chrome（三键 / 系统菜单）跟随应用主题：登记 ApplicationContext，后续 setTheme 会下发
+    rememberAppContext(this.context.getApplicationContext())
+    // 窗口在主窗创建前就固定 colorMode（系统三键的颜色由它决定）。默认主题是浅色，
+    // 先按浅色建窗，避免"系统深色 + 应用浅色纸墨"时三键被画成白色；
+    // 用户如果用夜读，loadFromPrefs 会再改回来并重建三键。
+    applyAppColorMode(false)
     Logger.info('Ability onCreate');
   }
 
   onDestroy(): void {
+    this.onWindowStageDestroy()
     // 兜底落库：即使页面没走 aboutToDisappear，也不让内存里的草稿消失
     app.flushAll()
     app.destroy();
@@ -50,25 +70,26 @@ export default class EntryAbility extends UIAbility {
     }
     this.freeWindow = free;
     AppStorage.setOrCreate<boolean>('freeWindowMode', free);
-    return free;
+    return deviceInfo.deviceType === '2in1' || deviceInfo.deviceType === 'pc' || free;
   }
 
   /** 自由窗口模式变化：写入 AppStorage 并让 DeviceProfile 重算快照（API 22，配 off） */
   private bindFreeWindowMode(win: window.Window): void {
     const listener: (isFree: boolean) => void = (isFree: boolean): void => {
-      if (this.mainWindow !== win) {
-        return;
-      }
-      const wasDesktop: boolean = this.isDesktop;
+      if (this.mainWindow !== win) { return }
+      const wasDesktop: boolean = this.isDesktop
       this.freeWindow = isFree;
-      this.isDesktop = isFree;
+      this.isDesktop = isFree || deviceInfo.deviceType === '2in1' || deviceInfo.deviceType === 'pc'
       AppStorage.setOrCreate<boolean>('freeWindowMode', isFree);
       if (this.contentReady) {
-        if (isFree) {
-          configureDesktopChrome(win);
+        if (this.isDesktop) {
+          configureDesktopChrome(win)
+          this.watchWindowStatus(win)
         } else if (wasDesktop) {
-          restoreDesktopChrome(win);
+          this.unwatchWindowStatus()
+          restoreDesktopChrome(win)
         }
+        this.syncCloseListener(win)
       }
       deviceProfile.refresh();
     };
@@ -86,11 +107,9 @@ export default class EntryAbility extends UIAbility {
    * 由它转成订阅回调（AppStorage 不是响应式的，编辑器无法用 @StorageProp 监听）。
    */
   private bindStageEvents(windowStage: window.WindowStage): void {
-    this.windowStage = windowStage;
+    this.windowStage = windowStage
     const listener: (event: window.WindowStageEventType) => void = (event: window.WindowStageEventType): void => {
-      if (this.windowStage !== windowStage) {
-        return;
-      }
+      if (this.windowStage !== windowStage) { return }
       if (event === window.WindowStageEventType.ACTIVE) {
         AppStorage.setOrCreate<number>('windowActiveTick', Date.now());
         deviceProfile.notifyWindowActivated();
@@ -106,10 +125,11 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     Logger.info('Ability onWindowStageCreate');
-
     if (this.mainWindow !== null) {
-      this.onWindowStageDestroy();
+      this.onWindowStageDestroy()
     }
+    // 一镜到底转场：注册窗口/装饰信息（必须在 loadContent 前）
+    ezCustomTransition.init(windowStage);
 
     const mainWin: window.Window = windowStage.getMainWindowSync()
     this.mainWindow = mainWin
@@ -133,36 +153,46 @@ export default class EntryAbility extends UIAbility {
     app.ui.syncSystemBars()
 
     const loadPage = (url: string): void => {
-      if (this.mainWindow !== mainWin) {
-        return;
-      }
+      if (this.mainWindow !== mainWin) { return }
       windowStage.loadContent(url, (err: BusinessError) => {
-        if (this.mainWindow !== mainWin) {
-          return;
-        }
+        if (this.mainWindow !== mainWin) { return }
         if (err.code) {
           Logger.error('Failed to load the content: ' + JSON.stringify(err));
           return;
         }
         Logger.info('Succeeded in loading the content.');
         // 原生标题栏依赖已加载的 UIContent；全屏热区显隐也要独立配置。
-        // 自绘栏的 48vp 高度由 DesktopTitleBar 通过 applyDesktopDecorMetrics 下发，
-        // 这里只做"隐藏原生标题 + 保留 Dock"这一组（旧回归对调用序列有精确断言）。
+        // 48vp 装饰栏高度 / 三键颜色由 DesktopTitleBar（引导页）或 UiStore.syncSystemBars()
+        // （主工作台）通过 applyDesktopDecorMetrics 下发；这里只做"隐藏原生标题 + 保留 Dock"，
+        // 保持旧回归对调用序列的精确断言。
         if (this.mainWindow === mainWin) {
           this.contentReady = true
-          // 内容就绪后使用窗口压缩避让，编辑器按真实可用高度重排。
-          try {
-            mainWin.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE)
-          } catch (e) {
-            Logger.warn('Keyboard resize avoidance unavailable: ' + String(e))
-          }
+          // 首帧已就绪：此后允许重建装饰栏（避免启动闪一下原生标题栏）
+          AppStorage.setOrCreate<boolean>('uiReady', true)
           if (this.isDesktop) {
             configureDesktopChrome(mainWin)
+            // 窗口按浅色创建（默认主题）；只有用户实际选的是深色时才需要重建三键，
+            // 避免浅色主题下每次启动都闪一下原生标题栏。
+            if (app.ui.darkMode) {
+              refreshDecorColorScheme(true)
+            }
+            this.watchWindowStatus(mainWin)
           }
+          this.syncCloseListener(mainWin)
         }
+        // 全屏布局（沉浸式）必须在内容加载成功后再下一次：
+        // `setWindowLayoutFullScreen` 依赖已加载的 UIContent，早了会静默失败 ——
+        // 失败后状态栏/导航条仍是不透明的系统底色，页面背景再 expandSafeArea 也画不进去
+        // （平板实测：顶部一条白/黑带，与纸色割裂）。
+        mainWin.setWindowLayoutFullScreen(true).then(() => {
+          if (this.mainWindow !== mainWin) { return }
+          Logger.info('setWindowLayoutFullScreen ok (after content)')
+          app.ui.syncSystemBars()
+        }).catch((e: Error) => {
+          Logger.warn('setWindowLayoutFullScreen after content failed: ' + String(e))
+        })
         // 窗口底色由 SystemBars.applySystemBars 统一设为主题底色（勿在此设回透明）：
         // 状态栏全透明后，状态栏区域由窗口底色/根背景承托，须与页面同色。
-        // 内容加载完成后再按实际主题设一次系统栏
         app.ui.syncSystemBars()
       });
     }
@@ -199,6 +229,10 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageDestroy(): void {
     this.contentReady = false
+    this.unbindCloseListener()
+    this.unwatchWindowStatus()
+    this.closePending = false
+    this.closeDialogWindow = null
     // 窗口级监听随窗口走：这里显式 off，避免窗口重建后重复回调
     const win: window.Window | null = this.mainWindow
     const freeCb: ((isFree: boolean) => void) | null = this.freeWindowListener
@@ -224,9 +258,164 @@ export default class EntryAbility extends UIAbility {
     deviceProfile.detach()
     if (AppStorage.get<window.Window>('mainWindow') === win) {
       AppStorage.delete('mainWindow')
+      AppStorage.setOrCreate<boolean>('uiReady', false)
     }
     this.mainWindow = null
     Logger.info('Ability onWindowStageDestroy');
+  }
+
+  /** 窗口状态变化（最大化/还原/全屏）后重新下发三键样式与系统栏配色 */
+  private watchWindowStatus(w: window.Window): void {
+    if (this.decorStatusListener !== null) {
+      return
+    }
+    const cb: (status: window.WindowStatusType) => void = (status: window.WindowStatusType) => {
+      if (this.mainWindow !== w || status === window.WindowStatusType.UNDEFINED) {
+        return
+      }
+      app.ui.syncSystemBars()
+    }
+    this.decorStatusListener = cb
+    try {
+      w.on('windowStatusChange', cb)
+    } catch (e) {
+      Logger.warn('on windowStatusChange failed: ' + String(e))
+      this.decorStatusListener = null
+    }
+  }
+
+  private unwatchWindowStatus(): void {
+    const cb: ((status: window.WindowStatusType) => void) | null = this.decorStatusListener
+    if (cb === null || this.mainWindow === null) {
+      return
+    }
+    try {
+      this.mainWindow.off('windowStatusChange', cb)
+    } catch (e) {
+      Logger.warn('off windowStatusChange failed: ' + String(e))
+    }
+    this.decorStatusListener = null
+  }
+
+  /** 原生三键继续由系统绘制；API 15+ 异步关闭回调等待严格保存。 */
+  private syncCloseListener(win: window.Window): void {
+    if (this.mainWindow !== win || !this.contentReady || !this.freeWindow) {
+      this.unbindCloseListener()
+      return
+    }
+    if (this.closeWindow === win && this.closeListener !== null) { return }
+    this.unbindCloseListener()
+    const listener: () => Promise<boolean> = (): Promise<boolean> => this.handleWindowWillClose(win)
+    try {
+      win.on('windowWillClose', listener)
+      this.closeWindow = win
+      this.closeListener = listener
+    } catch (e) {
+      Logger.warn('on windowWillClose failed: ' + String(e))
+    }
+  }
+
+  private unbindCloseListener(): void {
+    const win: window.Window | null = this.closeWindow
+    const listener: (() => Promise<boolean>) | null = this.closeListener
+    this.closeWindow = null
+    this.closeListener = null
+    if (win !== null && listener !== null) {
+      try {
+        win.off('windowWillClose', listener)
+      } catch (e) {
+        Logger.warn('off windowWillClose failed: ' + String(e))
+      }
+    }
+  }
+
+  /** true 阻止关闭；reject 会让系统继续关闭，因此所有失败必须收敛成 true。 */
+  private async handleWindowWillClose(win: window.Window): Promise<boolean> {
+    if (this.mainWindow !== win || this.closeWindow !== win || this.closePending ||
+      this.closeDialogWindow !== null) { return true }
+    this.closePending = true
+    try {
+      await app.flushAllStrict()
+      return this.mainWindow !== win || this.closeWindow !== win
+    } catch (e) {
+      Logger.warn('windowWillClose: strict save failed: ' + String(e))
+      if (this.mainWindow === win) {
+        this.showCloseBlockedDialog(win)
+      }
+      return true
+    } finally {
+      if (this.mainWindow === win) { this.closePending = false }
+    }
+  }
+
+  private showCloseBlockedDialog(win: window.Window): void {
+    if (this.mainWindow !== win || this.closeDialogWindow !== null) { return }
+    this.closeDialogWindow = win
+    try {
+      const colors: WeaverColorSet = tokensFor(app.ui.themeId)
+      const retry: promptAction.Button = { text: '重试保存', color: colors.brand }
+      const exportDraft: promptAction.Button = { text: '导出草稿', color: colors.textPrimary }
+      const discard: promptAction.Button = { text: '放弃并退出', color: colors.danger }
+      win.getUIContext().getPromptAction().showDialog({
+        title: '尚有未保存内容',
+        message: '保存失败，窗口已保持打开。可重试保存，先导出草稿，或明确放弃本次修改。',
+        buttons: [retry, exportDraft, discard]
+      }).then((result: promptAction.ShowDialogSuccessResponse) => {
+        if (this.closeDialogWindow !== win || this.mainWindow !== win) { return }
+        this.closeDialogWindow = null
+        if (result.index === 0) {
+          this.retryClose(win)
+        } else if (result.index === 1) {
+          this.exportDraftsBeforeClose(win)
+        } else if (result.index === 2) {
+          this.terminateWindow(win)
+        }
+      }).catch((e: Error) => {
+        if (this.closeDialogWindow === win) { this.closeDialogWindow = null }
+        Logger.warn('close-blocked dialog failed: ' + String(e))
+      })
+    } catch (e) {
+      this.closeDialogWindow = null
+      Logger.warn('close-blocked dialog unavailable: ' + String(e))
+    }
+  }
+
+  private retryClose(win: window.Window): void {
+    this.handleWindowWillClose(win).then((blocked: boolean) => {
+      if (!blocked) { this.terminateWindow(win) }
+    }).catch((e: Error) => {
+      Logger.warn('retry close failed; window kept open: ' + String(e))
+    })
+  }
+
+  private exportDraftsBeforeClose(win: window.Window): void {
+    if (this.mainWindow !== win) { return }
+    try {
+      const drafts: EditorDraftSnapshot[] = app.editor.snapshotDrafts()
+      const payload: string = JSON.stringify({
+        exportedAt: new Date().toISOString(), reason: 'close-blocked-unsaved', drafts: drafts
+      }, null, 2)
+      ExportService.saveText('Weaver-未保存草稿-' + Date.now().toString() + '.json', payload)
+        .then((ok: boolean) => {
+          if (this.mainWindow !== win) { return }
+          win.getUIContext().getPromptAction().showToast({
+            message: ok ? '草稿已导出，可重试保存后再关闭' : '导出取消或失败，草稿仍在窗口中'
+          })
+        }).catch((e: Error) => { Logger.warn('export drafts failed: ' + String(e)) })
+    } catch (e) {
+      Logger.warn('export drafts unavailable: ' + String(e))
+    }
+  }
+
+  private terminateWindow(win: window.Window): void {
+    if (this.mainWindow !== win) { return }
+    try {
+      this.context.terminateSelf().catch((e: Error) => {
+        Logger.warn('terminateSelf failed: ' + String(e))
+      })
+    } catch (e) {
+      Logger.warn('terminateSelf threw: ' + String(e))
+    }
   }
 
   onConfigurationUpdate(newConfig: Configuration): void {
@@ -248,12 +437,17 @@ export default class EntryAbility extends UIAbility {
       const wasDesktop: boolean = this.isDesktop
       this.isDesktop = this.readDesktopMode(this.mainWindow)
       if (wasDesktop && !this.isDesktop && this.contentReady) {
+        this.unwatchWindowStatus()
         restoreDesktopChrome(this.mainWindow)
+      }
+      if (this.contentReady) {
+        this.syncCloseListener(this.mainWindow)
       }
       deviceProfile.refresh()
     }
     if (this.isDesktop && this.contentReady && this.mainWindow !== null) {
       configureDesktopChrome(this.mainWindow)
+      this.watchWindowStatus(this.mainWindow)
     }
     // 前台时窗口才真正就绪；按实际主题同步系统栏前景色
     app.ui.syncSystemBars()

@@ -18,12 +18,12 @@ import { common2D } from '@kit.ArkGraphics2D';
 import { LengthMetricsUnit } from '@kit.ArkUI';
 import { TextDocument } from './model/TextDocument';
 import { GraphemeUtil } from './model/GraphemeUtil';
-import { SelectionInfo, PreviewInfo, ViewportInfo, ScrollPolicy, StyleKind, FormatRun, CaretAffinity } from './model/EditorTypes';
+import { SelectionInfo, PreviewInfo, ViewportInfo, ScrollPolicy, StyleKind, FormatRun, CaretAffinity,
+  ParagraphKind, isListParagraph } from './model/EditorTypes';
 import { EditorTheme } from './theme/EditorTheme';
 import { TextLayoutEngine, LayoutLine } from './render/TextLayoutEngine';
 import { LayoutCache, LayoutProgress } from './render/LayoutCache';
 import { GlyphRenderer, RenderTheme, GlyphAnimRegistry, GlyphAnimState } from './render/GlyphRenderer';
-import { GlyphAnimator, GlyphDiffOptions } from './animation/GlyphAnimator';
 import { HitTester } from './interaction/HitTester';
 import { CursorState } from './interaction/CursorState';
 import { SelectionManager } from './interaction/SelectionManager';
@@ -202,11 +202,6 @@ export class CanvasTextEditorController {
     }
   }
 
-  /** The host may restore only the editor's existing focus, never take it from another input. */
-  ownsEditorFocus(): boolean {
-    return this.editor !== null && this.editor.ownsEditorFocus();
-  }
-
   blur(): void {
     if (this.editor !== null) {
       this.editor.releaseEditorFocus();
@@ -232,6 +227,8 @@ export class CanvasTextEditorController {
   toggleInlineStyle(kind: StyleKind): void {
     if (this.editor !== null) {
       this.editor.toggleInlineStyle(kind);
+      // 工具按钮点击会抢走焦点；完成格式命令后把焦点还给正文，选区不丢。
+      this.editor.requestEditorFocus();
     }
   }
 
@@ -239,6 +236,20 @@ export class CanvasTextEditorController {
   toggleParagraphStyle(level: number): void {
     if (this.editor !== null) {
       this.editor.toggleParagraphStyle(level);
+      this.editor.requestEditorFocus();
+    }
+  }
+
+  /** 当前光标所在段落的种类（0=正文 1/2/3=标题 4=列表 5=待办 6=已完成待办） */
+  paragraphKind(): number {
+    return this.editor !== null ? this.editor.paragraphKind() : 0;
+  }
+
+  /** 设置段落种类（工具栏下拉；当前段已是该种类时回到正文） */
+  setParagraphKind(kind: number): void {
+    if (this.editor !== null) {
+      this.editor.setParagraphKind(kind);
+      this.editor.requestEditorFocus();
     }
   }
 
@@ -256,8 +267,28 @@ export class CanvasTextEditorController {
   }
 
   /** 当前光标/选区生效的行内格式位掩码：1=粗体 2=斜体 4=标题 */
+  paragraphLevel(): number {
+    return this.editor !== null ? this.editor.paragraphLevel() : 0;
+  }
+
+  undo(): void {
+    if (this.editor !== null) {
+      this.editor.hostUndo();
+    }
+  }
+
+  redo(): void {
+    if (this.editor !== null) {
+      this.editor.hostRedo();
+    }
+  }
+
   inlineStyleMask(): number {
     return this.editor !== null ? this.editor.inlineStyleMask() : 0;
+  }
+
+  ownsEditorFocus(): boolean {
+    return this.editor !== null && this.editor.ownsEditorFocus();
   }
 }
 
@@ -275,6 +306,8 @@ export struct CanvasTextEditor {
    */
   @Prop @Watch('onThemeChanged') dimTextColor: string = '#9AA0A6';
   @Prop placeholder: string = '';
+  /** 占位文字颜色：与正文共用 Canvas 排版，颜色由主题 tertiary 传入 */
+  @Prop placeholderColor: string = '#9AA0A6';
   /**
    * 打字机模式：为 true 时按 scrollPolicy=CENTER 使当前段居中（默认关）。
    * @Watch 是必要的：仅改这个 prop 时组件不会重排，表现为"点了按钮没有任何反应"。
@@ -342,6 +375,17 @@ export struct CanvasTextEditor {
   private selMgr: SelectionManager = new SelectionManager();
   /** 载入或销毁后，旧粘贴请求不得再改写当前文稿。 */
   private documentGeneration: number = 0;
+  /** 本次插入开始时是否处于组字态（endInsert 用它决定是否提前对齐 lastText） */
+  private insertWasComposing: boolean = false;
+  /**
+   * 最近一次"点符号切换完成态"的目标与时间。
+   *
+   * 为什么需要：PC / 2in1 上一次单击会**同时**派发 onMouse(Press) 与 onTouch(Up)，
+   * 两条路径都切一次 → 5→6→5，用户看到的是"单击没反应"。长按恰好只走鼠标那一次，
+   * 于是"只能长按才生效"。这里用"同段落 + 120ms 内"识别为同一次点击。
+   */
+  private lastMarkerToggleAt: number = 0;
+  private lastMarkerToggleOffset: number = -1;
   private caretAnimator: EditorAnimator | null = null;
   private glyphAnimator: EditorAnimator | null = null;
   /** 滚动跟随动画（打字机/光标出视口时平滑滚动，替代每键瞬时跳变） */
@@ -364,7 +408,6 @@ export struct CanvasTextEditor {
   private previewBaseVersion: number = -1;
   private previewBaseFormatVersion: number = -1;
   private previewLayoutStart: number = -1;
-  /** A far caret reveal yields between native lines instead of monopolizing the UI thread. */
   private caretLayoutTimer: number = -1;
   private caretLayoutRevision: number = 0;
   private caretLayoutPending: boolean = false;
@@ -399,13 +442,27 @@ export struct CanvasTextEditor {
   /** 是否需要"打开即聚焦"：布局就绪后补发一次 requestEditorFocus（组件上树前请求会失败） */
   private wantInitFocus: boolean = false;
   /** 光标动画是否正在进行（用于在键盘/视口 relayout 时避免硬编码覆盖正在播放的光标） */
-  private caretAnimating: boolean = false;
+  private caretAnimating: boolean = false
+  /** 光标弹簧速度（vp/s）：编辑重定向时保留，避免每次按键"刹停再起步" */
+  private caretVelX: number = 0
+  private caretVelY: number = 0
+  /** 上次文本输入时间（ms）：用于快打档位（更短的光标跟随时长）
+   *  同时用作"快速重复输入"判据：间隔 < 90ms 时光标同帧到位，绝不落后于字符 */
+  private lastInputTs: number = 0
+  /** 上次光标导航（方向键/翻页/点击）时间：方向键连按时同帧到位 */
+  private lastNavTs: number = 0
+  /** 弹簧循环是否在跑：连续输入时只改目标，不重建动画（否则每键重置进度，光标永远追不上） */
+  private caretSpringLoop: boolean = false
+  /** 弹簧代际：stop/重建时自增，丢弃旧动画的残余帧（防"光标乱飞"） */
+  private caretSpringEpoch: number = 0
+  /** 当前弹簧目标（可被后续按键原地更新） */
+  private caretTarget: CursorState = new CursorState();
   // 触摸状态
   private pressX: number = 0;
   private pressY: number = 0;
   /** 按下点对应的文本偏移（拖选锚点用；不在 Move 时重新命中，避免手指漂移改变锚点） */
   private pressOffset: number = 0;
-  private pressAffinity: CaretAffinity = CaretAffinity.DOWNSTREAM;
+  private pressAffinity: CaretAffinity = CaretAffinity.UPSTREAM;
   private dragging: boolean = false;
   private scrollMode: boolean = false;
   private pressScrollY: number = 0;
@@ -435,7 +492,7 @@ export struct CanvasTextEditor {
   /** 本次按住是否已触发长按选中（用于 Up 时不坍缩选区） */
   private longPressed: boolean = false;
 
-  // ===== IME 上报去重：内容和范围相同的绘制帧不重复过 IPC =====
+  // ===== IME 上报去抖 / 节流：选区每帧变化时不再重复过 IPC =====
   private lastReportedText: string | null = null;
   private lastReportedSelStart: number = -1;
   private lastReportedSelEnd: number = -1;
@@ -497,7 +554,7 @@ export struct CanvasTextEditor {
       return;
     }
     const h: CursorState = HitTester.caretPositionFor(sel.startOffset, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.DOWNSTREAM);
+      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.UPSTREAM);
     const menuW: number = 320; // 两行各 5/6 项，约 320vp
     const menuH: number = 88;
     const topEdgeVp: number = this.theme.paddingTop + h.y - this.scrollY;
@@ -574,7 +631,6 @@ export struct CanvasTextEditor {
 
   /** 三击选段（按段落边界） */
   private selectParagraphAt(x: number, y: number): void {
-    this.cancelCaretLayout();
     this.stopCaretAnimation();
     const offset: number = this.offsetAt(x, y);
     const text: string = this.doc.text;
@@ -819,6 +875,10 @@ export struct CanvasTextEditor {
             // 窗口尺寸变化后段落行区间会变：打字机模式下重新居中
             this.followTypewriter();
             this.ensureInitFocus();
+            // 软键盘弹出/收起会改变可视高度：把光标重新滚进可视区，避免打字时被键盘盖住
+            if (heightChanged) {
+              this.ensureCaretVisible(this.effectivePolicy());
+            }
           } else if (this.initialized) {
             // 仅位置变化：窗口坐标已更新，刷新一次 IME 光标位置
             this.reportCursor();
@@ -856,10 +916,17 @@ export struct CanvasTextEditor {
         this.stopFling();
         this.hideSelectionMenu();
         this.requestEditorFocus();
+        // 项目符号/待办圆点优先命中：点 ○ 直接切换完成态，而不是把光标挪到段首
+        if (this.toggleTodoAtMarker(event.x, event.y)) {
+          this.mouseSelecting = false;
+          return;
+        }
         const offset: number = this.offsetAt(event.x, event.y);
         const handle: number = this.handleAt(event.x, event.y);
         if (handle !== 0) {
           // PC 也能拖手柄：身份固定（1=anchor / 2=head）
+          // 拖手柄必须 1:1 跟手：先停掉光标弹簧，拖动期间不做动画
+          this.stopCaretAnimation();
           this.selMgr.beginHandleDrag(handle);
           this.mouseSelecting = true;
           this.drawNow();
@@ -985,6 +1052,8 @@ export struct CanvasTextEditor {
     this.cancelCaretLayout();
     this.clearPreviewLayout();
     this.documentGeneration++;
+    this.lastMarkerToggleAt = 0;
+    this.lastMarkerToggleOffset = -1;
     this.echoGuard.reset();
     this.stopCaretAnimation();
     this.stopScrollAnimation();
@@ -1034,7 +1103,7 @@ export struct CanvasTextEditor {
   }
 
   /** 光标移动（连贯动画：px/vp 对齐后动画不再乱飞；不重排/不生成字形动画） */
-  private moveCaretAnimated(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+  private moveCaretAnimated(offset: number, affinity: CaretAffinity = CaretAffinity.UPSTREAM): void {
     this.cancelCaretLayout();
     this.caretLayoutRestoreVisible = true;
     this.stopCaretAnimation();
@@ -1064,10 +1133,25 @@ export struct CanvasTextEditor {
   }
 
   insertExternalText(text: string): void {
+    // 回车单独走一条路：列表段要续列表、空列表项要退出列表。
+    // 输入法 insertText('\n')、软键盘回车键、物理键盘 Enter 全部汇到这里，
+    // 因此语义只需要实现一次（不会出现"软键盘能续、物理键盘不续"的分叉）。
+    if (text === '\n') {
+      this.insertNewline();
+      return;
+    }
+    this.insertPlainText(text);
+  }
+
+  /** 插入前的统一准备：空提交守卫 / 组字范围替换 / 选区替换 */
+  private beginInsert(text: string): boolean {
     const wasComposing: boolean = this.previewMgr.isComposing;
     // 输入法切换语言会提交空文本；无组字状态时不应删除选区或产生编辑事务。
     // 空预上屏完成仍需替换原范围，保留组字流程的语义。
-    if (text.length === 0 && !wasComposing) { return; }
+    if (text.length === 0 && !wasComposing) {
+      return false;
+    }
+    this.insertWasComposing = wasComposing;
     if (wasComposing) {
       const range: PreviewInfo = this.previewMgr.previewInfo;
       this.selMgr.setSelection(range.startOffset, range.endOffset);
@@ -1082,16 +1166,18 @@ export struct CanvasTextEditor {
       this.selMgr.collapse(sel.startOffset);
     }
     // 插入点已在 doc.insert 内吸附到字符边界，此处取吸附后的实际位置作为失效起点
-    const offset: number = GraphemeUtil.snapToBoundary(this.doc.text, this.doc.caretOffset);
-    this.lastEditOffset = offset;
-    this.doc.insert(offset, text);
-    // 预上屏确认上屏（若有组合态）：消费组合态而非直接丢弃（T015）
+    this.lastEditOffset = GraphemeUtil.snapToBoundary(this.doc.text, this.doc.caretOffset);
+    return true;
+  }
+
+  /** 插入后的统一收口：组字态提交/取消 + 重排 + 上报（一次编辑事务） */
+  private endInsert(): void {
     if (this.previewMgr.isComposing) {
       this.previewMgr.commit();
     } else {
       this.previewMgr.cancel();
     }
-    if (wasComposing) {
+    if (this.insertWasComposing) {
       // 预览行已按最终文本排好；把 lastText 提前对齐，afterEdit 的差分即为空，
       // 提交时不会给预览字形补一次"入场动画"（那会看起来像文字跳一下）。
       this.lastText = this.doc.text;
@@ -1100,6 +1186,45 @@ export struct CanvasTextEditor {
     if (this.onTextChange !== null) {
       this.onTextChange(this.doc.text, this.doc.version);
     }
+  }
+
+  /** 普通文本插入（键入、粘贴、输入法上屏）。段落种类不变。 */
+  private insertPlainText(text: string): void {
+    if (!this.beginInsert(text)) {
+      return;
+    }
+    this.doc.insert(this.lastEditOffset, text);
+    this.endInsert();
+  }
+
+  /**
+   * 回车：列表段续列表、空列表项退出列表、其余就是普通换行。
+   *
+   * 全部在 endInsert() 之前完成，因此"换行 + 继承段落种类"是**一个**编辑事务；
+   * 拆成两次会让用户按两下 Ctrl+Z 才能回到回车前。
+   */
+  private insertNewline(): void {
+    if (!this.beginInsert('\n')) {
+      return;
+    }
+    const offset: number = this.lastEditOffset;
+    const kind: number = this.doc.paragraphKindAt(offset);
+    const indent: number = this.doc.paragraphIndentAt(offset);
+    const bounds: number[] = this.doc.paragraphBounds(offset);
+    const emptyListItem: boolean = isListParagraph(kind) && bounds[0] === bounds[1];
+    if (emptyListItem) {
+      // 空列表项上回车 = 退出列表，不新增段落（Word / 备忘录 / Notion 一致）；
+      // 光标留在原处，用户接着输的就是正文。
+      this.doc.setParagraphKind(ParagraphKind.BODY, offset, offset);
+    } else {
+      this.doc.insert(offset, '\n');
+      if (isListParagraph(kind)) {
+        // 新段继承种类与层级。段末回车时新段还没有任何字符，这里会走
+        // "空末段待生效属性"，输入第一个字时落成真实标注。
+        this.doc.setParagraphKindAndIndent(kind, indent, this.doc.caretOffset, this.doc.caretOffset);
+      }
+    }
+    this.endInsert();
   }
 
   deleteExternalLeft(length: number): void {
@@ -1142,10 +1267,6 @@ export struct CanvasTextEditor {
     this.caret.visible = true;
     this.startBlink();
     this.drawNow();
-  }
-
-  ownsEditorFocus(): boolean {
-    return this.focused && this.focusConfirmed;
   }
 
   /**
@@ -1387,6 +1508,9 @@ export struct CanvasTextEditor {
     provisional.setRuns(this.doc.runs);
     provisional.delete(info.startOffset, info.endOffset);
     provisional.insert(info.startOffset, info.text);
+    // 空末段的待生效段落属性是瞬态的，setText/setRuns 不会带过来；
+    // 不显式搬运的话，空列表项在组字期间符号与缩进会闪一下再回来。
+    this.doc.copyPendingStateTo(provisional);
     const start: number = GraphemeUtil.snapToBoundary(this.doc.text, info.startOffset);
     const sameBase: boolean = this.previewDoc !== null && this.previewCache !== null &&
       this.previewBaseVersion === this.doc.version && this.previewBaseFormatVersion === this.doc.formatVersion;
@@ -1395,23 +1519,19 @@ export struct CanvasTextEditor {
         provisional.runs, Math.min(start, this.previewLayoutStart));
     } else if (this.cache !== null && this.cache.version === this.doc.version) {
       this.previewCache = this.cache.forkForEdit(provisional.text, provisional.version,
-        provisional.formatVersion, provisional.runs, start);
+        provisional.formatVersion, provisional.runs, start,
+        (offset: number): number[] => [provisional.paragraphKindAt(offset), provisional.paragraphIndentAt(offset)]);
     } else if (this.engineRef !== null) {
       this.previewCache = new LayoutCache(this.engineRef.cloneConfiguration());
       this.previewCache.setRuns(provisional.runs);
+    }
+    if (this.previewCache !== null) {
+      this.attachParagraphProvider(this.previewCache, provisional);
     }
     this.previewDoc = provisional;
     this.previewBaseVersion = this.doc.version;
     this.previewBaseFormatVersion = this.doc.formatVersion;
     this.previewLayoutStart = start;
-  }
-
-  private clearPreviewLayout(): void {
-    this.previewDoc = null;
-    this.previewCache = null;
-    this.previewBaseVersion = -1;
-    this.previewBaseFormatVersion = -1;
-    this.previewLayoutStart = -1;
   }
 
   // ================= 物理键盘（PC / 外接键盘） =================
@@ -1604,7 +1724,7 @@ export struct CanvasTextEditor {
           this.lines, this.padLeftVp(), this.padTopVp(), this.doc.text);
         if (cmd.shift) { this.selectTo(next); return; }
         this.doc.moveCaret(next);
-        this.afterCaretMove(next === target.endIndex ? CaretAffinity.UPSTREAM : CaretAffinity.DOWNSTREAM);
+        this.afterCaretMove(next === target.endIndex ? CaretAffinity.DOWNSTREAM : CaretAffinity.UPSTREAM);
         return;
       }
       case KeyAction.MOVE_LINE_START:
@@ -1617,7 +1737,7 @@ export struct CanvasTextEditor {
         if (this.lines.length === 0) { return; }
         if (cmd.shift) { this.selectTo(HitTester.caretLineFor(before, this.lines, this.selMgr.headAffinity).endIndex); return; }
         this.doc.moveCaret(HitTester.caretLineFor(before, this.lines, this.selMgr.headAffinity).endIndex);
-        this.afterCaretMove(CaretAffinity.UPSTREAM);
+        this.afterCaretMove(CaretAffinity.DOWNSTREAM);
         return;
       case KeyAction.MOVE_DOC_START:
         if (cmd.shift) { this.selectTo(0); return; }
@@ -1681,7 +1801,7 @@ export struct CanvasTextEditor {
   }
 
   /** 光标移动后的收口：动画 + 上报 + 保证光标可见 */
-  private afterCaretMove(affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+  private afterCaretMove(affinity: CaretAffinity = CaretAffinity.UPSTREAM): void {
     this.selMgr.collapse(this.doc.caretOffset, affinity);
     this.twDirty = true;
     this.moveCaretAnimated(this.doc.caretOffset, affinity);
@@ -1693,6 +1813,11 @@ export struct CanvasTextEditor {
   setRuns(runs: FormatRun[]): void {
     this.doc.setRuns(runs);
     this.afterFormatChange(false);
+  }
+
+  /** 当前光标所在段落的标题级别（0=正文，1=H1，2=H2） */
+  paragraphLevel(): number {
+    return this.doc.headingAt(this.doc.caretOffset);
   }
 
   /** 当前光标/选区生效的行内格式位掩码：1=粗体 2=斜体 4=标题 */
@@ -1709,7 +1834,7 @@ export struct CanvasTextEditor {
     for (const run of this.doc.runs) {
       if (run.endOffset <= at) { continue; }
       if (run.startOffset > at) { return 0; }
-      mask &= (run.bold ? 1 : 0) | (run.italic ? 2 : 0) | (run.heading > 0 ? 4 : 0);
+      mask &= (run.bold ? 1 : 0) | (run.italic ? 2 : 0) | (run.heading >= 1 && run.heading <= 3 ? 4 : 0);
       if (mask === 0) { return 0; }
       at = Math.min(sel.endOffset, run.endOffset);
       if (at >= sel.endOffset) { return mask; }
@@ -1725,7 +1850,8 @@ export struct CanvasTextEditor {
         let mask: number = 0;
         if (r.bold) { mask |= 1; }
         if (r.italic) { mask |= 2; }
-        if (r.heading > 0) { mask |= 4; }
+        // bit4 = 标题：段落种类 4/5/6 是列表/待办，不能当成标题点亮
+        if (r.heading >= 1 && r.heading <= 3) { mask |= 4; }
         return mask;
       }
     }
@@ -1743,9 +1869,11 @@ export struct CanvasTextEditor {
     let s: number = sel.startOffset;
     let e: number = sel.endOffset;
     if (s === e) {
-      s = GraphemeUtil.moveLeft(this.doc.text, this.doc.caretOffset);
-      e = this.doc.caretOffset;
-      if (s === e) {
+      // 折叠光标：整段应用行内样式（与标题一致），有选区时只作用于选中文字
+      const bounds: number[] = this.doc.paragraphBounds(this.doc.caretOffset);
+      s = bounds[0];
+      e = bounds[1];
+      if (e <= s) {
         return;
       }
     }
@@ -1758,6 +1886,68 @@ export struct CanvasTextEditor {
     const sel: SelectionInfo = this.selMgr.selection;
     this.doc.toggleHeading(level, sel.startOffset, sel.endOffset);
     this.afterFormatChange();
+  }
+
+  /** 当前光标所在段落的种类（ParagraphKind；0=正文） */
+  paragraphKind(): number {
+    return this.doc.paragraphKindAt(this.doc.caretOffset);
+  }
+
+  /**
+   * 设置段落种类（覆盖选区涉及的段落）。
+   *
+   * 开关语义交给文档的 toggleHeading：它按"选中段落是否**全部**已是该种类"
+   * 决定设为该种类还是回到正文。只看选区内第一段会把"H1 + 正文"的混选
+   * 误判成取消（首段已是 H1 → 三段全变正文），用户预期是统一设成标题。
+   */
+  setParagraphKind(kind: number): void {
+    const sel: SelectionInfo = this.selMgr.selection;
+    this.doc.toggleHeading(kind, sel.startOffset, sel.endOffset);
+    this.afterFormatChange();
+  }
+
+  /** 切换某段落待办项的完成态（点项目符号 / 快捷键共用；进历史栈） */
+  toggleTodoAt(offset: number): void {
+    this.doc.toggleTodoAt(offset);
+    this.afterFormatChange();
+  }
+
+  /**
+   * 命中待办圆点则切换完成态（鼠标/触摸共用唯一入口）。
+   *
+   * @return true 表示这次点按已被符号消费，调用方不要再落光标或开菜单
+   */
+  private toggleTodoAtMarker(x: number, y: number): boolean {
+    const lineIndex: number = HitTester.markerLineAt(x, y + this.scrollY, this.lines,
+      this.padLeftVp(), this.padTopVp());
+    if (lineIndex < 0 || lineIndex >= this.lines.length) {
+      return false;
+    }
+    const offset: number = this.lines[lineIndex].startIndex;
+    const now: number = Date.now();
+    // 同一次单击被两条事件路径各派发一次：只认第一次，否则等于没切换
+    if (this.lastMarkerToggleOffset === offset && (now - this.lastMarkerToggleAt) < 120) {
+      return true;
+    }
+    this.lastMarkerToggleOffset = offset;
+    this.lastMarkerToggleAt = now;
+    this.selMgr.collapse(offset);
+    this.emitSelection(false);
+    this.toggleTodoAt(offset);
+    this.diag('marker toggle offset=' + offset.toString());
+    this.drawNow();
+    return true;
+  }
+
+  /**
+   * 把段落属性来源接到排版缓存：排版层据此给列表/待办段落加缩进与项目符号。
+   * 属性真值在 TextDocument（含"空末段待生效"状态），排版层不复制一份。
+   */
+  private attachParagraphProvider(cache: LayoutCache, source: TextDocument): void {
+    cache.setParagraphProvider((offset: number): number[] => {
+      const bounds: number[] = source.paragraphBounds(offset);
+      return [source.paragraphKindAt(bounds[0]), source.paragraphIndentAt(bounds[0])];
+    });
   }
 
   /** 格式变化收口：整体失效重排 + 重绘 + 上抛（T023） */
@@ -1828,12 +2018,14 @@ export struct CanvasTextEditor {
       this.pxPerVp);
     this.cache = new LayoutCache(engine);
     engine.setRuns(this.doc.runs);
+    this.attachParagraphProvider(this.cache, this.doc);
     this.engineRef = engine;
     // 旧预上屏排版属于旧引擎，丢弃；下一次预览回调会用新引擎重建
     this.previewCache = this.previewMgr.isComposing && this.previewDoc !== null
       ? new LayoutCache(engine.cloneConfiguration()) : null;
     if (this.previewCache !== null && this.previewDoc !== null) {
       this.previewCache.setRuns(this.previewDoc.runs);
+      this.attachParagraphProvider(this.previewCache, this.previewDoc);
     }
     this.lines = [];
 
@@ -1895,75 +2087,6 @@ export struct CanvasTextEditor {
     if (this.cache !== null) {
       this.lines = this.cache.ensureOffset(this.doc.text, this.doc.version, this.doc.formatVersion, this.doc.caretOffset);
     }
-  }
-
-  /** A downstream caret at the last soft-wrap offset needs the following line. */
-  private hasCaretLayout(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): boolean {
-    if (this.lines.length === 0) { return false; }
-    const lastEnd: number = this.lines[this.lines.length - 1].endIndex;
-    if (offset > lastEnd) { return false; }
-    if (offset < lastEnd || affinity === CaretAffinity.UPSTREAM) { return true; }
-    const active: LayoutCache | null = this.previewMgr.isComposing ? this.previewCache : this.cache;
-    return active === null || active.coversOffset(offset);
-  }
-
-  private cancelCaretLayout(): void {
-    this.caretLayoutRevision++;
-    if (this.caretLayoutTimer >= 0) {
-      clearTimeout(this.caretLayoutTimer);
-      this.caretLayoutTimer = -1;
-    }
-    if (this.caretLayoutPending) {
-      this.caret.visible = false;
-      this.caretLayoutHidden = true;
-    }
-    this.caretLayoutPending = false;
-  }
-
-  /** Returns true when only the visual reveal is deferred; document offsets are already current. */
-  private deferCaretLayout(affinity: CaretAffinity): boolean {
-    const cache: LayoutCache | null = this.cache;
-    if (cache === null || this.previewMgr.isComposing) { return false; }
-    cache.setRuns(this.doc.runs);
-    const progress: LayoutProgress = cache.ensureOffsetIncremental(this.doc.text, this.doc.version,
-      this.doc.formatVersion, this.doc.caretOffset, 32, 4);
-    this.lines = progress.lines;
-    if (progress.reached) { return false; }
-    this.caretLayoutPending = true;
-    this.caret.visible = false;
-    this.caretLayoutHidden = true;
-    const revision: number = this.caretLayoutRevision;
-    const generation: number = this.documentGeneration;
-    const version: number = this.doc.version;
-    const formatVersion: number = this.doc.formatVersion;
-    const offset: number = this.doc.caretOffset;
-    this.caretLayoutTimer = setTimeout(() => {
-      this.continueCaretLayout(revision, generation, cache, version, formatVersion, offset, affinity);
-    }, 16);
-    return true;
-  }
-
-  private continueCaretLayout(revision: number, generation: number, cache: LayoutCache,
-    version: number, formatVersion: number, offset: number, affinity: CaretAffinity): void {
-    if (revision !== this.caretLayoutRevision) { return; }
-    this.caretLayoutTimer = -1;
-    if (generation !== this.documentGeneration || this.cache !== cache || this.doc.version !== version ||
-      this.doc.formatVersion !== formatVersion || this.doc.caretOffset !== offset || this.previewMgr.isComposing) {
-      this.cancelCaretLayout();
-      return;
-    }
-    const progress: LayoutProgress = cache.ensureOffsetIncremental(this.doc.text, version, formatVersion, offset, 32, 4);
-    this.lines = progress.lines;
-    if (!progress.reached) {
-      this.caretLayoutTimer = setTimeout(() => {
-        this.continueCaretLayout(revision, generation, cache, version, formatVersion, offset, affinity);
-      }, 16);
-      return;
-    }
-    this.caretLayoutPending = false;
-    this.caret.visible = true;
-    this.settleCaret(HitTester.caretPositionFor(offset, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, affinity));
   }
 
   /**
@@ -2089,10 +2212,9 @@ export struct CanvasTextEditor {
     this.caretLayoutRestoreVisible = true;
     if (!this.previewMgr.isComposing) { this.clearPreviewLayout(); }
     this.preferredX = -1;
-    // 正文/排版已变：旧弹簧动画的目标坐标已失效，必须先停，否则光标会被拉回旧位置
-    this.stopCaretAnimation();
+    // 正文/排版已变：滚动动画目标失效，先停；光标动画**不停**——编辑后的光标要从当前位置
+    // 平滑追到新目标（保留速度），这样连续输入才是"光标跟着字走"，而不是每键跳一下
     this.stopScrollAnimation();
-    const previousText: string = this.lastText;
     this.lastText = this.doc.text;
     this.selMgr.setSource(this.doc.text);
     this.selMgr.collapse(this.doc.caretOffset);
@@ -2109,20 +2231,13 @@ export struct CanvasTextEditor {
     this.cache.applyEdit(this.doc.text, this.doc.version, this.doc.formatVersion, this.doc.runs, this.lastEditOffset);
     this.ensureVisibleLayout();
     this.ensureCaretLayout();
-    // 字符级动画：对比编辑前后字形（入场/消退/换行滑动），再驱动播放（T010/T011）
-    // 差分只在 lastEditOffset 附近的窗口内进行：整篇建两份字形 Map 是"越写越卡"的主因，
-    // 而真正需要过渡的字形上限只有 80 + 24 个。
-    const diff: GlyphDiffOptions = new GlyphDiffOptions();
-    diff.paddingLeftPx = this.padLeftVp();
-    diff.paddingTopPx = this.padTopVp();
-    diff.rowThresholdVp = this.theme.lineHeight * 0.5;
-    diff.oldText = previousText;
-    diff.newText = this.doc.text;
-    diff.hintOffset = this.lastEditOffset;
+    // P0 动效原则：内容即时、光标连续。
+    // 字符增删/上屏一律同帧完成（不做逐字入场/退场动画），动画预算全部给光标：
+    // 清空字形动画注册表，编辑后的光标位置交给弹簧跟随。
     this.stopGlyphAnimation();
-    this.anims = GlyphAnimator.createEditAnimations(this.oldLines, this.lines, diff);
+    this.anims.clear();
     this.lastText = this.doc.text;
-    this.caret = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
+    const caretTarget: CursorState = HitTester.caretPositionFor(this.doc.caretOffset, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
     this.twDirty = true;
     // 打字机 + 连续输入：居中必须**立即**生效。
@@ -2136,7 +2251,25 @@ export struct CanvasTextEditor {
     } else {
       this.ensureCaretVisible(this.effectivePolicy());
     }
-    this.runGlyphAnimation();
+    // 光标跟随策略（P0 修复"追不上字符"）：
+    //  - 快速重复输入（键重复间隔 < 90ms）：同帧到位，任何插值都会落后一格；
+    //  - 单次编辑但跨度大（IME 整句上屏/换行/粘贴）：也同帧到位，避免长距离滑动；
+    //  - 只有"慢速敲字"和"删除/移动一个字符"才播弹簧，既跟手又有动效。
+    const nowTs: number = Date.now();
+    const fastRepeat: boolean = this.lastInputTs > 0 && (nowTs - this.lastInputTs) < 90;
+    this.lastInputTs = nowTs;
+    const charGap: number = Math.max(1, caretTarget.height > 0 ? caretTarget.height * 0.6 : this.theme.lineHeight * 0.6);
+    const gapVp: number = Math.abs(caretTarget.x - this.caret.x) + Math.abs(caretTarget.y - this.caret.y);
+    const canAnimate: boolean = this.initialized && this.caretAnimator !== null &&
+      !this.dragging && !this.mouseSelecting;
+    if (canAnimate && !fastRepeat) {
+      // 单次大跨度（IME 整句上屏/换行/粘贴）也要动画：时长随距离加长，但不拖沓
+      this.startCaretSpring(caretTarget, gapVp > charGap * 2.5 ? 220 : 140, true);
+    } else {
+      // 同帧到位：不插值、不落后
+      this.stopCaretAnimation(caretTarget);
+      this.drawNow();
+    }
     this.reportCursor();
     // 编辑后选区已收起：让输入法同步新的 caret/选区，避免候选框停留在旧位置
     this.reportSelection(true);
@@ -2152,6 +2285,8 @@ export struct CanvasTextEditor {
       this.caretAnimator.stop();
     }
     this.caretAnimating = false;
+    this.caretSpringLoop = false;
+    this.caretSpringEpoch++;
     if (settleTo !== null) {
       this.caret.x = settleTo.x;
       this.caret.y = settleTo.y;
@@ -2160,33 +2295,106 @@ export struct CanvasTextEditor {
     }
   }
 
-  /** 光标移动弹簧动画 */
-  private animateCaretMove(from: CursorState, to: CursorState): void {
-    if (this.caretAnimator === null) {
-      this.settleCaret(to);
+  /**
+   * 光标弹簧动画（P0：动画预算全部给光标）
+   *
+   * 用临界阻尼弹簧逐帧积分（刚度 900 / 阻尼 60，约 120ms 落定），不再使用
+   * interpolating-spring 那种"忽略 duration"的曲线；每次重定向都从**当前视觉位置**
+   * 和**当前速度**继续（编辑连续输入时不会"刹停再起步"）。
+   */
+  private startCaretSpring(target: CursorState, durationMs: number, keepVelocity: boolean): void {
+    // 原地更新目标：循环在跑时不重建动画，连续按键不会把弹簧进度反复归零
+    this.caretTarget.x = target.x;
+    this.caretTarget.y = target.y;
+    this.caretTarget.height = target.height;
+    this.caretTarget.visible = target.visible;
+    if (this.caretSpringLoop) {
+      if (!keepVelocity) {
+        this.caretVelX = 0;
+        this.caretVelY = 0;
+      }
       return;
     }
-    // 以光标"当前实际位置"为起跳点（from 即调用方传入的 this.caret 当前值），
-    // 保证连续点击/移动时路径连续无跳变；过冲交由 applyClampedCaret 钳制，防止越过目标行/字符。
-    const startFrom: CursorState = from.clone();
-    // 移动过程中光标保持实心可见，到位后恢复呼吸（呼吸由 !caretAnimating 守卫）
+    const animator: EditorAnimator | null = this.caretAnimator;
+    if (animator === null || this.renderer === null) {
+      this.stopCaretAnimation(target);
+      this.drawNow();
+      return;
+    }
+    this.caretSpringLoop = true;
+    const epoch: number = ++this.caretSpringEpoch;
+    this.caretAnimating = true;
     this.caret.visible = true;
     this.caret.alpha = 1;
-    this.caretAnimating = true;
-    // 按距离选择弹簧参数档（spring 灵动 + 远慢近快；interpolating-spring 忽略 duration）
-    const distVp: number = this.caretDistanceVp(startFrom, to);
-    const curve: string = AnimationSpec.caretCurveForDistance(distVp);
-    this.diag('caretAnim from=(' + startFrom.x.toFixed(1) + ',' + startFrom.y.toFixed(1) + ')' +
-      ' to=(' + to.x.toFixed(1) + ',' + to.y.toFixed(1) + ')' + ' dist=' + distVp.toFixed(1) +
-      ' curve=' + curve);
-    this.caretAnimator.animate(AnimationSpec.caretNominalMs, curve,
-      (p: number) => {
-        this.applyClampedCaret(startFrom, to, p);
-        this.drawNow();
-      },
-      () => {
-        this.settleCaret(to);
-      });
+    const startX: number = this.caret.x;
+    const startY: number = this.caret.y;
+    let posX: number = startX;
+    let posY: number = startY;
+    let velX: number = keepVelocity ? this.caretVelX : 0;
+    let velY: number = keepVelocity ? this.caretVelY : 0;
+    if (!keepVelocity) {
+      this.caretVelX = 0;
+      this.caretVelY = 0;
+    }
+    // 刚度 2400（ω≈49）保证按键节奏再快也能跟上；临界阻尼 98 不过冲
+    const stiffness: number = 2400;
+    const damping: number = 98;
+    let lastP: number = 0;
+    animator.animate(durationMs, 'linear', (p: number) => {
+      if (epoch !== this.caretSpringEpoch) {
+        return;
+      }
+      const clamped: number = Math.min(1, Math.max(0, p));
+      const dt: number = Math.max(0.001, (clamped - lastP) * (durationMs / 1000));
+      lastP = clamped;
+      const tx: number = this.caretTarget.x;
+      const ty: number = this.caretTarget.y;
+      const ax: number = stiffness * (tx - posX) - damping * velX;
+      const ay: number = stiffness * (ty - posY) - damping * velY;
+      velX += ax * dt;
+      velY += ay * dt;
+      posX += velX * dt;
+      posY += velY * dt;
+      this.caretVelX = velX;
+      this.caretVelY = velY;
+      // 钳制在"本轮起点 → 最新目标"区间内，只允许轻微弹性，不跨行跨字
+      const charW: number = Math.max(1, this.caretTarget.height * 0.6);
+      const epsY: number = Math.max(1, this.caretTarget.height * 0.25);
+      this.caret.x = this.clampNum(posX, Math.min(startX, tx) - charW, Math.max(startX, tx) + charW);
+      this.caret.y = this.clampNum(posY, Math.min(startY, ty) - epsY, Math.max(startY, ty) + epsY);
+      this.caret.height = this.caretTarget.height;
+      this.drawNow();
+    }, () => {
+      if (epoch !== this.caretSpringEpoch) {
+        return;
+      }
+      this.caretSpringLoop = false;
+      this.caretVelX = 0;
+      this.caretVelY = 0;
+      this.settleCaret(this.caretTarget);
+    });
+  }
+
+  /** 离散跳转（点击/方向键/翻页）：从当前速度清空起步，按距离给时长 */
+  private animateCaretMove(from: CursorState, to: CursorState): void {
+    const nowTs: number = Date.now();
+    const navRepeat: boolean = this.lastNavTs > 0 && (nowTs - this.lastNavTs) < 80;
+    this.lastNavTs = nowTs;
+    if (navRepeat) {
+      // 方向键/翻页连按：同帧到位，避免"一次动画追一个键"的累积滞后
+      this.stopCaretAnimation(to);
+      this.drawNow();
+      return;
+    }
+    this.caret.x = from.x;
+    this.caret.y = from.y;
+    this.caret.height = from.height;
+    const distVp: number = this.caretDistanceVp(from, to);
+    const duration: number = distVp < 70 ? 160 : (distVp < 180 ? 180 : 200);
+    this.diag('caretSpring from=(' + from.x.toFixed(1) + ',' + from.y.toFixed(1) + ')' +
+      ' to=(' + to.x.toFixed(1) + ',' + to.y.toFixed(1) + ') dist=' + distVp.toFixed(1) +
+      ' duration=' + duration.toString());
+    this.startCaretSpring(to, duration, false);
   }
 
   /** 光标位移（vp，欧氏距离） */
@@ -2304,6 +2512,7 @@ export struct CanvasTextEditor {
       this.twScaleInitialized = false;
     }
     this.ensureVisibleLayout();
+    // 上面的兜底同步会把 renderer 置空后重建；此处重新取一次并收窄类型，
     if (this.caretLayoutPending || !this.hasCaretLayout(this.displayCaret(), this.selMgr.headAffinity)) {
       this.caret.visible = false;
       this.caretLayoutHidden = true;
@@ -2313,7 +2522,6 @@ export struct CanvasTextEditor {
         this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
       this.caret.visible = this.focused && this.caretLayoutRestoreVisible;
     }
-    // 上面的兜底同步会把 renderer 置空后重建；此处重新取一次并收窄类型，
     // 否则 TS 仍认为 this.renderer 可能为 null（10505001）。
     if (this.renderer === null) {
       this.diag('drawNow renderer=null after rebuild (skip)');
@@ -2345,7 +2553,8 @@ export struct CanvasTextEditor {
       ? this.lines.indexOf(HitTester.caretLineFor(this.displayCaret(), this.lines, this.selMgr.headAffinity)) : -1;
     renderer.draw(this.ctx, this.lines, this.caret,
       preview === null ? this.selMgr.selection : null, preview, viewport, this.anims, this.handlePositions(),
-      dimEnabled, focusFirst, focusLast, typewriterOn, caretLine);
+      dimEnabled, focusFirst, focusLast, typewriterOn, caretLine,
+      (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', parseColor(this.placeholderColor));
   }
 
   /**
@@ -2358,8 +2567,8 @@ export struct CanvasTextEditor {
     if (sel.isEmpty() || this.lines.length === 0) {
       return [];
     }
-    const anchorAffinity: CaretAffinity = this.selMgr.headAffinity === CaretAffinity.DOWNSTREAM
-      ? CaretAffinity.UPSTREAM : CaretAffinity.DOWNSTREAM;
+    const anchorAffinity: CaretAffinity = this.selMgr.headAffinity === CaretAffinity.UPSTREAM
+      ? CaretAffinity.DOWNSTREAM : CaretAffinity.UPSTREAM;
     if (!this.hasCaretLayout(this.selMgr.anchor, anchorAffinity) ||
       !this.hasCaretLayout(this.selMgr.head, this.selMgr.headAffinity)) { return []; }
     const a: CursorState = HitTester.caretPositionFor(this.selMgr.anchor, this.lines,
@@ -2367,14 +2576,6 @@ export struct CanvasTextEditor {
     const b: CursorState = HitTester.caretPositionFor(this.selMgr.head, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize, this.selMgr.headAffinity);
     return [this.visualCaret(a), this.visualCaret(b)];
-  }
-
-  private visualCaret(caret: CursorState): CursorState {
-    if (this.renderer === null || this.effectivePolicy() !== ScrollPolicy.CENTER) { return caret; }
-    this.refreshTypewriterFocus();
-    return this.renderer.visualCaret(caret, this.lines, true,
-      this.twAnimFirst >= 0 ? this.twAnimFirst : this.twFirstLine,
-      this.twAnimLast >= 0 ? this.twAnimLast : this.twLastLine);
   }
 
   /** 命中检测：视口坐标是否落在某个选区手柄上（返回 1 起点 / 2 终点 / 0 无） */
@@ -2477,7 +2678,7 @@ export struct CanvasTextEditor {
   /**
    * 选区上报 IME：拖选每帧调用会重复传整篇正文（5 万字≈100KB IPC，
    * 可能触发 12800003 并导致软键盘删除/候选框错乱）。
-   * 按完整显示文本与范围去重；预览同长度替换、快速键盘扩选都必须立即同步。
+   * 这里按 (文本长度,start,end) 去重 + 32ms 节流，Up 时 force 上报。
    */
   private reportSelection(force: boolean = false): void {
     if (!this.ime.attached) {
@@ -2544,11 +2745,18 @@ export struct CanvasTextEditor {
       // 先判定是否落在选区手柄上（T018）：是则进入手柄拖动，否则进入点按/长按
       const handle: number = this.handleAt(x, y);
       if (handle !== 0) {
+        // 触摸拖手柄同样 1:1：停掉光标动画（拖动期间不做任何插值）
+        this.stopCaretAnimation();
         this.selMgr.beginHandleDrag(handle);
         this.dragging = true;
         this.scrollMode = false;
         this.cancelLongPress();
         this.diag('handleDrag begin which=' + handle.toString());
+      } else if (HitTester.markerLineAt(x, y + this.scrollY, this.lines, this.padLeftVp(),
+        this.padTopVp()) >= 0) {
+        // 按在待办圆点上：不启动长按选词。否则按住稍久（>450ms）就变成选词，
+        // 勾选反而失效 —— 复选框不该有"长按选中词"的语义。
+        this.cancelLongPress();
       } else {
         this.startLongPress(x, y);
       }
@@ -2644,16 +2852,26 @@ export struct CanvasTextEditor {
           this.selectWordAt(this.pressX, this.pressY, 'doubleTap');
           this.longPressed = true;
         } else {
-          this.selMgr.collapse(this.pressOffset);
-          this.emitSelection(false);
-          this.diag('UP tap offset=' + this.pressOffset.toString() + ' lines=' + this.lines.length.toString() +
-            ' pointer=' + this.isPointerInput(event).toString());
-          if (this.isPointerInput(event)) {
-            // 鼠标/触控板点击：立即落位，不播放光标移动动画
-            this.placeCaretImmediately(this.pressOffset, this.pressAffinity);
+          // 项目符号 / 待办圆点优先命中：单指点 ○ = 切换完成态。
+          // 指针设备（PC/2in1）上这一步由 onMouse(Press) 负责，触摸事件只是同一次点击的
+          // 合成副本，这里必须让开，否则一次单击会被切成两次（5→6→5）。
+          const pointerInput: boolean = this.isPointerInput(event);
+          if (pointerInput || !this.toggleTodoAtMarker(this.pressX, this.pressY)) {
+            this.selMgr.collapse(this.pressOffset);
+            this.emitSelection(false);
+            this.diag('UP tap offset=' + this.pressOffset.toString() + ' lines=' + this.lines.length.toString() +
+              ' pointer=' + pointerInput.toString());
+            if (pointerInput) {
+              // 鼠标/触控板点击：立即落位，不播放光标移动动画
+              this.placeCaretImmediately(this.pressOffset, this.pressAffinity);
+            } else {
+              // 手指点按：保留平滑移动动画
+              this.moveCaretAnimated(this.pressOffset, this.pressAffinity);
+            }
           } else {
-            // 手指点按：保留平滑移动动画
-            this.moveCaretAnimated(this.pressOffset, this.pressAffinity);
+            // 符号已消费这次点按：清掉连击计数，避免下一次点符号被当成双击选词
+            this.tapStreak = 0;
+            this.lastTapAt = 0;
           }
         }
       }
@@ -2722,7 +2940,7 @@ export struct CanvasTextEditor {
   }
 
   /** 无动画落光标（鼠标点击/触控板点击）：直接定位 + 上报 + 滚动跟随，不启动弹簧 */
-  private placeCaretImmediately(offset: number, affinity: CaretAffinity = CaretAffinity.DOWNSTREAM): void {
+  private placeCaretImmediately(offset: number, affinity: CaretAffinity = CaretAffinity.UPSTREAM): void {
     this.cancelCaretLayout();
     this.stopCaretAnimation();
     this.selMgr.collapse(offset, affinity);
@@ -2803,17 +3021,6 @@ export struct CanvasTextEditor {
       this.padLeftVp(), this.padTopVp(), this.doc.text);
   }
 
-  /** A wrap boundary has two positions; preserve the line the user actually clicked. */
-  private affinityAt(y: number, offset: number): CaretAffinity {
-    const upstream: CursorState = this.visualCaret(HitTester.caretPositionFor(offset, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.UPSTREAM));
-    const downstream: CursorState = this.visualCaret(HitTester.caretPositionFor(offset, this.lines,
-      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.DOWNSTREAM));
-    const contentY: number = y + this.scrollY - this.padTopVp();
-    return Math.abs(contentY - upstream.y - upstream.height / 2) <
-      Math.abs(contentY - downstream.y - downstream.height / 2) ? CaretAffinity.UPSTREAM : CaretAffinity.DOWNSTREAM;
-  }
-
   /** 长按：启动定时器（按住 450ms 未拖动 → 分词选中） */
   private startLongPress(x: number, y: number): void {
     this.cancelLongPress();
@@ -2846,33 +3053,38 @@ export struct CanvasTextEditor {
     // 优先用 ICU 词边界（getWordBoundary），与 Android/iOS/Pure Writer 双击选词一致
     if (this.engineRef !== null) {
       const r: number[] = this.engineRef.wordRangeAt(text, offset);
-      if (r.length === 2 && r[1] > r[0]) {
+      if (r.length === 2 && Number.isFinite(r[0]) && Number.isFinite(r[1]) &&
+        r[0] >= 0 && r[1] <= text.length && r[1] > r[0]) {
         start = r[0];
         end = r[1];
       }
     }
     if (start < 0) {
-      // 回退（无分词能力时）：按 CJK/字母/数字连续段
+      // 只有命中词字符才拓展连续词；emoji/标点不能向左吞进相邻单词。
       start = offset;
-      while (start > 0 && this.isWordChar(text.charCodeAt(start - 1))) {
-        start--;
-      }
-      end = offset;
-      while (end < text.length && this.isWordChar(text.charCodeAt(end))) {
-        end++;
-      }
-      if (start === end && offset < text.length) {
-        end = offset + 1; // 未命中"词字符"（如标点），退化为选中一个字
+      end = GraphemeUtil.moveRight(text, offset);
+      if (this.isWordChar(text.charCodeAt(offset))) {
+        while (start > 0) {
+          const prev: number = GraphemeUtil.moveLeft(text, start);
+          if (!this.isWordChar(text.charCodeAt(prev))) { break; }
+          start = prev;
+        }
+        while (end < text.length && this.isWordChar(text.charCodeAt(end))) {
+          end = GraphemeUtil.moveRight(text, end);
+        }
       }
     }
+    // 分词范围要覆盖完整字素；不能沿用拖选的“最近边界”，否则半个 emoji 会选空。
+    start = GraphemeUtil.snapToBoundary(text, start);
+    end = GraphemeUtil.isBoundary(text, end) ? end : GraphemeUtil.moveRight(text, end);
     this.selMgr.setSource(text);
     this.selMgr.setSelection(start, end);
-    this.doc.setSelection(start, end);
+    this.doc.setSelection(this.selMgr.anchor, this.selMgr.head);
     // 记录词区间：长按/双击后继续拖动时按"词 ∪ 手指区间"扩展，而不是从按压点重选
-    this.wordSelStart = start;
-    this.wordSelEnd = end;
+    this.wordSelStart = this.selMgr.startOffset;
+    this.wordSelEnd = this.selMgr.endOffset;
     this.ensureCaretLayout();
-    this.caret = HitTester.caretPositionFor(end, this.lines, this.padLeftVp(), this.padTopVp(),
+    this.caret = HitTester.caretPositionFor(this.selMgr.head, this.lines, this.padLeftVp(), this.padTopVp(),
       this.theme.fontSize, this.selMgr.headAffinity);
     this.diag(source + ' offset=' + offset.toString() + ' sel=' + start.toString() + '-' + end.toString());
     this.emitSelection(true);
@@ -3597,6 +3809,110 @@ export struct CanvasTextEditor {
       this.onToggleImmersive();
     }
   }
+
+  private clearPreviewLayout(): void {
+    this.previewDoc = null;
+    this.previewCache = null;
+    this.previewBaseVersion = -1;
+    this.previewBaseFormatVersion = -1;
+    this.previewLayoutStart = -1;
+  }
+
+
+  ownsEditorFocus(): boolean {
+    return this.focused && this.focusConfirmed;
+  }
+
+
+  private hasCaretLayout(offset: number, affinity: CaretAffinity = CaretAffinity.UPSTREAM): boolean {
+    if (this.lines.length === 0) { return false; }
+    const lastEnd: number = this.lines[this.lines.length - 1].endIndex;
+    if (offset > lastEnd) { return false; }
+    if (offset < lastEnd || affinity === CaretAffinity.DOWNSTREAM) { return true; }
+    const active: LayoutCache | null = this.previewMgr.isComposing ? this.previewCache : this.cache;
+    return active === null || active.coversOffset(offset);
+  }
+
+
+  private cancelCaretLayout(): void {
+    this.caretLayoutRevision++;
+    if (this.caretLayoutTimer >= 0) {
+      clearTimeout(this.caretLayoutTimer);
+      this.caretLayoutTimer = -1;
+    }
+    if (this.caretLayoutPending) {
+      this.caret.visible = false;
+      this.caretLayoutHidden = true;
+    }
+    this.caretLayoutPending = false;
+  }
+
+
+  private deferCaretLayout(affinity: CaretAffinity): boolean {
+    const cache: LayoutCache | null = this.cache;
+    if (cache === null || this.previewMgr.isComposing) { return false; }
+    cache.setRuns(this.doc.runs);
+    const progress: LayoutProgress = cache.ensureOffsetIncremental(this.doc.text, this.doc.version,
+      this.doc.formatVersion, this.doc.caretOffset, 32, 4);
+    this.lines = progress.lines;
+    if (progress.reached) { return false; }
+    this.caretLayoutPending = true;
+    this.caret.visible = false;
+    this.caretLayoutHidden = true;
+    const revision: number = this.caretLayoutRevision;
+    const generation: number = this.documentGeneration;
+    const version: number = this.doc.version;
+    const formatVersion: number = this.doc.formatVersion;
+    const offset: number = this.doc.caretOffset;
+    this.caretLayoutTimer = setTimeout(() => {
+      this.continueCaretLayout(revision, generation, cache, version, formatVersion, offset, affinity);
+    }, 16);
+    return true;
+  }
+
+
+  private continueCaretLayout(revision: number, generation: number, cache: LayoutCache,
+    version: number, formatVersion: number, offset: number, affinity: CaretAffinity): void {
+    if (revision !== this.caretLayoutRevision) { return; }
+    this.caretLayoutTimer = -1;
+    if (generation !== this.documentGeneration || this.cache !== cache || this.doc.version !== version ||
+      this.doc.formatVersion !== formatVersion || this.doc.caretOffset !== offset || this.previewMgr.isComposing) {
+      this.cancelCaretLayout();
+      return;
+    }
+    const progress: LayoutProgress = cache.ensureOffsetIncremental(this.doc.text, version, formatVersion, offset, 32, 4);
+    this.lines = progress.lines;
+    if (!progress.reached) {
+      this.caretLayoutTimer = setTimeout(() => {
+        this.continueCaretLayout(revision, generation, cache, version, formatVersion, offset, affinity);
+      }, 16);
+      return;
+    }
+    this.caretLayoutPending = false;
+    this.caret.visible = true;
+    this.settleCaret(HitTester.caretPositionFor(offset, this.lines,
+      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, affinity));
+  }
+
+
+  private visualCaret(caret: CursorState): CursorState {
+    if (this.renderer === null || this.effectivePolicy() !== ScrollPolicy.CENTER) { return caret; }
+    this.refreshTypewriterFocus();
+    return this.renderer.visualCaret(caret, this.lines, true,
+      this.twAnimFirst >= 0 ? this.twAnimFirst : this.twFirstLine,
+      this.twAnimLast >= 0 ? this.twAnimLast : this.twLastLine);
+  }
+
+
+  private affinityAt(y: number, offset: number): CaretAffinity {
+    const upstream: CursorState = this.visualCaret(HitTester.caretPositionFor(offset, this.lines,
+      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.DOWNSTREAM));
+    const downstream: CursorState = this.visualCaret(HitTester.caretPositionFor(offset, this.lines,
+      this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.UPSTREAM));
+    const contentY: number = y + this.scrollY - this.padTopVp();
+    return Math.abs(contentY - upstream.y - upstream.height / 2) <
+      Math.abs(contentY - downstream.y - downstream.height / 2) ? CaretAffinity.DOWNSTREAM : CaretAffinity.UPSTREAM;
+  }
 }
 
 /**
@@ -3640,4 +3956,7 @@ class CanvasEditCommandHost implements EditCommandHost {
   find(): void { this.target.hostFind(); }
   dismiss(): boolean { return this.target.hostDismiss(); }
   toggleImmersive(): void { this.target.hostToggleImmersive(); }
+
+
+
 }

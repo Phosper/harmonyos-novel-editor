@@ -17,6 +17,19 @@ const controller = {
 };
 class Font { setSize(size) { this.size = size; } }
 class Brush { setColor(color) { this.color = color; } setAntiAlias(enabled) { this.antiAlias = enabled; } }
+class Pen {
+  setColor(color) { this.color = color; }
+  setStrokeWidth(width) { this.width = width; }
+  setAntiAlias(enabled) { this.antiAlias = enabled; }
+  setJoinStyle(style) { this.joinStyle = style; }
+  setCapStyle(style) { this.capStyle = style; }
+}
+class Path {
+  constructor() { this.ops = []; }
+  moveTo(x,y) { this.ops.push(['M',x,y]); }
+  lineTo(x,y) { this.ops.push(['L',x,y]); }
+}
+let lastLineBreakWidth = -1;
 // Capture native builder input exactly; scalar indices model the LineTypeset contract.
 class ParagraphBuilder {
   constructor(style) { this.spans = []; this.styles = [style.textStyle]; }
@@ -27,7 +40,7 @@ class ParagraphBuilder {
     const value = this.spans.map(span=>span.text).join('');
     const scalars = Array.from(value);
     return {value,spans:this.spans,
-      getLineBreak(start) { return Math.min(5,scalars.length-start); },
+      getLineBreak(start,width) { lastLineBreakWidth=typeof width==='number'?width:-1; return Math.min(5,scalars.length-start); },
       createLine(start,count) {
         const glyphs=scalars.slice(start,start+count).map(s=>s.codePointAt(0));
         const font=new Font();
@@ -69,11 +82,12 @@ for (let i = 0; i < 10; i++) { keyCodes['KEYCODE_NUMPAD_' + i] = 2103 + i; }
 const context = vm.createContext({console, setTimeout() {return 1;}, clearTimeout() {},
   text: { FontCollection: { getGlobalInstance() { return {}; } }, ParagraphBuilder,
     FontWeight:{W700:700}, FontStyle:{ITALIC:1} },
-  drawing: {Font, Brush, TextBlob: {makeFromRunBuffer(buffer, font) {return {buffer,font};}}},
+  drawing: {Font, Brush, Pen, Path, TextBlob: {makeFromRunBuffer(buffer, font) {return {buffer,font};},makeFromString(text,font){return {text,font};}},
+    TextEncoding:{TEXT_ENCODING_UTF8:0},JoinStyle:{MITER_JOIN:0,ROUND_JOIN:1,BEVEL_JOIN:2},CapStyle:{FLAT_CAP:0,SQUARE_CAP:1,ROUND_CAP:2}},
   KeyCode: keyCodes, KeyType:{Down:0}, ChapterFormat:{TXT:0},
   TouchType:{Down:0,Up:1,Move:2,Cancel:3},
   SourceTool: { UNKNOWN: 0, FINGER: 1, STYLUS: 2, MOUSE: 3, TOUCHPAD: 4, JOYSTICK: 5 },
-  Logger:{info(){}}, inputMethod:{getController(){return controller;}}
+  Logger:{info(){},warn(){},error(){},debug(){}}, inputMethod:{getController(){return controller;}}
 });
 const read = file => fs.readFileSync(path.join(root,file),'utf8');
 function compile(source) {
@@ -82,7 +96,7 @@ function compile(source) {
 }
 function load(file) {vm.runInContext(compile(read(file)),context,{filename:file});}
 for (const file of ['model/EditorTypes','model/TextIndexMap','model/UnicodeGraphemeData','model/GraphemeUtil','model/TextDocument','theme/TypewriterScale',
-  'interaction/SelectionManager','interaction/CursorState','interaction/HitTester','render/TextLayoutEngine',
+  'model/FormatCodec','interaction/SelectionManager','interaction/CursorState','interaction/HitTester','render/TextLayoutEngine',
   'render/LayoutCache','render/GlyphRenderer','animation/GlyphAnimator','ime/PreviewTextManager','ime/KeyboardHandler','ime/ImeBridge']) {
   load('editor/flowtext/'+file+'.ets');
 }
@@ -92,11 +106,14 @@ for (const file of ['editor/interaction/EditCommand','editor/interaction/Shortcu
 const adapterSource = read('editor/flowtext/CanvasTextEditor.ets').match(/^class CanvasEditCommandHost[\s\S]*?^\}/m);
 assert.ok(adapterSource, 'CanvasEditCommandHost adapter class');
 vm.runInContext(compile(adapterSource[0].replace(/ implements EditCommandHost/, '')), context);
-load('store/StoreModels.ets'); load('store/EditorStore.ets');
+load('utils/TextLimit.ets'); load('utils/TimeUtil.ets'); load('store/StoreModels.ets'); load('store/EditorStore.ets');
 function method(source,name) {
-  const match = source.match(new RegExp('^  (?:private )?'+name+'\\([\\s\\S]*?^  }','m'));
+  const match = source.match(new RegExp('^  (?:private |static )?'+name+'\\([\\s\\S]*?^  }','m'));
   assert.ok(match,'source method '+name); return match[0];
 }
+const projectSource=read('store/ProjectStore.ets');
+vm.runInContext(compile(projectSource.match(/^const SUMMARY_MAX[^\n]+/m)[0]+'\nclass ProjectStore {\n'+
+  ['updateDocPreview','summaryOf'].map(name=>method(projectSource,name)).join('\n')+'\n}'),context);
 function uiCallback(file,name,indent) {
   const padding=' '.repeat(indent);
   const match=read(file).match(new RegExp('^'+padding+name+': (\\([^\\n]*\\) => \\{[\\s\\S]*?^'+padding+'\\})','m'));
@@ -107,18 +124,24 @@ vm.runInContext(compile(read('editor/flowtext/CanvasTextEditor.ets').split('@Com
 const canvas = read('editor/flowtext/CanvasTextEditor.ets').split('export struct CanvasTextEditor {')[1];
 vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','getRuns','moveCaretTo','moveCaretAnimated','insertExternalText','extendSelection',
   'selectTo','applyKeyCommand','afterCaretMove','afterEdit','emitSelection','setRuns','afterFormatChange',
+  'paragraphKind','setParagraphKind','toggleTodoAt','toggleTodoAtMarker','attachParagraphProvider',
+  'insertPlainText','insertNewline','beginInsert','endInsert','startCaretSpring',
   'handleKeyPreIme','handleKeyEvent','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
   'readEditorModifiers','adoptKeyFocus','dispatchCommand','editHost','insertFromKeyboard','hostInsertText','hostDismiss','handleMenuKey',
   'pasteAtCaret','insertAtCaret','aboutToDisappear','hasCaretLayout','cancelCaretLayout','deferCaretLayout','continueCaretLayout','clearPreviewLayout','settleCaret','drawNow','reportCursor',
   'affinityAt','inlineStyleMask','styleMaskAt','visualCaret','reportSelection','handleTouch','stopCaretAnimation','stopScrollAnimation','stopGlyphAnimation','syncSelectionToCaret','handlePositions','selectAllText',
   'captureViewAnchor','refreshDensity','ensureLayoutThroughY','engineSignature','extendWordSelection','clampScroll','tailPadVp','laidOutHeightVp',
-  'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','placeCaretImmediately','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
+  'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','placeCaretImmediately','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation',
+  'selectWordAt','isWordChar','copySelection','findSelection'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
 vm.runInContext(compile('class HostProbe {\n'+['onContentRevChanged','aboutToAppear','aboutToDisappear'].map(name=>method(read('editor/TextEditorHost.ets'),name)).join('\n')+'\n}'),context);
+vm.runInContext(compile(read('store/UiStore.ets').split('@ObservedV2')[0]),context);
+vm.runInContext(compile('class PaneProbe {\n'+['applyEditorChange','syncActivePreview','onContentRevChanged',
+  'toolSpace','beginRename','cancelRename','commitRename','saveHintText'].map(name=>method(read('shell/EditorPane.ets'),name)).join('\n')+'\n}'),context);
 const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionManager,FormatRun,StyleKind,LayoutLine,GlyphRunData,'+
   'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
   'PreviewTextManager,KeyAction,KeyboardEvent,KeyboardHandler,ImeBridge,CanvasTextEditorController,EditorProbe,HostProbe,EditorStore,OpenDoc,CaretAffinity,LineBox,PreviewInfo,'+
   'EditCommand,EditCommandKind,EditorInputSource,EditorModifiers,EditorCommandRouter,ImeEchoGuard,shouldConsumePreIme,isCaretCommand,isEditingCommand,resolveShortcut,KeyCode,'+
-  'TypewriterScaleOptions,typewriterLineDistance,typewriterScaleForDistance,typewriterDimWeight})',context);
+  'TypewriterScaleOptions,typewriterLineDistance,typewriterScaleForDistance,typewriterDimWeight,PaneProbe,ShellDialog,SaveState,ProjectStore,DocItem,ParagraphKind,isListParagraph,FormatCodec})',context);
 let count=0;
 function check(name, fn) {fn(); count++; console.log('PASS '+name);}
 check('native scalar offsets convert to UTF-16',()=>{const map=new api.TextIndexMap('A😀中B');assert.equal(map.fromScalar(2),3);assert.equal(map.toScalar(3),2);assert.equal(map.toScalar(2),1);assert.equal(map.fromScalar(4),5);});
@@ -158,7 +181,7 @@ function editor(value) {
     twAnimFirst:-1,twAnimLast:-1,twTargetFirst:-1,twTargetLast:-1,twScaleInitialized:false,twScaleAnimator:null,
     cache:null,engineRef:null,renderer:null,onEdit:null,onCaretChange:null,onTextChange:null,onFormatChange:null,onSelectionChange:null,
     documentGeneration:0,controller:null,ime:new api.ImeBridge(),caretAnimator:null,glyphAnimator:null,scrollAnimator:null,
-    caretAnimating:false,viewHeightVp:600,scrollY:0,
+    caretAnimating:false,viewHeightVp:600,scrollY:0,placeholder:'',placeholderColor:'#9AA0A6',
     commandRouter:new api.EditorCommandRouter(),hostAdapter:null,echoGuard:new api.ImeEchoGuard(),
     imeUsable:false,focused:false,focusConfirmed:false,menuVisible:false,menuIndex:0,previewDoc:null,previewCache:null,
     caretLayoutTimer:-1,caretLayoutRevision:0,caretLayoutPending:false,caretLayoutHidden:false,caretLayoutRestoreVisible:true,
@@ -170,6 +193,76 @@ function editor(value) {
     animateCaretMove(from,to){this.caret=to;}});
   e.selMgr.setSource(value);e.selMgr.collapse(e.doc.caretOffset);return e;
 }
+function wordSelection(value,offset,start,end,mode,source='doubleClick',nativeRange) {
+  const e=editor(value),engine=new api.TextLayoutEngine(1000,16,24,4,1);
+  const typeset=engine.buildTypesetWindow(value,0,value.length);
+  e.lines=[engine.createLayoutLine(typeset,0,value.length,0)];
+  let nativeCalls=0,selection,find,copied,edits=0;
+  if(mode!=='missing') {
+    engine.wordParagraphText=value;
+    engine.wordParagraph={getWordBoundary(){
+      nativeCalls++;
+      if(mode==='failed')throw new Error('native word boundary unavailable');
+      return nativeRange ?? {start:mode==='partialStart'?start+1:start,end:mode==='partialEnd'?end-1:end};
+    }};
+    e.engineRef=engine;
+  }
+  e.offsetAt=()=>offset;e.showSelectionMenu=()=>{};e.clipboard=text=>copied=text;
+  e.onRequestFind=text=>find=text;e.onSelectionChange=(s,en)=>selection=[s,en];e.onEdit=()=>edits++;
+  const version=e.doc.version;
+  e.selectWordAt(0,0,source);
+  assert.equal(nativeCalls,mode==='missing'?0:1,'native boundary is requested only when available');
+  assert.deepEqual(json(e.selMgr.selection),{startOffset:start,endOffset:end},mode+' '+value);
+  assert.deepEqual([e.doc.selectionStart,e.doc.selectionEnd,e.doc.caretOffset],[start,end,end]);
+  assert.deepEqual([e.wordSelStart,e.wordSelEnd], [start,end],'continued word drag uses the actual selected range');
+  assert.deepEqual(selection,[start,end],'selection callback reports the same complete range');
+  const caret=api.HitTester.caretPositionFor(end,e.lines,0,0,16,e.selMgr.headAffinity);
+  assert.deepEqual([e.caret.x,e.caret.y,e.caret.height],[caret.x,caret.y,caret.height]);
+  e.copySelection();e.findSelection();
+  assert.equal(copied,value.substring(start,end),'copy keeps the whole selected word or grapheme');
+  assert.equal(find,copied,'find receives exactly the copied selection');
+  assert.equal(e.doc.text,value);assert.equal(e.doc.version,version);assert.equal(edits,0);
+  return e;
+}
+for(const mode of ['missing','failed']) {
+  check('word selection without native boundaries keeps whole graphemes: '+mode,()=>{
+    for(const cluster of ['😀','𠮷','e\u0301','👨‍👩‍👧','👍🏽','🇨🇳']) {
+      for(const source of ['doubleClick','longPress'])wordSelection('左 '+cluster+' 右',2,2,2+cluster.length,mode,source);
+    }
+  });
+}
+for(const mode of ['partialStart','partialEnd']) {
+  check('native word boundaries inside a grapheme expand to its full range: '+mode,()=>{
+    for(const cluster of ['😀','𠮷','e\u0301','👨‍👩‍👧','👍🏽','🇨🇳']) {
+      for(const source of ['doubleClick','longPress'])wordSelection('左 '+cluster+' 右',2,2,2+cluster.length,mode,source);
+    }
+  });
+}
+check('word selection preserves ordinary words and valid native segmentation',()=>{
+  for(const mode of ['missing','failed','native']) {
+    wordSelection('前 中文词 后',3,2,5,mode);
+    wordSelection('say hello123 now',6,4,12,mode);
+    wordSelection('un cafe\u0301 noir',5,3,8,mode);
+    wordSelection('un e\u0301clair noir',5,3,10,mode);
+  }
+  wordSelection('前 中文词 后',3,3,4,'native');
+});
+check('invalid native word ranges fall back without selecting neighbouring text',()=>{
+  for(const range of [{start:-1,end:4},{start:2,end:99},{start:NaN,end:4},
+    {start:2,end:Infinity},{start:4,end:2},{start:2,end:2}]) {
+    wordSelection('左 😀 右',2,2,4,'native','doubleClick',range);
+  }
+});
+check('fallback word selection selects the hit non-word grapheme instead of the preceding word',()=>{
+  const cases=[['abc😀def',3,3,5],['中文😀后',2,2,4],['abc𠮷def',3,3,5],
+    ['abc👨‍👩‍👧def',3,3,11],['abc,def',3,3,4],['中文。后',2,2,3],['abc def',3,3,4]];
+  for(const mode of ['missing','failed']) {
+    for(const [value,offset,start,end] of cases) {
+      for(const source of ['doubleClick','longPress'])wordSelection(value,offset,start,end,mode,source);
+    }
+  }
+  wordSelection('abc😀',3,0,3,'native');
+});
 check('switch document clears stale selection before inserting',()=>{const e=editor('ABCDE');e.selMgr.setSelection(1,3);e.loadText('uvwxyz');e.moveCaretAnimated(6);e.insertExternalText('!');assert.equal(e.doc.text,'uvwxyz!');});
 check('paste replaces a selection in either direction in one edit',()=>{
   for(const [anchor,head] of [[1,4],[4,1]]) {
@@ -265,6 +358,81 @@ check('host undo and redo callbacks retain their loaded document owner',()=>{
   host.loadedDocId='a';hostRedo.call(host);assert.equal(b.draft,'B');assert.equal(store.redoStack.length,1);
   host.loadedDocId='b';hostRedo.call(host);assert.equal(b.draft,'B edited');assert.equal(a.draft,'A');
 });
+check('pane edit refreshes the active preview without accepting a stale editor owner',()=>{
+  const store=new api.EditorStore();store.scheduleFlush=()=>{};
+  const a=new api.OpenDoc('a','A',0,'','old',0),b=new api.OpenDoc('b','B',0,'','other',0);
+  store.openDocs=[a,b];store.activeId='a';
+  const previews=[];let typing=0;const pane=new api.PaneProbe();
+  pane.app={editor:store,ui:{noteTyping(){typing++;}},project:{updateDocPreview(...values){previews.push(values);}}};
+  const edit=uiCallback('shell/EditorPane.ets','onEdit',12);
+  edit.call(pane,'new text',[new api.FormatRun(0,3,true)],8,'a');
+  assert.equal(a.draft,'new text');assert.equal(a.runsJson,'0,3,1,0,0,0');assert.equal(a.caret,8);
+  assert.deepEqual(previews,[['a','A','new text',8,true]]);assert.equal(typing,1);
+  store.activeId='b';edit.call(pane,'obsolete',[],8,'a');
+  assert.equal(a.draft,'new text');assert.equal(b.draft,'other');assert.equal(previews.length,1);assert.equal(typing,1);
+});
+check('pane content revisions refresh previews after undo and redo without another edit',()=>{
+  const store=new api.EditorStore();store.scheduleFlush=()=>{};
+  const active=new api.OpenDoc('a','A',0,'','before',0);store.openDocs=[active];store.activeId='a';
+  const previews=[],pane=new api.PaneProbe();
+  pane.app={editor:store,project:{updateDocPreview(...values){previews.push(values);}}};
+  store.setEditorState('after','',5,'a');store.undo();pane.onContentRevChanged();
+  assert.deepEqual(previews.at(-1),['a','A','before',6,true]);
+  store.redo();pane.onContentRevChanged();assert.deepEqual(previews.at(-1),['a','A','after',5,true]);
+  assert.equal(store.undoStack.length,1);assert.equal(store.redoStack.length,0);
+  store.activeId='';pane.onContentRevChanged();assert.equal(previews.length,2);
+  pane.app=null;assert.doesNotThrow(()=>pane.onContentRevChanged());
+});
+check('pane clean-load previews preserve the saved timestamp while undo updates a dirty snapshot',()=>{
+  const store=new api.EditorStore();store.scheduleFlush=()=>{};
+  const active=new api.OpenDoc('a','Title',0,'','saved text',0);store.openDocs=[active];store.activeId='a';
+  const project=new api.ProjectStore(),item=new api.DocItem('a');item.modified='昨天';
+  project.currentBookId='book';project.chapters=[{id:'a',bookId:'book'}];project.docItems=[item];
+  const pane=new api.PaneProbe();pane.app={editor:store,project};
+  pane.onContentRevChanged();
+  assert.equal(active.dirty,false);assert.equal(item.modified,'昨天','opening or loading formats must not date a clean draft as edited');
+  assert.deepEqual([item.title,item.subTitle,item.wordCount],['Title','saved text',10]);
+  store.setEditorState('edited text','',11,'a');store.undo();pane.onContentRevChanged();
+  assert.equal(active.dirty,true);assert.equal(item.modified,'刚刚');
+  assert.deepEqual([item.subTitle,item.wordCount],['saved text',10]);
+  assert.equal(project.docItems[0],item,'preview refresh keeps the list item identity');
+});
+check('pane unchanged edit reports retain a clean draft timestamp',()=>{
+  const store=new api.EditorStore();store.scheduleFlush=()=>{};
+  const active=new api.OpenDoc('a','Title',0,'','saved text',0);store.openDocs=[active];store.activeId='a';
+  const project=new api.ProjectStore(),item=new api.DocItem('a');item.modified='昨天';
+  project.currentBookId='book';project.chapters=[{id:'a',bookId:'book'}];project.docItems=[item];
+  const pane=new api.PaneProbe();pane.app={editor:store,project,ui:{noteTyping(){}}};
+  pane.applyEditorChange('saved text',[],3,'a');
+  assert.equal(active.dirty,false);assert.equal(item.modified,'昨天');assert.equal(active.caret,3);
+  assert.equal(item.subTitle,'saved text');assert.equal(store.undoStack.length,0);
+});
+check('pane reading column and tool space follow their container and focus mode',()=>{
+  const pane=new api.PaneProbe();pane.app=null;pane.headerWidth=0;
+  pane.headerRightInset=()=>168;
+  assert.equal(pane.toolSpace(),0);
+  pane.headerWidth=360;assert.equal(pane.toolSpace(),180);
+  pane.headerWidth=20;assert.equal(pane.toolSpace(),0);
+  assert.match(read('shell/EditorPane.ets'),/maxWidth:\s*760/);
+  assert.match(read('shell/FocusWorkspace.ets'),/720/);
+});
+check('pane inline rename captures the current document and project ownership',()=>{
+  const pane=new api.PaneProbe(),active=new api.OpenDoc('a','Title',0,'','text',0);
+  pane.renameRevision=0;
+  pane.app={editor:{hasDoc:true,activeId:'a',activeDoc:active,title:'Title'},project:{currentBookId:'book'}};
+  pane.beginRename();assert.equal(pane.renameDoc,active);assert.equal(pane.renameDocId,'a');
+  assert.equal(pane.renameBookId,'book');assert.equal(pane.renaming,true);assert.equal(pane.draftTitle,'Title');
+  pane.cancelRename();assert.equal(pane.renaming,false);assert.equal(pane.renameDoc,null);
+  pane.app=null;assert.doesNotThrow(()=>pane.beginRename());
+});
+check('pane title status retains explicit saving, failure and size-limit feedback',()=>{
+  const pane=new api.PaneProbe();pane.app={editor:{saveState:api.SaveState.FAILED,dirtyCount:1}};
+  assert.equal(pane.saveHintText(),'保存失败，点击重试');
+  pane.app.editor.saveState=api.SaveState.TOO_LARGE;assert.match(pane.saveHintText(),/超长.*未保存/);
+  pane.app.editor.saveState=api.SaveState.SAVING;assert.equal(pane.saveHintText(),'保存中…');
+  pane.app.editor.saveState=api.SaveState.IDLE;assert.equal(pane.saveHintText(),'编辑中…');
+  pane.app.editor.dirtyCount=0;assert.equal(pane.saveHintText(),'已保存');
+});
 function line(start,value,y=0) {
   const l=new api.LayoutLine();Object.assign(l,{startIndex:start,endIndex:start+value.length,consumedEnd:start+value.length,yOffset:y,height:24,step:28,baseline:y+18,ascent:14,descent:4,width:value.length*10});
   const r=new api.GlyphRunData();Object.assign(r,{textStart:start,textEnd:l.endIndex,font:new Font(),glyphs:Array.from(value).map(c=>c.charCodeAt(0)),glyphOffsets:Array.from(value).map((_,i)=>i),positions:Array.from(value).map((_,i)=>({x:i*10,y:0})),advances:Array.from(value).map(()=>({x:10,y:16}))});l.runs=[r];return l;
@@ -330,7 +498,7 @@ check('soft-wrapped native lines map their own glyphs and caret back into the do
   assert.equal(api.HitTester.hitTest(0,29,[first,second],0,0,value),4);
   assert.equal(api.HitTester.hitTest(20,29,[first,second],0,0,value),7);
 });
-function cacheEngine() {let builds=0;return {get builds(){return builds;},setRuns(){},lineStepVp(){return 28;},contentMaxWidthPx(){return 50;},lineBreak(typeset,start){return typeset.getLineBreak(start-typeset.base);},createLayoutLine(typeset,start,count,y){return this.buildLayoutLineFrom(typeset.createLine(start-typeset.base,count),start,count,y);},emptyLine(offset,y){return line(offset,'',y);},buildTypesetWindow(content,base,end){builds++;const value=content.substring(base,end);return {base,getLineBreak(start){return Math.min(5,value.length-start);},createLine(start,n){return {value:value.substring(start,start+n)};}};},buildLayoutLineFrom(native,start,count,y){return line(start,native.value,y);}};}
+function cacheEngine() {let builds=0;return {get builds(){return builds;},setRuns(){},lineStepVp(){return 28;},contentMaxWidthPx(){return 50;},availableWidthPx(){return 50;},lineBreak(typeset,start){return typeset.getLineBreak(start-typeset.base);},createLayoutLine(typeset,start,count,y){return this.buildLayoutLineFrom(typeset.createLine(start-typeset.base,count),start,count,y);},emptyLine(offset,y){return line(offset,'',y);},buildTypesetWindow(content,base,end){builds++;const value=content.substring(base,end);return {base,getLineBreak(start){return Math.min(5,value.length-start);},createLine(start,n){return {value:value.substring(start,start+n)};}};},buildLayoutLineFrom(native,start,count,y){return line(start,native.value,y);}};}
 check('empty document and trailing newline create real caret lines',()=>{for(const value of ['','A\n','\n\n']){const c=new api.LayoutCache(cacheEngine());const lines=c.ensureLayout(value,1,1,999);assert.ok(c.isComplete());assert.equal(lines.length,value==='\n\n'?3:value===''?1:2);assert.equal(lines.at(-1).startIndex,value.length);}});
 check('lazy layout can reach an offscreen caret',()=>{const c=new api.LayoutCache(cacheEngine());c.ensureLayout('x'.repeat(200),1,1,28);const lines=c.ensureOffset('x'.repeat(200),1,1,200);assert.equal(lines.at(-1).endIndex,200);});
 check('editing retains preceding paragraphs',()=>{const engine=cacheEngine();const c=new api.LayoutCache(engine);const lines=c.ensureLayout('aaa\nbbb',1,1,999);const first=lines[0];c.applyEdit('aaa\nbXbb',2,2,[],5);const updated=c.ensureLayout('aaa\nbXbb',2,2,999);assert.equal(updated[0],first);assert.equal(updated.at(-1).endIndex,8);});
@@ -391,14 +559,14 @@ check('selection stores anchor/head; handle crossing never swaps identity',()=>{
   assert.equal(m.anchor,0);assert.equal(m.head,4);assert.equal(m.startOffset,0);
   m.updateHandleDrag(5);
   assert.equal(m.anchor,5);assert.equal(m.head,4);assert.equal(m.startOffset,4);assert.equal(m.endOffset,5);
-  assert.equal(m.headAffinity,api.CaretAffinity.DOWNSTREAM);
+  assert.equal(m.headAffinity,api.CaretAffinity.UPSTREAM);
   m.endHandleDrag();
-  m.setSelection(4,1);assert.equal(m.startOffset,1);assert.equal(m.endOffset,4);assert.equal(m.headAffinity,api.CaretAffinity.DOWNSTREAM);
+  m.setSelection(4,1);assert.equal(m.startOffset,1);assert.equal(m.endOffset,4);assert.equal(m.headAffinity,api.CaretAffinity.UPSTREAM);
 });
 check('caret affinity picks the same visual side as the selection highlight',()=>{
   const lines=[line(0,'ABC'),line(3,'DEF',28)];
-  const down=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.UPSTREAM);
-  const up=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.DOWNSTREAM);
+  const down=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.DOWNSTREAM);
+  const up=api.HitTester.caretPositionFor(3,lines,0,0,16,api.CaretAffinity.UPSTREAM);
   assert.equal(down.y,lines[0].baseline-lines[0].ascent);
   assert.equal(up.y,lines[1].baseline-lines[1].ascent);
   assert.equal(down.x,30);assert.equal(up.x,0);
@@ -472,8 +640,8 @@ check('cancelling at an unfinished soft-wrap boundary keeps stale caret and hand
   e.cache=new api.LayoutCache(cacheEngine());e.moveCaretAnimated(160);
   assert.equal(e.lines.at(-1).endIndex,160);assert.equal(e.caretLayoutPending,true);
   e.cancelCaretLayout();assert.equal(e.caret.visible,false);
-  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.DOWNSTREAM),false);
-  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.UPSTREAM),true);
+  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.UPSTREAM),false);
+  assert.equal(e.hasCaretLayout(160,api.CaretAffinity.DOWNSTREAM),true);
   e.selMgr.setSelection(170,160);assert.deepEqual(Array.from(e.handlePositions()),[]);
   e.ime.isAttached=true;let reports=0;e.ime.updateCursor=()=>reports++;
   api.EditorProbe.prototype.reportCursor.call(e);assert.equal(reports,0);
@@ -1129,7 +1297,7 @@ check('comma, period and numeric keypad punctuation reach the fallback input pat
 check('pointer clicks retain either visual side of a shared soft-wrap offset',()=>{
   const e=editor('ABCDEF');e.lines=[line(0,'ABC'),line(3,'DEF',28)];
   const upper=e.affinityAt(10,3),lower=e.affinityAt(40,3);
-  assert.equal(upper,api.CaretAffinity.UPSTREAM);assert.equal(lower,api.CaretAffinity.DOWNSTREAM);
+  assert.equal(upper,api.CaretAffinity.DOWNSTREAM);assert.equal(lower,api.CaretAffinity.UPSTREAM);
   e.placeCaretImmediately(3,upper);assert.equal(e.caret.x,30);assert.equal(e.caret.y,4);
   e.placeCaretImmediately(3,lower);assert.equal(e.caret.x,0);assert.equal(e.caret.y,32);
 });
@@ -1157,6 +1325,392 @@ check('run-local and line-absolute native glyphs render at the same distinct pos
     assert.deepEqual(painted.sort((a,b)=>a[1]-b[1]),[[65,0],[66,20],[20013,40],[25991,60]],'preview '+local);
   }
 });
+// ===== 列表 / 待办段落（渲染 A 阶段） =====
+check('paragraph kind and list level survive edits, normalize and codec',()=>{
+  const d=doc('item\nnext');
+  d.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  assert.equal(d.paragraphKindAt(0),4);
+  assert.deepEqual(json(d.paragraphAttrsBounds(0)),[0,5],'段落属性区间含段末换行');
+  assert.equal(d.paragraphIndentAt(0),0);
+  d.setIndent(0,1);
+  assert.equal(d.paragraphIndentAt(0),1);
+  d.insert(4,'!');                       // 段内插入不得丢层级
+  assert.equal(d.paragraphKindAt(0),4);
+  assert.equal(d.paragraphIndentAt(0),1);
+  d.delete(4,5);                         // 删除后归一化也不得丢层级
+  assert.equal(d.paragraphIndentAt(0),1);
+  const encoded=api.FormatCodec.encode(d.runs);
+  const decoded=api.FormatCodec.decode(encoded);
+  assert.equal(decoded[0].heading,4);
+  assert.equal(decoded[0].indent,1,'FormatCodec 必须往返保留 indent');
+  const legacy=api.FormatCodec.decode('0,3,1,0,2');
+  assert.equal(legacy[0].heading,2);
+  assert.equal(legacy[0].indent,0,'旧 5 段数据按 indent=0 解出');
+  d.setParagraphKind(api.ParagraphKind.BODY,0,0);
+  assert.equal(d.paragraphKindAt(0),0);
+  assert.equal(d.runs.length,0,'回到正文后不残留标注');
+});
+check('todo toggling keeps the list level and never escapes the 0..2 range',()=>{
+  const d=doc('buy milk');
+  d.setParagraphKind(api.ParagraphKind.TODO,0,0);
+  assert.equal(d.paragraphKindAt(0),5);
+  d.setIndent(0,2);
+  assert.equal(d.paragraphIndentAt(0),2);
+  d.toggleTodoAt(0);
+  assert.equal(d.paragraphKindAt(0),6,'○ → ✓');
+  assert.equal(d.paragraphIndentAt(0),2,'完成态保留层级');
+  d.toggleTodoAt(3);
+  assert.equal(d.paragraphKindAt(0),5,'✓ → ○');
+  d.setIndent(0,1);
+  assert.equal(d.paragraphIndentAt(0),2,'层级上限钳制在 2');
+  d.setIndent(0,-9);
+  assert.equal(d.paragraphIndentAt(0),0,'层级下限钳制在 0');
+  const plain=doc('plain');
+  plain.setIndent(0,1);
+  assert.equal(plain.runs.length,0,'非列表段落 Tab 不产生缩进标注');
+});
+check('empty trailing paragraph keeps list style until the first character arrives',()=>{
+  const d=doc('a\n');
+  d.setParagraphKind(api.ParagraphKind.BULLET,2,2);
+  assert.equal(d.paragraphKindAt(2),4,'空末段也要能读出种类');
+  assert.equal(d.runs.length,0,'没有字符时不能凭空造标注');
+  const before=d.formatVersion;
+  d.insert(2,'x');
+  assert.ok(d.formatVersion>before,'落成真实标注要推进 formatVersion');
+  assert.equal(d.text,'a\nx');
+  assert.equal(d.paragraphKindAt(2),4);
+  const run=d.runs[0];
+  assert.deepEqual(json([run.startOffset,run.endOffset,run.heading]),[2,3,4]);
+});
+check('empty document accepts a paragraph kind and applies it on the first insert',()=>{
+  const d=doc('');
+  d.setParagraphKind(api.ParagraphKind.TODO,0,0);
+  assert.equal(d.paragraphKindAt(0),5);
+  d.insert(0,'task');
+  assert.equal(d.paragraphKindAt(0),5);
+  assert.equal(d.text,'task');
+  assert.equal(d.runs[0].heading,5);
+});
+check('list paragraphs inset the text column and keep hanging indent when wrapped',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,1);
+  const c=new api.LayoutCache(engine);
+  c.setParagraphProvider((off)=> off===0 ? [4,1] : [0,0]);
+  const lines=c.ensureLayout('x'.repeat(10),7,7,999);
+  const first=lines[0],second=lines[1];
+  assert.equal(first.paraKind,4);
+  assert.equal(first.paraIndent,1);
+  assert.equal(first.inset,24+16*1.2,'层级缩进 + 1.2 字号符号槽');
+  assert.equal(first.markerOn,true,'首行画符号');
+  assert.equal(second.markerOn,false,'续行不画符号');
+  assert.equal(second.inset,first.inset,'悬挂缩进：续行文字列与首行文字左边界一致');
+  assert.equal(Math.round(engine.availableWidthPx(4,1)),Math.round(400-(24+16*1.2)),
+    '列表段可用宽度要扣掉缩进与符号槽，否则右侧溢出');
+  const typeset=engine.buildTypeset('xxxxx');
+  assert.equal(engine.createLayoutLine(typeset,0,4,0,6,0,true).strike,true,'已完成待办带删除线');
+  assert.equal(engine.createLayoutLine(typeset,0,4,0,0,0,true).inset,0,'正文段落不缩进');
+});
+check('list paragraph hit testing and caret x follow the text column inset',()=>{
+  const l=line(0,'abcd',0);
+  l.nativeLine=null; l.inset=19.2; l.markerOn=true; l.markerX=0; l.markerW=19.2;
+  l.paraKind=api.ParagraphKind.TODO;
+  const pad=12;
+  assert.equal(api.HitTester.offsetToX(l,0,pad),pad+19.2,'段首光标落在文字列起点');
+  assert.equal(api.HitTester.offsetToX(l,2,pad),pad+19.2+20);
+  assert.equal(api.HitTester.hitTest(pad+19.2+22,5,[l],pad,0,'abcd'),2,'命中要减掉 inset');
+  assert.equal(api.HitTester.hitTest(pad+2,5,[l],pad,0,'abcd'),0,'点在符号槽内回到段首');
+  assert.equal(api.HitTester.markerLineAt(pad+10,5,[l],pad,0),0,'待办符号命中本行');
+  assert.equal(api.HitTester.markerLineAt(pad+60,5,[l],pad,0),-1,'文字区不算符号命中');
+  const bullet=line(0,'abcd',0);
+  bullet.nativeLine=null; bullet.inset=19.2; bullet.markerOn=true; bullet.markerX=0; bullet.markerW=19.2;
+  bullet.paraKind=api.ParagraphKind.BULLET;
+  assert.equal(api.HitTester.markerLineAt(pad+10,5,[bullet],pad,0),-1,'列表的 • 不响应点击');
+  const wrapped=line(5,'efgh',28);
+  wrapped.nativeLine=null; wrapped.inset=19.2; wrapped.markerOn=false; wrapped.markerW=19.2;
+  assert.equal(api.HitTester.markerLineAt(pad+10,33,[wrapped],pad,0),-1,'续行没有符号命中区');
+});
+check('renderer draws one marker in the slot, shifts text and strikes done todos',()=>{
+  const theme=new api.RenderTheme();
+  theme.paddingLeftVp=0; theme.paddingTopVp=0; theme.fontSizeVp=16; theme.pxPerVp=1;
+  theme.viewWidthVp=400; theme.textColumnWidthVp=400;
+  const blobs=[],rects=[],circles=[],paths=[];let penAttached=false;
+  const ctx={canvas:{clear(){},attachBrush(){},detachBrush(){},
+    attachPen(){penAttached=true;},detachPen(){penAttached=false;},
+    drawTextBlob(b,x,y){blobs.push({b,x,y});},drawRect(r){rects.push(r);},
+    drawCircle(x,y,r){circles.push({x,y,r,stroked:penAttached});},
+    drawPath(p){paths.push(p);},
+    save(){},restore(){},translate(){},scale(){},clipRect(){}},invalidate(){}};
+  const renderer=new api.GlyphRenderer(theme);
+  const l=line(0,'ab',0);
+  l.inset=19.2; l.markerOn=true; l.markerX=0; l.markerW=19.2; l.paraKind=4;
+  renderer.draw(ctx,[l],null,null,null,new api.ViewportInfo(0,300),null,[]);
+  assert.equal(blobs.length,1,'符号已改成几何绘制，只剩正文一次 text blob');
+  assert.equal(blobs[0].x,19.2,'正文整体右移到文字列');
+  assert.equal(circles.length,1,'列表符号 = 一个实心圆点');
+  assert.equal(circles[0].stroked,false,'列表用画刷填充');
+  assert.equal(Math.round(circles[0].x*10)/10,9.6,'圆点在符号槽中心');
+  assert.equal(Math.round(circles[0].r*100)/100,Math.round(16*0.20*100)/100);
+  // 待办：空心圆环（画笔描边），没有对勾
+  const todo=line(0,'ab',0);
+  todo.inset=19.2; todo.markerOn=true; todo.markerW=19.2; todo.paraKind=5; todo.width=20;
+  blobs.length=0; rects.length=0; circles.length=0; paths.length=0;
+  renderer.draw(ctx,[todo],null,null,null,new api.ViewportInfo(0,300),null,[]);
+  assert.equal(circles.length,1,'待办画圆环');
+  assert.equal(circles[0].stroked,true,'圆环走画笔描边');
+  assert.equal(paths.length,0,'未完成待办没有对勾');
+  // 已完成：圆环 + 对勾路径 + 删除线，全部几何绘制，不依赖字体字形
+  const done=line(0,'ab',0);
+  done.inset=19.2; done.markerOn=true; done.markerW=19.2; done.paraKind=6; done.strike=true; done.width=20;
+  blobs.length=0; rects.length=0; circles.length=0; paths.length=0;
+  renderer.draw(ctx,[done],null,null,null,new api.ViewportInfo(0,300),null,[]);
+  assert.equal(circles.length,1,'已完成仍是"圆"');
+  assert.equal(circles[0].stroked,true);
+  assert.equal(paths.length,1,'圆里再加一条对勾路径');
+  assert.equal(rects.length,1,'已完成待办画一条删除线');
+  assert.ok(Math.abs(rects[0].top-(18-16*0.32))<0.01);
+  assert.equal(rects[0].left,19.2);
+  assert.equal(rects[0].right,19.2+20);
+});
+check('toolbar paragraph kind toggles through the editor and enters the format transaction',()=>{
+  const e=editor('abc');
+  let edits=0,formats=0;
+  e.onEdit=()=>edits++; e.onFormatChange=()=>formats++;
+  e.setParagraphKind(api.ParagraphKind.BULLET);
+  assert.equal(e.paragraphKind(),4);
+  e.setParagraphKind(api.ParagraphKind.BULLET);
+  assert.equal(e.paragraphKind(),0,'再点一次回到正文');
+  assert.equal(edits,2);
+  assert.equal(formats,2);
+  e.setParagraphKind(api.ParagraphKind.TODO);
+  e.toggleTodoAt(0);
+  assert.equal(e.paragraphKind(),6,'点 ○ 切换完成态');
+  assert.equal(formats,4);
+});
+
+// ===== 复核发现的回归（P0/P1/P2） =====
+check('inline-only runs never shadow a paragraph kind',()=>{
+  const d=doc('abc\ndef');
+  d.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  d.insert(0,'X');                                  // 段首 run 被推后
+  d.toggleInline(api.StyleKind.BOLD,0,1);           // 段首出现 heading=0 的行内 run
+  assert.equal(d.paragraphKindAt(0),4,'段首加粗不能把列表读成正文');
+  d.setIndent(0,1);
+  assert.equal(d.paragraphIndentAt(0),1,'层级调整不能被行内 run 挡住');
+  d.toggleTodoAt(0);
+  assert.equal(d.paragraphKindAt(0),5);
+});
+check('deleting all text of a list item keeps the list for the next character',()=>{
+  const d=doc('a\nitem');
+  d.setParagraphKind(api.ParagraphKind.TODO,2,2);
+  d.delete(2,6);
+  assert.equal(d.text,'a\n');
+  assert.equal(d.paragraphKindAt(2),5,'删空后仍是待办项');
+  d.insert(2,'new');
+  assert.equal(d.paragraphKindAt(2),5,'重新输入仍在列表里');
+});
+check('pending list style follows inserts that happen before it',()=>{
+  const d=doc('abc\ndefg\n');
+  d.setParagraphKind(api.ParagraphKind.TODO,9,9);
+  assert.equal(d.paragraphKindAt(9),5);
+  d.insert(3,'X\n');
+  assert.equal(d.paragraphKindAt(9),0,'待生效属性不能污染它前面的段落');
+  d.insert(11,'Y');
+  assert.equal(d.paragraphKindAt(11),5,'待生效属性要落在真正的末段');
+});
+check('paragraph kind applies to every selected paragraph, not just the first',()=>{
+  const e=editor('一\n二\n三');
+  e.doc.setParagraphKind(api.ParagraphKind.H1,0,0);
+  e.selMgr.setSelection(0,5);
+  e.setParagraphKind(api.ParagraphKind.H1);
+  assert.equal(e.doc.paragraphKindAt(0),1);
+  assert.equal(e.doc.paragraphKindAt(2),1,'混选时统一设为标题，而不是整体取消');
+  assert.equal(e.doc.paragraphKindAt(4),1);
+  e.setParagraphKind(api.ParagraphKind.H1);
+  assert.equal(e.doc.paragraphKindAt(2),0,'全部已是该种类时再点一次才回到正文');
+});
+check('list paragraph wrapping asks native for a narrower width',()=>{
+  const engine=new api.TextLayoutEngine(400,16,24,4,1);
+  const list=new api.LayoutCache(engine);
+  list.setParagraphProvider(()=> [4,0]);
+  list.ensureLayout('x'.repeat(5),1,1,999);
+  assert.equal(Math.round(lastLineBreakWidth),Math.round(400-16*1.2),
+    '列表段落折行宽度必须扣掉符号槽，否则右移后溢出');
+  const body=new api.LayoutCache(new api.TextLayoutEngine(400,16,24,4,1));
+  body.ensureLayout('x'.repeat(5),1,1,999);
+  assert.equal(Math.round(lastLineBreakWidth),400,'正文段落仍按整列宽折行');
+});
+
+// ===== 复核第二轮：以换行开头 / 合并段落 / 选区到文末 / 待生效属性左移 =====
+check('a document that starts with a newline keeps its first empty paragraph addressable',()=>{
+  const d=doc('\nnext');
+  assert.deepEqual(json(d.paragraphBounds(0)),[0,0],'首段必须是 [0,0] 的合法区间');
+  d.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  assert.equal(d.paragraphKindAt(0),4);
+  assert.equal(d.paragraphKindAt(1),0,'属性不能落到第二段');
+  d.insert(0,'x');
+  assert.equal(d.text,'x\nnext');
+  assert.equal(d.paragraphKindAt(0),4);
+});
+check('merged paragraphs follow the first paragraph style in both deletion directions',()=>{
+  const forward=doc('aa\nbb');
+  forward.setParagraphKind(api.ParagraphKind.BULLET,3,3);
+  forward.delete(2,3);
+  assert.equal(forward.text,'aabb');
+  assert.equal(forward.paragraphKindAt(0),0,'合并段跟随前一段（正文）');
+  assert.equal(forward.paragraphKindAt(3),0,'后一段残留的列表属性不能复活');
+  const backward=doc('aa\nbb');
+  backward.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  backward.delete(2,3);
+  assert.equal(backward.paragraphKindAt(0),4,'合并段跟随前一段（列表）');
+});
+check('selecting to the end also styles an empty trailing paragraph',()=>{
+  const d=doc('aa\n');
+  d.setParagraphKind(api.ParagraphKind.BULLET,0,3);
+  assert.equal(d.paragraphKindAt(3),4,'空末段要跟选区一起变成列表');
+  d.insert(3,'x');
+  assert.equal(d.paragraphKindAt(3),4);
+});
+check('deleting text before an empty list item keeps the pending list style',()=>{
+  const d=doc('aa\n');
+  d.setParagraphKind(api.ParagraphKind.BULLET,3,3);
+  d.delete(0,1);
+  assert.equal(d.paragraphKindAt(2),4,'待生效属性要跟着左移');
+  d.insert(2,'z');
+  assert.equal(d.paragraphKindAt(2),4);
+});
+check('a leading empty paragraph does not inherit the next paragraph list style',()=>{
+  const d=doc('\nitem');
+  d.setParagraphKind(api.ParagraphKind.BULLET,1,1);
+  const engine=new api.TextLayoutEngine(200,16,24,4,1);
+  const cache=new api.LayoutCache(engine);
+  cache.setRuns(d.runs);
+  cache.setParagraphProvider((off)=>[d.paragraphKindAt(off),d.paragraphIndentAt(off)]);
+  const lines=cache.ensureLayout(d.text,d.version,d.formatVersion,999);
+  assert.equal(lines[0].paraKind,0,'首行是空段落，不能读成第二段的列表');
+  assert.equal(lines[0].inset,0);
+  assert.equal(lines[0].markerOn,false);
+  assert.equal(lines[1].paraKind,4);
+  assert.equal(lines[1].markerOn,true);
+});
+
+// ===== 回车 / Tab 的列表语义（B 阶段 · 回车部分） =====
+check('Enter at the end of a list item keeps the item and continues the list',()=>{
+  const e=editor('item');
+  e.doc.setRuns([new api.FormatRun(0,4,false,false,api.ParagraphKind.BULLET)]);
+  e.doc.moveCaret(4);
+  e.selMgr.collapse(4);
+  e.insertExternalText('\n');
+  assert.equal(e.doc.text,'item\n');
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.BULLET,'原段不能丢符号');
+  assert.equal(e.doc.paragraphKindAt(5),api.ParagraphKind.BULLET,'新段继续列表');
+});
+check('Enter in a bullet keeps the list level on the new item',()=>{
+  const e=editor('item');
+  e.doc.setRuns([new api.FormatRun(0,4,false,false,api.ParagraphKind.BULLET,2)]);
+  e.doc.moveCaret(4);
+  e.selMgr.collapse(4);
+  e.insertExternalText('\n');
+  assert.equal(e.doc.paragraphIndentAt(0),2);
+  assert.equal(e.doc.paragraphIndentAt(5),2,'新列表项继承层级');
+});
+check('Enter in the middle of a list item splits it and keeps both halves in the list',()=>{
+  const e=editor('item');
+  e.doc.setRuns([new api.FormatRun(0,4,false,false,api.ParagraphKind.TODO)]);
+  e.doc.moveCaret(2);
+  e.selMgr.collapse(2);
+  e.insertExternalText('\n');
+  assert.equal(e.doc.text,'it\nem');
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.TODO);
+  assert.equal(e.doc.paragraphKindAt(3),api.ParagraphKind.TODO);
+});
+check('Enter on an empty list item leaves the list without adding a paragraph',()=>{
+  const e=editor('');
+  e.doc.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  e.selMgr.collapse(0);
+  e.insertExternalText('\n');
+  assert.equal(e.doc.text,'','空列表项回车不新增段落');
+  assert.equal(e.doc.paragraphKindAt(0),0,'回到正文');
+});
+check('Enter in a body paragraph still inserts a plain newline',()=>{
+  const e=editor('abc');
+  e.doc.moveCaret(3);
+  e.selMgr.collapse(3);
+  e.insertExternalText('\n');
+  assert.equal(e.doc.text,'abc\n');
+  assert.equal(e.doc.runs.length,0,'正文段落回车不产生段落标注');
+  assert.equal(e.doc.paragraphKindAt(0),0);
+});
+check('newline and its inherited list style are one undoable edit',()=>{
+  const e=editor('item');
+  e.doc.setRuns([new api.FormatRun(0,4,false,false,api.ParagraphKind.BULLET)]);
+  e.doc.moveCaret(4);
+  e.selMgr.collapse(4);
+  let edits=0;
+  e.onEdit=()=>edits++;
+  e.insertExternalText('\n');
+  assert.equal(edits,1,'换行 + 继承段落种类必须合并成一次编辑事务');
+});
+check('typing at a paragraph start keeps its list style',()=>{
+  const d=doc('item');
+  d.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  d.moveCaret(0);
+  d.insert(0,'X');
+  assert.equal(d.text,'Xitem');
+  assert.equal(d.paragraphKindAt(0),api.ParagraphKind.BULLET,'段首插入不能把标注推到段中间');
+});
+
+// ===== 待办圆点点击：一次单击只能切一次 =====
+function markerEditor(text) {
+  const e=editor(text);
+  e.doc.setParagraphKind(api.ParagraphKind.TODO,0,0);
+  const l=line(0,text,0);
+  l.nativeLine=null; l.paraKind=api.ParagraphKind.TODO; l.markerOn=true;
+  l.markerX=0; l.markerW=19.2; l.inset=19.2;
+  e.lines=[l];
+  e.padLeftVp=()=>0;
+  e.padTopVp=()=>0;
+  return e;
+}
+check('a pointer click and its synthetic touch copy toggle a todo exactly once',()=>{
+  const e=markerEditor('task');
+  assert.equal(e.toggleTodoAtMarker(10,12),true,'符号命中应被消费');
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.TODO_DONE,'第一次命中切到已完成');
+  // PC 上一次单击会再派发一份 onTouch(Up)：同段落 120ms 内不得再切
+  assert.equal(e.toggleTodoAtMarker(10,12),true);
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.TODO_DONE,'重复派发不能再切回来');
+  // 隔开一段时间后的真实第二次点击，必须能切回去
+  e.lastMarkerToggleAt=0;
+  assert.equal(e.toggleTodoAtMarker(10,12),true);
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.TODO,'再次点击恢复未完成');
+});
+check('a tap outside the marker slot is not consumed and keeps the todo state',()=>{
+  const e=markerEditor('task');
+  assert.equal(e.toggleTodoAtMarker(80,12),false,'文字区不算符号命中');
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.TODO);
+});
+check('tapping the marker of an empty todo item toggles it too',()=>{
+  const e=editor('');
+  e.doc.setParagraphKind(api.ParagraphKind.TODO,0,0);
+  const l=line(0,'',0);
+  l.nativeLine=null; l.paraKind=api.ParagraphKind.TODO; l.markerOn=true;
+  l.markerX=0; l.markerW=19.2; l.inset=19.2;
+  e.lines=[l];
+  e.padLeftVp=()=>0; e.padTopVp=()=>0;
+  assert.equal(e.toggleTodoAtMarker(10,12),true);
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.TODO_DONE,'空待办项也能勾上');
+});
+check('tapping the bullet of an unordered list never turns it into a todo',()=>{
+  const e=editor('item');
+  e.doc.setParagraphKind(api.ParagraphKind.BULLET,0,0);
+  const l=line(0,'item',0);
+  l.nativeLine=null; l.paraKind=api.ParagraphKind.BULLET; l.markerOn=true;
+  l.markerX=0; l.markerW=19.2; l.inset=19.2;
+  e.lines=[l];
+  e.padLeftVp=()=>0; e.padTopVp=()=>0;
+  assert.equal(e.toggleTodoAtMarker(10,12),false);
+  assert.equal(e.doc.paragraphKindAt(0),api.ParagraphKind.BULLET,'列表符号不响应点击');
+});
+
+
 (async()=>{
   for(const failed of [false,true]) {
     let completePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise((resolve,reject)=>{

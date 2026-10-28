@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语流 · 知识单元与跨书画布 统一方案</title>
+<style>
+  :root{
+    --bg:#f6f5f2; --card:#ffffff; --ink:#1c1c1e; --sub:#6e6e73; --faint:#a6a6ab;
+    --line:#e6e3dd; --line-strong:#d8d3ca;
+    --brand:#0a59f7; --brand-soft:#eef4ff;
+    --amber:#a8551a; --amber-soft:#fbf1e6; --amber-line:#e8d3bd;
+    --rec:#1a7f37; --rec-soft:#e9f6ee;
+    --bad:#c0392b; --bad-soft:#fdeeec;
+    --shadow:0 1px 2px rgba(60,40,20,.05);
+    --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#101011; --card:#1a1a1c; --ink:#ededed; --sub:#9a9aa0; --faint:#6e6e73;
+      --line:#2b2b2f; --line-strong:#3b3b41;
+      --brand:#5b93ff; --brand-soft:#16233d;
+      --amber:#e0a273; --amber-soft:#2b2018; --amber-line:#4a3524;
+      --rec:#5fd08a; --rec-soft:#12281b;
+      --bad:#ff7b6b; --bad-soft:#2c1715;
+      --shadow:none;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  html,body{margin:0}
+  body{
+    background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;padding:0 20px 90px;
+  }
+  .wrap{max-width:1020px;margin:0 auto}
+
+  /* 顶部 */
+  header.top{padding:46px 0 8px}
+  .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:12px}
+  h1{font-size:32px;line-height:1.24;margin:0 0 14px;letter-spacing:-.015em}
+  h1 small{display:block;font-size:16px;font-weight:400;color:var(--sub);letter-spacing:0;margin-top:10px}
+  .claim{
+    margin:24px 0 8px;padding:20px 22px;border-radius:var(--radius);
+    background:var(--amber-soft);border:1px solid var(--amber-line);
+    font-size:17px;line-height:1.8;
+  }
+  .claim b{color:var(--amber)}
+  .claim .sub{display:block;margin-top:8px;font-size:13.5px;color:var(--sub)}
+
+  /* 目录 */
+  nav.toc{
+    position:sticky;top:0;z-index:20;margin:16px -20px 6px;padding:10px 20px;
+    background:rgba(246,245,242,.86);
+    backdrop-filter:blur(14px) saturate(1.2);
+    border-bottom:1px solid var(--line);
+    display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;
+  }
+  nav.toc::-webkit-scrollbar{display:none}
+  @media (prefers-color-scheme: dark){ nav.toc{background:rgba(16,16,17,.86)} }
+  @supports not (backdrop-filter: blur(4px)){ nav.toc{background:var(--bg)} }
+  nav.toc a{
+    flex:none;text-decoration:none;color:var(--sub);font-size:12.5px;
+    padding:5px 10px;border-radius:999px;border:1px solid transparent;white-space:nowrap;
+  }
+  nav.toc a:hover{color:var(--ink);border-color:var(--line-strong)}
+
+  section{margin-top:44px;scroll-margin-top:60px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:2px}
+  .num{flex:none;width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+       font-size:12.5px;font-weight:700;color:#fff;background:var(--ink)}
+  .sec-head h2{font-size:21px;margin:0;letter-spacing:-.01em}
+  .sec-sub{margin:0 0 18px 38px;color:var(--sub);font-size:13.5px}
+
+  /* 两层洞察合并 */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
+  .insight{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow)}
+  .insight .who{font-size:12px;color:var(--faint);letter-spacing:.06em;margin-bottom:6px}
+  .insight p{margin:0;font-size:14px}
+  .join{
+    text-align:center;color:var(--amber);font-weight:600;font-size:13px;
+    margin:2px 0 10px;letter-spacing:.02em;
+  }
+
+  /* 三层模型 */
+  .layers{display:grid;gap:8px;margin:16px 0 6px}
+  .layer{border:1px solid var(--line);border-radius:12px;padding:14px 18px;background:var(--card);position:relative}
+  .layer b{font-size:14.5px}
+  .layer .tagline{display:block;font-size:12.5px;color:var(--sub);margin-top:3px}
+  .layer.l3{background:var(--amber-soft);border-color:var(--amber-line)}
+  .layer.l2{background:var(--brand-soft);border-color:color-mix(in srgb,var(--brand) 20%,var(--line))}
+  .layer .role{position:absolute;right:16px;top:14px;font-size:11.5px;color:var(--faint)}
+  @media (max-width:560px){ .layer .role{position:static;display:block;margin-top:4px} }
+
+  /* 粒度阶梯 */
+  .ladder{display:grid;gap:6px;margin:16px 0}
+  .rung{display:grid;grid-template-columns:52px 1fr auto;gap:12px;align-items:center;
+        background:var(--card);border:1px solid var(--line);border-radius:11px;padding:11px 14px}
+  .lvl{font-size:12.5px;font-weight:700;color:var(--amber);letter-spacing:.02em}
+  .rung .body b{font-size:14px}
+  .rung .body span{display:block;font-size:12.5px;color:var(--sub);margin-top:2px}
+  .mark{font-size:11.5px;padding:2px 9px;border-radius:999px;white-space:nowrap;font-weight:600}
+  .mark.main{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber-line)}
+  .mark.card{background:var(--rec-soft);color:var(--rec)}
+  .mark.sub{background:transparent;border:1px solid var(--line-strong);color:var(--faint);font-weight:500}
+  .rung.dim{opacity:.82}
+
+  .guards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+  .guard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .guard b{display:block;font-size:13px;margin-bottom:4px;color:var(--amber)}
+  .guard span{font-size:12.5px;color:var(--sub)}
+
+  /* Unit ≠ Card */
+  .sep{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+  .panel h4{margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600;letter-spacing:.04em}
+  .unitbox{border:1.5px solid var(--amber);border-radius:10px;padding:12px 14px;background:var(--amber-soft)}
+  .unitbox .name{font-size:15px;font-weight:700}
+  .unitbox .meta{font-size:12.5px;color:var(--sub);margin-top:4px}
+  .cards3{display:grid;gap:6px}
+  .cardbox{border:1px dashed var(--line-strong);border-radius:9px;padding:8px 12px;font-size:13px;display:flex;justify-content:space-between;gap:10px}
+  .cardbox em{font-style:normal;color:var(--faint);font-size:12px}
+  .note-line{margin:10px 0 0;font-size:12.5px;color:var(--sub)}
+
+  /* 作用域 */
+  .scopes{margin:16px 0 4px}
+  .scope{border-radius:14px;padding:14px;border:1px solid var(--line-strong)}
+  .s3{border-color:var(--amber);background:var(--amber-soft)}
+  .s2{border-color:color-mix(in srgb,var(--brand) 30%,var(--line));background:var(--brand-soft);margin-top:10px}
+  .s1{border-color:var(--line-strong);background:var(--card);margin-top:10px}
+  .scope .head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .scope .head b{font-size:14px}
+  .scope .head span{font-size:12.5px;color:var(--sub)}
+  .scope p{margin:6px 0 0;font-size:12.8px;color:var(--sub)}
+  .scope .hint{color:var(--faint)}
+
+  /* 关系 */
+  .rels{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:16px 0}
+  .rel{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:12px 14px}
+  .rel .ln{height:2px;margin:2px 0 9px;background:var(--line-strong);position:relative}
+  .rel .ln.solid{background:var(--ink)}
+  .rel .ln.dash{background:repeating-linear-gradient(90deg,var(--ink) 0 6px,transparent 6px 12px)}
+  .rel .ln.struct{background:var(--line-strong);height:1px}
+  .rel .ln.arrow::after{content:"›";position:absolute;right:-2px;top:-11px;color:var(--ink);font-size:16px}
+  .rel b{font-size:13px;display:block}
+  .rel span{font-size:12px;color:var(--faint)}
+  .rel .who{font-size:11.5px;color:var(--sub);margin-top:4px}
+
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;font-size:13.2px;margin:12px 0}
+  th,td{border-bottom:1px solid var(--line);padding:10px 8px;text-align:left;vertical-align:top}
+  th{color:var(--sub);font-weight:600;font-size:12.5px;white-space:nowrap}
+  td.center{text-align:center;white-space:nowrap}
+  .st{font-size:11.5px;padding:2px 8px;border-radius:999px;font-weight:600;white-space:nowrap}
+  .st.keep{background:var(--rec-soft);color:var(--rec)}
+  .st.rev{background:var(--bad-soft);color:var(--bad)}
+  .st.tw{background:var(--brand-soft);color:var(--brand)}
+  .st.ex{background:var(--amber-soft);color:var(--amber)}
+
+  /* 时间线 */
+  .timeline{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin:16px 0 8px}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:12px 12px 13px;position:relative}
+  .step .ph{font-size:12px;font-weight:700;color:var(--amber)}
+  .step b{display:block;font-size:12.8px;margin:4px 0 3px}
+  .step span{font-size:11.8px;color:var(--sub);display:block;line-height:1.55}
+  .step .d{font-size:11.5px;color:var(--faint);margin-top:6px}
+  .total{margin:6px 0 0;font-size:12.5px;color:var(--sub)}
+
+  /* 决策 */
+  .dec{display:grid;gap:8px;margin:14px 0}
+  .drow{display:grid;grid-template-columns:46px 1fr 92px;gap:12px;align-items:start;
+        background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 16px}
+  .drow .id{font-size:12.5px;font-weight:700;color:var(--brand)}
+  .drow b{font-size:13.8px;display:block}
+  .drow span{font-size:12.6px;color:var(--sub);display:block;margin-top:3px}
+  .drow .rec{font-size:12px;color:var(--rec);font-weight:600;text-align:right}
+
+  .callout{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--amber);
+           border-radius:12px;padding:14px 18px;font-size:13.5px;margin:14px 0;box-shadow:var(--shadow)}
+  .callout b{color:var(--amber)}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;background:rgba(120,120,128,.12);
+       background:color-mix(in srgb,var(--ink) 6%,transparent);padding:1px 5px;border-radius:5px;font-size:12.6px;overflow-wrap:anywhere}
+
+  footer{margin-top:46px;padding-top:18px;border-top:1px solid var(--line);font-size:12.3px;color:var(--faint);line-height:1.9}
+  .btn{font:inherit;font-size:12.5px;padding:7px 13px;border-radius:9px;cursor:pointer;
+       border:1px solid var(--line-strong);background:var(--card);color:var(--ink)}
+  .btn:hover{border-color:var(--amber);color:var(--amber)}
+  :focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);background:rgba(0,0,0,.86);
+         color:#fff;font-size:13px;padding:9px 16px;border-radius:999px;opacity:0;pointer-events:none;
+         transition:opacity .22s,transform .22s;z-index:60}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  @media (max-width:760px){
+    .split,.sep,.guards,.rels{grid-template-columns:1fr}
+    .timeline{grid-template-columns:1fr 1fr}
+    .drow{grid-template-columns:38px 1fr}
+    .drow .rec{grid-column:2;text-align:left;margin-top:4px}
+    h1{font-size:25px}
+    body{padding:0 14px 70px}
+  }
+  @media print{
+    nav.toc,.btn,.toast{display:none}
+    body{background:#fff;padding:0}
+    section{break-inside:avoid}
+    .step,.drow,.rung,.layer,.panel{break-inside:avoid}
+  }
+  @media (prefers-reduced-motion: reduce){ *{transition:none!important;scroll-behavior:auto!important} }
+</style>
+</head>
+<body>
+<div style="position:relative;z-index:999;margin:0 0 14px;padding:12px 16px;border:1px solid #d8d3ca;border-left:4px solid #a8551a;border-radius:10px;background:#fbf1e6;color:#6b4a2a;font:13.5px/1.7 -apple-system,'HarmonyOS Sans SC','PingFang SC',sans-serif">
+<b>历史存档（2026-10-22 r1）</b>：本页的模型已被「写作卡 + C 型嵌套」取代，不再作为规格。<br>
+请以桌面 <b>语流-思路板-设计预览.html</b>（交互原型 + 规格摘要）与 <b>AI-README-语流思路板实现.md</b>（唯一规格来源）为准。
+</div>
+
+<div class="wrap">
+
+  <header class="top">
+    <div class="eyebrow">语流 / Weaver · 概念方案</div>
+    <h1>知识单元与跨书画布
+      <small>把「按书整理」和「按关系整理」合成一套模型</small>
+    </h1>
+
+    <div class="claim">
+      <b>书负责「存放」，画布负责「看见关系」</b>；一个知识点可以在书里被写下来、在画布上被连起来，
+      而它<b>始终只有一份原文</b>。
+      <span class="sub">面向学生：写的时候按书来，理的时候按关系来。　面向作者：人物、设定、伏笔不再是三份文档，而是同一张网上的节点。</span>
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="目录">
+    <a href="#s1">两个洞察</a>
+    <a href="#s2">三层模型</a>
+    <a href="#s3">粒度阶梯</a>
+    <a href="#s4">Unit ≠ Card</a>
+    <a href="#s5">跨书作用域</a>
+    <a href="#s6">六种关系</a>
+    <a href="#s7">动线</a>
+    <a href="#s8">对旧决策的修订</a>
+    <a href="#s9">分期</a>
+    <a href="#s10">新增待拍板</a>
+  </nav>
+
+  <!-- 1 -->
+  <section id="s1">
+    <div class="sec-head"><div class="num">1</div><h2>两个洞察其实是一套系统的两层</h2></div>
+    <p class="sec-sub">你的洞察补上了「横向」，我上一轮的细化补上了「纵向」。</p>
+
+    <div class="split">
+      <div class="insight">
+        <div class="who">你的洞察 · 横向</div>
+        <p>书籍/笔记是知识的<b>容器</b>，按书整理是自然秩序；但同一套知识散在不同书里，
+           画布是唯一能<b>看见它们之间联系</b>的地方。</p>
+      </div>
+      <div class="insight">
+        <div class="who">上一轮的细化 · 纵向</div>
+        <p>知识的最小单元不必是一篇笔记，可以下沉到<b>段落 / 句子 / 词 / 任意字符区间</b>；
+           粒度越细，覆盖面越大，但越需要锚点与护栏。</p>
+      </div>
+    </div>
+    <div class="join">↓　合成　↓</div>
+    <div class="callout">
+      <b>知识的最小单元是「可定位的内容片段」，不是「一篇笔记」。</b>
+      容器负责秩序，单元负责被引用，画布负责被看见——三者共享同一份正文。
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section id="s2">
+    <div class="sec-head"><div class="num">2</div><h2>三层模型</h2></div>
+    <p class="sec-sub">容器层不动，新增单元层与关系层；正文永远只有一份。</p>
+
+    <div class="layers">
+      <div class="layer l3">
+        <b>关系层 · Canvas / Link</b><span class="role">不拥有正文</span>
+        <span class="tagline">跨书聚合、结构可视化、复习路径。存的是「单元之间的语义关系」和「单元在某张画布上的位置」。</span>
+      </div>
+      <div class="layer l2">
+        <b>单元层 · Unit（知识点 / 摘录 / 概念）</b><span class="role">可定位、可去重</span>
+        <span class="tagline">身份 = 锚点 + 指纹。它指向正文，但不是正文的副本；同一段文字被存两次，只应有一个单元。</span>
+      </div>
+      <div class="layer">
+        <b>容器层 · 书 → 文稿 → 段落 → 字符</b><span class="role">唯一真相</span>
+        <span class="tagline">顺序、归属、全文检索、导出。现有的 books / chapters / characters / world_settings / inspirations 全部保留。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section id="s3">
+    <div class="sec-head"><div class="num">3</div><h2>粒度阶梯：从一本书到一个字符</h2></div>
+    <p class="sec-sub">六级，两种定位类型；默认只有段落以上成卡，越细越先做「摘录/提及」。</p>
+
+    <div class="ladder">
+      <div class="rung">
+        <div class="lvl">L5</div>
+        <div class="body"><b>书（项目）</b><span>实体型 · 身份就是 bookId · 例：整本《高等数学》</span></div>
+        <div class="mark card">默认成卡</div>
+      </div>
+      <div class="rung">
+        <div class="lvl">L4</div>
+        <div class="body"><b>文稿（章）</b><span>实体型 · 身份是 docId（人物/设定卡同属这一级）</span></div>
+        <div class="mark card">默认成卡</div>
+      </div>
+      <div class="rung">
+        <div class="lvl">L3</div>
+        <div class="body"><b>段落</b><span>区间型 · 文稿序号 + 首尾指纹 · 例：ε-δ 定义那一段</span></div>
+        <div class="mark main">主力级别</div>
+      </div>
+      <div class="rung dim">
+        <div class="lvl">L2</div>
+        <div class="body"><b>句子 / 摘录</b><span>区间型 · 段落内偏移 · 默认附在宿主卡下，不单独占画布</span></div>
+        <div class="mark sub">摘录</div>
+      </div>
+      <div class="rung dim">
+        <div class="lvl">L1</div>
+        <div class="body"><b>术语 / 概念</b><span>词形型 · 一个词 = 1 个单元 + N 个出现位置（不是 N 张卡）</span></div>
+        <div class="mark sub">可晋升</div>
+      </div>
+      <div class="rung dim">
+        <div class="lvl">L0</div>
+        <div class="body"><b>任意字符区间</b><span>区间型 · 最细、最脆弱 · 用于「只保留这半句」</span></div>
+        <div class="mark sub">摘录</div>
+      </div>
+    </div>
+
+    <div class="guards">
+      <div class="guard"><b>护栏一 · 默认成卡级别</b><span>只有 L3–L5 默认成卡，L0–L2 是摘录/提及，避免每个词都变成节点。</span></div>
+      <div class="guard"><b>护栏二 · 晋升阈值</b><span>一个术语被 ≥3 张不同卡片提到，才建议「升级为概念卡」，用户点一下才生效。</span></div>
+      <div class="guard"><b>护栏三 · 碎片上限</b><span>单画布软上限 200 张；全局画布默认只显示有连接的分量，孤立点折叠成一行。</span></div>
+    </div>
+
+    <p class="note-line">还有一条隐藏价值：<b>合并与拆分</b>。相邻两段可合并成一个单元，一段也可拆出一个句子——原文不动，只改锚点范围，且可撤销。</p>
+  </section>
+
+  <!-- 4 -->
+  <section id="s4">
+    <div class="sec-head"><div class="num">4</div><h2>最关键的一条：单元 ≠ 卡片</h2></div>
+    <p class="sec-sub">单元是知识，卡片是它在某张画布上的一次呈现。分开，跨书才不会分叉。</p>
+
+    <div class="sep">
+      <div class="panel">
+        <h4>UNIT · 全局唯一</h4>
+        <div class="unitbox">
+          <div class="name">「极限」</div>
+          <div class="meta">L1 术语 · 出现 4 次 · 指针向 2 本书</div>
+        </div>
+        <p class="note-line">同一段文字被存两次 → 复用同一个单元，只新增一张卡。</p>
+      </div>
+      <div class="panel">
+        <h4>CARD · 每张画布一份位置</h4>
+        <div class="cards3">
+          <div class="cardbox"><span>单稿画布</span><em>x 320 · y 180</em></div>
+          <div class="cardbox"><span>本书画布</span><em>x 860 · y 40</em></div>
+          <div class="cardbox"><span>全局画布</span><em>x 120 · y 640</em></div>
+        </div>
+        <p class="note-line">同一张画布里，一个单元只允许一张卡；统计「被引用几次」才数得准。</p>
+      </div>
+    </div>
+
+    <div class="callout">
+      如果不分开会怎样：同一段文字在两张画布各建一张卡 → 内容分叉、位置无法共享、统计失真。
+      <b>分开之后，「跨书」只是另一张画布，不是另一套数据。</b>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section id="s5">
+    <div class="sec-head"><div class="num">5</div><h2>跨书：三种作用域与删除语义</h2></div>
+    <p class="sec-sub">跨书不是「把全库倒进一张图」，而是「显式晋升 + 按需聚合」。</p>
+
+    <div class="scopes">
+      <div class="scope s3">
+        <div class="head"><b>GLOBAL · 跨书</b><span>只显示显式晋升为全局的单元 + 跨书候选</span></div>
+        <p>期末把三门课串起来；系列作共享设定。<span class="hint">　默认不自动全局，避免书库混成一锅。</span></p>
+      </div>
+      <div class="scope s2">
+        <div class="head"><b>BOOK · 一门课 / 一本书</b><span>本书的单元 + 人物/设定/章节实体卡</span></div>
+        <p>课程知识体系、小说世界观；结构关系（书⊃章⊃段）在这里自动生成，不用手画。</p>
+      </div>
+      <div class="scope s1">
+        <div class="head"><b>DOC · 一篇文稿</b><span>只显示这篇里的单元</span></div>
+        <p>论文思路、章节梳理；从文稿 ⋯ 菜单进入，返回即回正文。</p>
+      </div>
+    </div>
+
+    <table>
+      <thead><tr><th>操作</th><th>正文</th><th>单元</th><th>书内卡片</th><th>全局卡片</th></tr></thead>
+      <tbody>
+        <tr><td>删文稿</td><td>废纸篓 7 天</td><td>标记孤儿</td><td>灰卡</td><td>灰卡 + 「原文已删除」</td></tr>
+        <tr><td>删书</td><td>级联删</td><td>标记孤儿</td><td>随书删画布</td><td><b>保留灰卡</b>（含 120 字快照）</td></tr>
+        <tr><td>清空废纸篓</td><td>物理删除</td><td>保留孤儿与快照</td><td>灰卡</td><td>灰卡，可一键清理</td></tr>
+      </tbody>
+    </table>
+    <p class="note-line"><b>原则：整理 ≠ 遗忘。</b>删书往往是在收拾，不是要把「这门课学过的概念」从知识网里抹掉。</p>
+
+    <div class="callout">
+      <b>已有先例，不是新范式：</b>人物、世界观、文稿、灵感四类实体都支持 <code>book_id</code> 为空的「未归类」作用域，
+      其中人物与世界观在空归属时直接跨书读取。跨书单元只是把这个既有能力扩展到知识点。
+      差别是：现在是隐式的「未归类桶」，<code>global</code> 要把它显式化——可筛选、可撤销、可解释来源。
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section id="s6">
+    <div class="sec-head"><div class="num">6</div><h2>六种关系就够，且不自动连线</h2></div>
+    <p class="sec-sub">结构关系由容器派生（不用画），语义关系才需要人连。</p>
+
+    <div class="rels">
+      <div class="rel"><div class="ln struct"></div><b>包含 / 归属</b><span>派生 · 不可手画</span><div class="who">第 3 章 ⊃ 第 2 节</div></div>
+      <div class="rel"><div class="ln dash"></div><b>引用 / 提及</b><span>派生 · 带数字角标</span><div class="who">卡片 E 提到术语 T</div></div>
+      <div class="rel"><div class="ln solid"></div><b>关联</b><span>用户</span><div class="who">极限 ↔ 连续</div></div>
+      <div class="rel"><div class="ln solid arrow"></div><b>因果 / 推导</b><span>用户</span><div class="who">定理 A → 结论 B</div></div>
+      <div class="rel"><div class="ln dash"></div><b>对比 / 对立</b><span>用户</span><div class="who">古典 ⇄ 现代</div></div>
+      <div class="rel"><div class="ln solid arrow"></div><b>时序 / 前后</b><span>用户或自动布局</span><div class="who">事件 1 → 事件 2</div></div>
+    </div>
+
+    <p class="note-line">
+      <b>候选来源</b>：别名/同名（人物已有 alias 字段）、术语命中、标签共现、同段共现、章节邻近。
+      候选只在单元视图与全局画布侧栏出现，<b>一条一条确认，绝不自动连线</b>——那正是「图谱看着很酷但没人看得懂」的来源。
+    </p>
+  </section>
+
+  <!-- 7 -->
+  <section id="s7">
+    <div class="sec-head"><div class="num">7</div><h2>两个动线，验证这套模型是否自洽</h2></div>
+    <p class="sec-sub">如果两条动线都走得通，模型就成立；走不通就是设计有问题，而不是用户不会用。</p>
+
+    <div class="split">
+      <div class="insight">
+        <div class="who">学生 · 期末复习</div>
+        <p>周一高数课记下「ε-δ 定义」，选中那段 → 存为知识点（L3）；周三线代课选中「极限」→ 存为术语（L1），
+           角标显示「被 5 处引用」；全局画布把两者连成「因果/推导」；复习模式只看标题自测，按枢纽排序；一键导出知识清单。</p>
+      </div>
+      <div class="insight">
+        <div class="who">作者 · 设定一致性</div>
+        <p>人物卡（L4）连到某段伏笔（L3），线型「因果」；系列第二部打开项目画布，同一个世界观条目以全局单元出现，
+           两边引用同一份设定；第二部里「霜城」的描述与第一部不一致时，单元视图把两段原文并列出来。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section id="s8">
+    <div class="sec-head"><div class="num">8</div><h2>对上一轮 12 项决策的修订</h2></div>
+    <p class="sec-sub">12 项里 2 项被推翻、3 项被细化，其余不变。桌面上那份决策清单需要按此更新。</p>
+
+    <table>
+      <thead><tr><th>编号</th><th>原结论</th><th>本方案</th><th class="center">状态</th></tr></thead>
+      <tbody>
+        <tr><td>Q1 入口</td><td>文稿的另一种打开方式</td><td>不变；新增「全局画布」入口</td><td class="center"><span class="st tw">+1 入口</span></td></tr>
+        <tr><td>Q2 关系图并入</td><td>推荐并入</td><td>不变；关系图成为「结构视图」</td><td class="center"><span class="st keep">不变</span></td></tr>
+        <tr><td>Q3 首版只读试水</td><td>先只读，不写库</td><td><b>改为「单元模型 + 单稿画布」</b>，不再是只读</td><td class="center"><span class="st rev">修订</span></td></tr>
+        <tr><td>Q4 渲染架构</td><td>纯 Canvas 自绘</td><td>不变</td><td class="center"><span class="st keep">不变</span></td></tr>
+        <tr><td>Q5 连线真相</td><td>人物复用老表 + 通用新表</td><td>细化为三分：结构派生 / 语义存储 / 人物沿用</td><td class="center"><span class="st tw">细化</span></td></tr>
+        <tr><td>Q6 卡片内容</td><td>实时引用实体</td><td><b>按作用域分层</b>：书内实时 / 跨书快照回退</td><td class="center"><span class="st rev">修订</span></td></tr>
+        <tr><td>Q7 锚点</td><td>段落序号 + 指纹</td><td>扩展到六级粒度；术语用词形 + 多次出现</td><td class="center"><span class="st ex">扩展</span></td></tr>
+        <tr><td>Q8–Q12 体验</td><td>滚轮 / 缩放 / 编辑 / 命名 / 砍功能</td><td>基本不变；全局画布多做「按分量折叠」</td><td class="center"><span class="st keep">微调</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 9 -->
+  <section id="s9">
+    <div class="sec-head"><div class="num">9</div><h2>分期：比上一轮多约 30%</h2></div>
+    <p class="sec-sub">增量全部来自「单元层」与「跨书」，不是渲染。</p>
+
+    <div class="timeline">
+      <div class="step"><div class="ph">P0</div><b>技术验证</b><span>帧率、缩放清晰度、手势、读屏</span><div class="d">2–3 天</div></div>
+      <div class="step"><div class="ph">P1</div><b>单元 + 单稿画布</b><span>L3/L4 成卡、选区采集、跳回原文、去重</span><div class="d">8–10 天</div></div>
+      <div class="step"><div class="ph">P2</div><b>项目（书）画布</b><span>结构派生、语义连线、卡片编辑、撤销</span><div class="d">6–8 天</div></div>
+      <div class="step"><div class="ph">P3</div><b>全局画布 + 单元视图</b><span>跨书晋升、快照回退、孤儿卡、跨书备份</span><div class="d">8–10 天</div></div>
+      <div class="step"><div class="ph">P4</div><b>候选 + 复习 + 模板</b><span>自动候选、枢纽排序、导出清单</span><div class="d">5–7 天</div></div>
+    </div>
+    <p class="total">合计 <b>29–38 个工作日</b>（上一轮 22–34）。P1 之所以不再是「只读」，是因为只读验证不了「单元下沉」这个最核心的假设。</p>
+  </section>
+
+  <!-- 10 -->
+  <section id="s10">
+    <div class="sec-head"><div class="num">10</div><h2>新增 5 个待拍板</h2></div>
+    <p class="sec-sub">不答就按推荐值推进；这些会并入桌面那份决策清单。</p>
+
+    <div class="dec">
+      <div class="drow"><div class="id">N1</div>
+        <div><b>单元与卡片是否分离</b><span>分离：多一张表、渲染前一次 join；换来跨画布一致与准确统计。</span></div>
+        <div class="rec">推荐：分离</div></div>
+      <div class="drow"><div class="id">N2</div>
+        <div><b>全局画布怎么组织</b><span>多张主题画布 + 一张「全部」总览；比一张大图多一层管理，但不会挤成一团。</span></div>
+        <div class="rec">推荐：多张</div></div>
+      <div class="drow"><div class="id">N3</div>
+        <div><b>首版粒度做到哪一级</b><span>L3/L4 成卡，L0–L2 只做摘录/提及；放弃「每个词都是节点」，换取可用。</span></div>
+        <div class="rec">推荐：L3 起</div></div>
+      <div class="drow"><div class="id">N4</div>
+        <div><b>跨书是否显式晋升</b><span>默认 book，显式「设为跨书」；多一步操作，避免三本书自动混成一锅。</span></div>
+        <div class="rec">推荐：显式</div></div>
+      <div class="drow"><div class="id">N5</div>
+        <div><b>跨书备份策略</b><span>随书备份 + 外部单元快照（≤120 字），导入按指纹复用；避免导入一本书后跨书卡变空壳。</span></div>
+        <div class="rec">推荐：快照随行</div></div>
+    </div>
+
+    <div class="callout">
+      <b>一句话总结取舍：</b>我们把「细化」用在<em>覆盖面</em>上（六级锚点、任意区间可存），
+      把「克制」用在<em>画布呈现</em>上（默认只有段落以上成卡、跨书要显式晋升、绝不自动连线）。
+      这样既能接住「一句话里的半个词」，又不会把期末复习变成一团意大利面。
+    </div>
+
+    <div style="margin-top:16px">
+      <button class="btn" id="copyClaim">复制主张</button>
+      <button class="btn" id="printBtn">打印 / 存 PDF</button>
+    </div>
+  </section>
+
+  <footer>
+    生成于 2026-10-22 · 概念模型与数据语义方案，<b>未写代码、未建表、未构建</b>；渲染/手势/性能的工程判定见工程内 <code>docs/research/06</code>，
+    本方案的完整文字版见 <code>docs/research/07-知识单元与跨书画布-统一方案.md</code>。<br>
+    未验证：五表迁移、跨书查询耗时、中文词形归一选型、500+ 节点渲染、跨书备份往返、指纹碰撞率、灰卡可用性。
+  </footer>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+(function(){
+  var toastEl = document.getElementById('toast');
+  function toast(msg){
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function(){ toastEl.classList.remove('show'); }, 1600);
+  }
+  function fallbackCopy(text){
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly','');
+    ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch(e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.getElementById('copyClaim').addEventListener('click', function(){
+    var text = '书负责「存放」，画布负责「看见关系」；一个知识点可以在书里被写下来、在画布上被连起来，而它始终只有一份原文。'
+             + '知识的最小单元是「可定位的内容片段」，不是「一篇笔记」：容器负责秩序，单元负责被引用，画布负责被看见。'
+             + '（P1 单元+单稿画布 8–10d；P2 项目画布 6–8d；P3 全局画布 8–10d；P4 候选与复习 5–7d；合计 29–38 个工作日）';
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ toast('已复制'); }, function(){
+        toast(fallbackCopy(text) ? '已复制' : '复制失败，请手动选择');
+      });
+    } else {
+      toast(fallbackCopy(text) ? '已复制' : '复制失败，请手动选择');
+    }
+  });
+  document.getElementById('printBtn').addEventListener('click', function(){ window.print(); });
+})();
+</script>
+</body>
+</html>

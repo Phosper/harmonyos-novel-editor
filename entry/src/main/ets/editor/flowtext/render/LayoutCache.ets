@@ -20,7 +20,14 @@ import { GraphemeUtil } from '../model/GraphemeUtil';
  */
 const WINDOW_MIN_CHARS: number = 4000;
 
-/** One bounded layout slice. A native line/window remains an indivisible unit. */
+/**
+ * 段落属性查询：(段落起点偏移) → [种类, 层级]。
+ * 由编辑器注入（数据在 TextDocument），排版层只消费结果，
+ * 不自己持有文档，避免出现"两份段落状态"。
+ */
+export type ParagraphInfoProvider = (offset: number) => number[];
+
+/** A bounded layout pass reports whether the requested viewport or offset is ready. */
 export class LayoutProgress {
   lines: LayoutLine[];
   reached: boolean;
@@ -45,6 +52,8 @@ export class LayoutCache {
   private windowBase: number = -1;
   private windowEnd: number = -1;
   private lines: LayoutLine[] = [];
+  /** 段落属性来源（未注入时按正文排版） */
+  private paraProvider: ParagraphInfoProvider | null = null;
   private nextStart: number = 0;
   private nextY: number = 0;
   private complete: boolean = false;
@@ -56,14 +65,28 @@ export class LayoutCache {
   isComplete(): boolean { return this.complete; }
   setRuns(runs: FormatRun[]): void { this.engine.setRuns(runs); }
 
-  /** At a soft-wrap boundary the following line is needed for the downstream caret. */
   coversOffset(offset: number): boolean {
     const at: number = Math.max(0, Math.min(offset, this.textValue.length));
+    // Equality can still be the next visual line's start at a soft wrap.
     return this.lines.length > 0 && (this.complete || this.nextStart > at);
   }
 
-  coversY(y: number): boolean {
-    return this.lines.length > 0 && (this.complete || this.nextY >= y);
+  coversY(untilYVp: number): boolean {
+    return this.lines.length > 0 && (this.complete || this.nextY >= untilYVp);
+  }
+
+  /** 注入段落属性来源；列表/待办段落的缩进与项目符号靠它生效 */
+  setParagraphProvider(provider: ParagraphInfoProvider): void { this.paraProvider = provider; }
+
+  private paragraphInfoAt(offset: number): number[] {
+    if (this.paraProvider === null) {
+      return [0, 0];
+    }
+    const info: number[] = this.paraProvider(offset);
+    if (info.length < 2) {
+      return [0, 0];
+    }
+    return info;
   }
 
   ensureLayout(content: string, version: number, formatVersion: number, untilYVp: number): LayoutLine[] {
@@ -78,27 +101,21 @@ export class LayoutCache {
     return this.lines;
   }
 
-  ensureLayoutIncremental(content: string, version: number, formatVersion: number,
-    untilYVp: number, maxLines: number = 64, budgetMs: number = 6): LayoutProgress {
+  ensureLayoutIncremental(content: string, version: number, formatVersion: number, untilYVp: number,
+    maxLines: number = 64, budgetMs: number = 6): LayoutProgress {
     this.synchronize(content, version, formatVersion);
-    return this.appendWithinBudget(untilYVp, 0, false, maxLines, budgetMs);
+    return this.appendWithinBudget(untilYVp, -1, maxLines, budgetMs);
   }
 
-  ensureOffsetIncremental(content: string, version: number, formatVersion: number,
-    offset: number, maxLines: number = 64, budgetMs: number = 6): LayoutProgress {
+  ensureOffsetIncremental(content: string, version: number, formatVersion: number, offset: number,
+    maxLines: number = 64, budgetMs: number = 6): LayoutProgress {
     this.synchronize(content, version, formatVersion);
-    return this.appendWithinBudget(0, offset, true, maxLines, budgetMs);
+    return this.appendWithinBudget(-1, Math.max(0, Math.min(offset, content.length)), maxLines, budgetMs);
   }
 
-  /**
-   * Fork for an edit without rebuilding unchanged paragraphs. The caller supplies
-   * the earliest possibly changed text/format offset; preceding paragraphs must
-   * be identical. Line objects retain identity, while the array and all mutable
-   * engine/window state belong to the fork. Repeated previews can call applyEdit
-   * on their existing fork rather than copying the committed cache again.
-   */
-  forkForEdit(content: string, version: number, formatVersion: number,
-    runs: FormatRun[], offset: number): LayoutCache {
+  /** Preview owns its window map; retained prefix lines are immutable and can be shared. */
+  forkForEdit(content: string, version: number, formatVersion: number, runs: FormatRun[], offset: number,
+    provider: ParagraphInfoProvider | null = null): LayoutCache {
     const fork: LayoutCache = new LayoutCache(this.engine.cloneConfiguration());
     fork.textValue = this.textValue;
     fork.versionValue = this.versionValue;
@@ -107,22 +124,23 @@ export class LayoutCache {
     fork.nextStart = this.nextStart;
     fork.nextY = this.nextY;
     fork.complete = this.complete;
+    // A preview document can have different pending/list attributes from the committed one.
+    fork.paraProvider = provider === null ? this.paraProvider : provider;
     fork.applyEdit(content, version, formatVersion, runs, offset);
     return fork;
   }
 
-  /** Always make progress, then yield at either bound; callers schedule the next slice. */
-  private appendWithinBudget(untilYVp: number, offset: number, forOffset: boolean,
-    maxLines: number, budgetMs: number): LayoutProgress {
+  private appendWithinBudget(untilYVp: number, offset: number, maxLines: number,
+    budgetMs: number): LayoutProgress {
     const limit: number = Number.isFinite(maxLines) ? Math.max(1, Math.floor(maxLines)) : 64;
     const duration: number = Number.isFinite(budgetMs) ? Math.max(0, budgetMs) : 6;
     const started: number = Date.now();
     let appended: number = 0;
-    let reached: boolean = forOffset ? this.coversOffset(offset) : this.coversY(untilYVp);
-    while (!reached && appended < limit) {
+    let reached: boolean = offset >= 0 ? this.coversOffset(offset) : this.coversY(untilYVp);
+    while (!this.complete && !reached && appended < limit) {
       this.appendLine();
       appended++;
-      reached = forOffset ? this.coversOffset(offset) : this.coversY(untilYVp);
+      reached = offset >= 0 ? this.coversOffset(offset) : this.coversY(untilYVp);
       if (Date.now() - started >= duration) { break; }
     }
     return new LayoutProgress(this.lines, reached, this.complete, appended);
@@ -209,27 +227,37 @@ export class LayoutCache {
 
   private appendLine(): void {
     const start: number = this.nextStart;
+    // 段落属性按**段落起点**取：软折行的续行与首行必须同种类同层级，
+    // 否则一条长列表项的第二行会退回正文样式。
+    const paragraphStart: number = LayoutCache.paragraphStartOf(this.textValue, start);
+    const info: number[] = this.paragraphInfoAt(paragraphStart);
+    const paraKind: number = info[0];
+    const paraIndent: number = info[1];
+    // 项目符号只画在段落第一条视觉行上（悬挂缩进：续行的文字列与首行对齐）
+    const markerOn: boolean = start === paragraphStart;
     let line: LayoutLine;
     if (start >= this.textValue.length) {
-      line = this.engine.emptyLine(start, this.nextY);
+      line = this.engine.emptyLine(start, this.nextY, paraKind, paraIndent);
       this.complete = true;
     } else {
       this.ensureWindow();
       const typeset: text.LineTypeset | null = this.typeset;
       if (typeset === null) {
         // 理论上不可达：ensureWindow 必然建出 typeset。留此分支只为避免死循环。
-        line = this.engine.emptyLine(start, this.nextY);
+        line = this.engine.emptyLine(start, this.nextY, paraKind, paraIndent);
         this.complete = true;
       } else {
         const newline: number = this.textValue.indexOf('\n', start);
         const paragraphEnd: number = newline < 0 ? this.textValue.length :
           (newline > start && this.textValue.charAt(newline - 1) === '\r' ? newline - 1 : newline);
-        let count: number = Math.min(this.engine.lineBreak(typeset, start), paragraphEnd - start);
+        // 列表段落要给项目符号槽位与层级缩进让出宽度，否则折行后整体右移会溢出右边界
+        const availablePx: number = this.engine.availableWidthPx(paraKind, paraIndent);
+        let count: number = Math.min(this.engine.lineBreak(typeset, start, availablePx), paragraphEnd - start);
         count = GraphemeUtil.snapToBoundary(this.textValue, start + count) - start;
         if (count <= 0 && paragraphEnd > start) { count = GraphemeUtil.moveRight(this.textValue, start) - start; }
         const end: number = start + count;
-        line = count === 0 ? this.engine.emptyLine(start, this.nextY) :
-          this.engine.createLayoutLine(typeset, start, count, this.nextY);
+        line = count === 0 ? this.engine.emptyLine(start, this.nextY, paraKind, paraIndent) :
+          this.engine.createLayoutLine(typeset, start, count, this.nextY, paraKind, paraIndent, markerOn);
         line.consumedEnd = end === paragraphEnd && newline >= 0 ? newline + 1 : end;
         this.nextStart = line.consumedEnd;
         this.complete = this.nextStart >= this.textValue.length && newline < 0;

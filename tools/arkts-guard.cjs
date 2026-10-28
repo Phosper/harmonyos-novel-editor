@@ -15,9 +15,13 @@ const T1 = ['editor/interaction/EditCommand.ets', 'editor/interaction/ShortcutMa
   'editor/flowtext/CanvasTextEditor.ets', 'editor/flowtext/ime/ImeBridge.ets',
   'editor/flowtext/ime/KeyboardHandler.ets', 'editor/TextEditorHost.ets', 'shell/EditorPane.ets'];
 const T2 = ['utils/DeviceProfile.ets', 'utils/BreakPoint.ets', 'utils/SafeArea.ets',
-  'utils/DesktopWindowChrome.ets', 'utils/SystemBars.ets', 'entryability/EntryAbility.ets',
+  'utils/DesktopWindowChrome.ets', 'utils/AppChromeMode.ets', 'utils/WindowDrag.ets',
+  'utils/SystemBars.ets', 'entryability/EntryAbility.ets', 'entryability/MyAbilityStage.ets',
   'shell/AppShell.ets', 'shell/DesktopTitleBar.ets', 'shell/PcWindowBar.ets', 'store/UiStore.ets'];
-const T3 = ['constants/DesignTokens.ets', 'constants/LightTokens.ets', 'shell/MaterialSurface.ets',
+const T3 = ['constants/DesignTokens.ets', 'constants/LightTokens.ets', 'constants/Motion.ets',
+  'shell/MenuButton.ets', 'shell/TopActionButton.ets', 'shell/EditorTools.ets', 'shell/MaterialSurface.ets',
+  'shell/FocusWorkspace.ets', 'shell/FocusTransition.ets', 'shell/LongTakeBridge.ets',
+  'shell/UserAvatar.ets', 'utils/AvatarService.ets',
   'shell/MobileShell.ets', 'shell/DocListPane.ets', 'shell/ProjectSidebar.ets', 'shell/WorkspaceDest.ets',
   'shell/InputDialog.ets', 'shell/MobileTabBar.ets', 'shell/MobileSectionTabs.ets', 'shell/SettingsPanel.ets',
   'pages/Index.ets', 'pages/GuideSwiperPage.ets', 'pages/dest/SettingsDest.ets'];
@@ -83,6 +87,89 @@ function lineNumbered(fn) {
     code.split('\n').forEach((text, index) => fn(file, index + 1, text, raw));
   }
 }
+/**
+ * 组件的 struct 体（成员层）出现 `.attr(` 的行号。
+ * build() 内部的子组件块属于嵌套 block，链式调用合法；只要 `.attr` 直接落在 struct 体，
+ * 说明 build() 提前闭合、属性链越界——hvigor 会报 10505001 Unexpected token。
+ */
+function topLevelChainLines(source) {
+  const lines = source.split('\n');
+  const hits = [];
+  const stack = [];
+  for (let n = 0; n < lines.length; n += 1) {
+    const line = lines[n];
+    if (stack.length > 0 && stack[stack.length - 1] === 'struct' && /^\s*\./.test(line)) {
+      hits.push(n + 1);
+    }
+    let quote = '';
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (quote) { if (ch === quote) { quote = ''; } continue; }
+      if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+      if (ch === '{') {
+        const head = line.slice(0, i);
+        stack.push(/(?:^|\s)struct\s+[A-Za-z_$][\w$]*\s*$/.test(head) ? 'struct' : 'block');
+      } else if (ch === '}') {
+        stack.pop();
+      }
+    }
+  }
+  return hits;
+}
+
+/**
+ * CustomComponent 自带 / CommonMethod 通用的属性名。
+ * 组件 struct 的成员（@Param 字段或 private 方法）一旦与它们同名，
+ * 该成员会被并入 CustomComponent 的类型，hvigor 直接报 10505001：
+ *   - `@Param enabled` → Type 'boolean' is not assignable to '(value: boolean) => CommonAttribute'
+ *   - `private background()` → Type '() => ResourceColor' is not assignable to 'background(...)'
+ * 这两次都是真实踩过的坑，故固化成守卫规则。
+ */
+const ATTR_NAMES = new Set([
+  'width', 'height', 'size', 'constraintSize', 'margin', 'padding', 'border', 'borderStyle',
+  'borderWidth', 'borderColor', 'borderRadius', 'background', 'backgroundColor', 'backgroundImage',
+  'backgroundBlurStyle', 'foregroundBlurStyle', 'opacity', 'scale', 'rotate', 'translate', 'transform',
+  'clip', 'clipShape', 'shadow', 'blur', 'backdropBlur', 'focusable', 'enabled', 'visibility', 'zIndex',
+  'position', 'offset', 'align', 'alignContent', 'animation', 'transition', 'gesture', 'id', 'key',
+  'onClick', 'onTouch', 'onHover', 'onFocus', 'onBlur', 'accessibilityText', 'accessibilityLevel',
+  'accessibilityGroup', 'hitTestBehavior', 'hoverEffect', 'tabIndex', 'tabStop', 'stateStyles', 'layoutWeight'
+]);
+
+/** 取一行里声明的名字（去掉装饰器/修饰符），不是声明行返回空串 */
+function memberNameOf(line) {
+  const m = /^\s*(?:(?:@\w+|private|public|protected|readonly|static)\s+)*([A-Za-z_$][\w$]*)\s*(?:\(|:|\?)/.exec(line);
+  return m === null ? '' : m[1];
+}
+
+/** 只收集**直接位于 struct 体**的成员（方法体/interface/对象字面量里的不算） */
+function structLevelMembers(source) {
+  const found = [];
+  const stack = [];
+  const lines = source.split('\n');
+  for (let n = 0; n < lines.length; n += 1) {
+    const line = lines[n];
+    if (stack.length > 0 && stack[stack.length - 1] === 'struct') {
+      const name = memberNameOf(line);
+      if (name !== '') {
+        found.push({ line: n + 1, name });
+      }
+    }
+    let quote = '';
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (quote) { if (ch === quote) { quote = ''; } continue; }
+      if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+      if (ch === '{') {
+        const head = line.slice(0, i);
+        stack.push(/(?:^|\s)struct\s+[A-Za-z_$][\w$]*\s*$/.test(head) ? 'struct' : 'block');
+      } else if (ch === '}') {
+        stack.pop();
+      }
+    }
+  }
+  return found;
+}
+
 let checks = 0;
 function check(name, action) {
   const before = violations.length;
@@ -150,6 +237,7 @@ const API_BASELINE = new Map([
   ['setWindowDecorHeight', 11], ['getWindowDecorHeight', 11], ['getTitleButtonRect', 11],
   ['windowTitleButtonRectChange', 11], ['setDecorButtonStyle', 14], ['setWindowTitleButtonVisible', 14],
   ['setTitleAndDockHoverShown', 14], ['startMoving', 14], ['moveWindowTo', 14],
+  ['windowWillClose', 15],
   ['getWindowStatus', 12], ['windowStatusChange', 11], ['WindowStatusType', 11],
   ['getWindowAvoidArea', 9], ['avoidAreaChange', 9], ['AvoidAreaType', 9],
   ['setWindowLayoutFullScreen', 9], ['isImmersiveMaterialSupported', 26], ['getGlobalMaterialLevel', 26],
@@ -161,9 +249,10 @@ const API_BASELINE = new Map([
 ]);
 const API_TOKEN = /(isInFreeWindowMode|freeWindowModeChange|setWindowDecorVisible|setWindowDecorHeight|getWindowDecorHeight|getTitleButtonRect|windowTitleButtonRectChange|setDecorButtonStyle|setWindowTitleButtonVisible|setTitleAndDockHoverShown|startMoving|moveWindowTo|getWindowStatus|windowStatusChange|WindowStatusType|getWindowAvoidArea|avoidAreaChange|AvoidAreaType|setWindowLayoutFullScreen|isImmersiveMaterialSupported|getGlobalMaterialLevel|getMaterialInfo|ImmersiveMaterial|ImmersiveStyle|ImmersiveOptions|MaterialLevel|MaterialState|systemMaterial|backgroundBlurStyle|backgroundEffect|getWindowWidthBreakpoint|getUIContext|getHostContext|terminateSelf|getCursorController|getFocusController|setWindowSystemBarProperties|statusBarContentColor|navigationBarContentColor)/g;
 const usedApis = new Set();
+const CLOSE_API_TOKEN = /(windowWillClose)/g;
 check('every used window/material API exists by API 26 and is on the official baseline', () => {
   lineNumbered((file, line, text) => {
-    for (const match of text.matchAll(API_TOKEN)) {
+    for (const match of [...text.matchAll(API_TOKEN), ...text.matchAll(CLOSE_API_TOKEN)]) {
       usedApis.add(match[1]);
       const version = API_BASELINE.get(match[1]);
       if (version === undefined) { fail('arkts-api-unknown', file, line, match[1]); continue; }
@@ -220,8 +309,12 @@ check('deviceType never participates in breakpoint/layout branches', () => {
   });
   const titleBar = stripComments(read('shell/DesktopTitleBar.ets'));
   assert.doesNotMatch(titleBar, /deviceInfo/, 'the title bar must use free-window mode, never deviceInfo');
-  assert.match(stripComments(read('shell/AppShell.ets')), /if \(this\.usesDesktopChrome\)/,
-    'AppShell must render the title bar from usesDesktopChrome');
+  assert.ok(!stripComments(read('shell/AppShell.ets')).includes('DesktopTitleBar({'),
+    'the main fusion layout must not mount an extra full-width title bar');
+  assert.match(stripComments(read('shell/ProjectSidebar.ets')), /startWindowMove/,
+    'sidebar header owns its window-drag hot zone');
+  assert.match(stripComments(read('utils/DesktopWindowChrome.ets')),
+    /setWindowTitleButtonVisible\(true, true, true\)/, 'system native title buttons remain visible');
 });
 // ===================== 9. module-level const collisions (per file only) =====================
 function duplicateModuleConsts(file, source) {
@@ -331,6 +424,36 @@ check('material degradation is explicit: unsupported or low-tier devices disable
   assert.match(light, /GLASS_MAX_BLUR_LAYERS\s*:\s*number\s*=\s*2/, 'at most two live blur layers per screen');
 });
 
+// ===================== 16. 属性链不得落到 struct 成员层 =====================
+check('every chained attribute stays inside its component block', () => {
+  const components = ['shell/TopActionButton.ets', 'shell/EditorTools.ets', 'shell/DocListPane.ets',
+    'shell/ProjectSidebar.ets', 'shell/FocusWorkspace.ets', 'shell/MaterialSurface.ets',
+    'shell/AppShell.ets', 'shell/EditorPane.ets'];
+  for (const file of components) {
+    for (const line of topLevelChainLines(stripComments(read(file)))) {
+      fail('arkts-chain-outside-block', file, line,
+        'attribute chain at struct member level — build() closed before its modifiers');
+    }
+  }
+});
+
+// ===================== 17. struct 成员不得与内置属性同名 =====================
+check('no struct member shadows a built-in CommonAttribute name', () => {
+  // 扫全部 shell 组件，而不是手工维护的白名单：UserAvatar 的 @Param size 就是这样漏掉的
+  // （'size' 是 CustomComponent 自带属性，@Param 同名直接 10505001 编译失败）。
+  const components = fs.readdirSync(path.join(root, 'shell'))
+    .filter(name => name.endsWith('.ets'))
+    .map(name => 'shell/' + name);
+  for (const file of components) {
+    for (const member of structLevelMembers(stripComments(read(file)))) {
+      if (ATTR_NAMES.has(member.name)) {
+        fail('arkts-member-shadow', file, member.line,
+          'member "' + member.name + '" collides with CustomComponent attribute');
+      }
+    }
+  }
+});
+
 // ===================== 15. guard self-test（防止规则空转成"假绿"） =====================
 check('the guard rules actually flag synthetic red-line snippets', () => {
   assert.equal(RULE.anyUnknown.test('let value: any = 1'), true);
@@ -352,7 +475,23 @@ check('the guard rules actually flag synthetic red-line snippets', () => {
   assert.equal(duplicateModuleConsts('y.ets', 'const A = 1;\n').length, 0);
   assert.equal(exportsSymbol('export struct Foo {}', 'Foo'), true);
   assert.equal(exportsSymbol('struct Foo {}', 'Foo'), false);
+  // @Param size 这类"继承自 CustomComponent 的属性名"必须能被守卫抓到
+  assert.deepEqual(structLevelMembers('export struct X {\n  @Param size: number = 1;\n}').map(m => m.name), ['size']);
   // @Builder 链式调用规则对合成片段同样生效
+  // 属性链越界规则：build() 提前闭合会被抓到，块内链式调用不受影响
+  assert.deepEqual(topLevelChainLines('export struct X {\n  build() {\n    Stack() {\n    }\n  }\n  .width(1)\n}'), [6]);
+  assert.deepEqual(topLevelChainLines('export struct X {\n  build() {\n    Stack() {\n    }\n    .width(1)\n  }\n}'), []);
+  // 成员撞名规则：@Param enabled / private background() 必须被抓到，正常命名不受影响
+  assert.equal(memberNameOf('  @Param enabled: boolean = true'), 'enabled');
+  assert.equal(memberNameOf('  private background(): ResourceColor {'), 'background');
+  assert.equal(memberNameOf('  @Param iconSize: number = 20'), 'iconSize');
+  assert.equal(memberNameOf('    .width(this.hitSize)'), '');
+  assert.equal(ATTR_NAMES.has('enabled') && ATTR_NAMES.has('background'), true);
+  assert.equal(ATTR_NAMES.has('iconSize') || ATTR_NAMES.has('overlayColor'), false);
+  // 只认 struct 体：interface 字段（LibEntry.id）不算成员撞名
+  const shadowSample = 'interface Entry {\n  id: string\n}\nexport struct X {\n  @Param enabled: boolean = true\n  private background(): number {\n    return 1\n  }\n}';
+  assert.deepEqual(structLevelMembers(shadowSample).map(m => m.name), ['enabled', 'background']);
+
   assert.ok(new RegExp('\\bGlowPageBackground\\s*\\([^()]*\\)\\s*\\.').test('GlowPageBackground(theme).width(1)'));
 });
 

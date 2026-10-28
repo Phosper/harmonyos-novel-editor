@@ -91,6 +91,8 @@ try {
       @{ Name = 'window'; Classes = 'WindowChromeRegression'; Log = 'window-tests.log'; Timeout = 20000 }
     )) {
       $testLog = Join-Path $taskOutput $testGroup.Log
+      # Compiling both packages may outlast the device's idle timeout. UI tests require an awake screen.
+      & $taskHdc -t $Device shell power-shell wakeup | Out-Null
       & $taskHdc -t $Device shell aa force-stop com.chungu.weaver | Out-Null
       & $taskHdc -t $Device shell aa test -b com.chungu.weaver -m entry_test -s unittest OpenHarmonyTestRunner -s class $testGroup.Classes -s timeout $testGroup.Timeout -w 180 *> $testLog
       $result = Get-Content -Raw -LiteralPath $testLog

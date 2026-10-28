@@ -13,27 +13,30 @@
 // 3. Navigation 显式写死 mode（默认 Auto 会在平板自动分栏，与自绘外壳冲突），
 //    hideNavBar 保持 false —— 设为 true 会连同**内容区**一起隐藏，栈空即整屏空白。
 // 4. 二级页面用 NavDestination（官方路径），返回键由路由栈接管，无需手写 onBackPress。
-import { promptAction, window } from '@kit.ArkUI'
+import { curves, KeyboardAvoidMode, promptAction, window } from '@kit.ArkUI'
 import { BreakPoint } from '../utils/BreakPoint'
+import { Motion } from '../constants/Motion'
 import { DeviceSnapshot, deviceProfile } from '../utils/DeviceProfile'
 import { Logger } from '../utils/Logger'
 import { WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
 import { app } from '../store/AppStores'
-import { ShellDialog, UiStore } from '../store/UiStore'
+import { ShellDialog } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
 import type { ChapterModel } from '../model/Chapter'
 import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportService'
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
 import { InputDialog } from './InputDialog'
-import { DesktopTitleBar } from './DesktopTitleBar'
-import { EditorPane } from './EditorPane'
+import { FocusWorkspace } from './FocusWorkspace'
 import { EditorTools } from './EditorTools'
 import { GlowPageBackground, glassBarStyle } from './MaterialSurface'
 import { WorkspaceDest } from './WorkspaceDest'
 import { MobileShell } from './MobileShell'
 import { nav, Routes, ensureWorkspace } from './Navigator'
+import { LongTakeNavParam, takePendingLongTake } from './LongTakeBridge'
+import { ezCustomTransition, LongTakeTransitionParam } from '../thirdparty/ezcustomtransition/Index'
 import { SettingsDest } from '../pages/dest/SettingsDest'
+import { SettingsPanel } from './SettingsPanel'
 
 enum ExportAction {
   CHAPTER_TXT = 0,
@@ -46,7 +49,6 @@ enum ExportAction {
 
 @ComponentV2
 export struct AppShell {
-  @Local ui: UiStore = app.ui
   @Local loading: boolean = true
   @Local loadError: string = ''
   @Local dialogPending: boolean = false
@@ -54,10 +56,23 @@ export struct AppShell {
   /** 系统避让区（沉浸式全屏）：顶部状态栏 / 底部导航条高度（vp） */
   @Local safeTop: number = 0
   @Local safeBottom: number = 0
+  /** 软键盘遮挡高度（0 = 未弹出）：与 safeBottom 取较大者，避免双重留白 */
+  @Local keyboardHeight: number = 0
   /** 自绘标题栏总高（含安全区，vp）：0 表示当前没有自绘标题栏（手机/平板） */
   @Local chromeHeight: number = 0
   /** 是否走桌面沉浸标题栏：= 自由窗口模式（window.isInFreeWindowMode()） */
   @Local usesDesktopChrome: boolean = false
+  /** 设置面板（半模态）：打开即从底部/居中浮出，不再从右侧推页面 */
+  @Local showSettings: boolean = false
+  /** 自定义转场期间禁用 Navigation 交互，避免动画被打断/布局错乱 */
+  @Local navInteractive: boolean = true
+  /** 历史深度镜像：窗口头工具条的撤销/重做禁用态靠它刷新 */
+  @Local historyTick: number = 0
+
+  @Monitor('app.editor.historyVersion')
+  onHistoryVersion(): void {
+    this.historyTick = app.editor.historyVersion
+  }
 
   /** DeviceProfile 订阅释放器 */
   private profileDisposer: (() => void) | null = null
@@ -66,12 +81,20 @@ export struct AppShell {
     // 设备分流统一入口：断点 / 自由窗口 / 避让区 / 窗口状态全部由 DeviceProfile 订阅一次，
     // AppShell 只消费快照。旧实现把 watchSafeArea + windowSizeChange 分两处注册，
     // 且 isPcDevice 只写不读（导致 app.ui.isPc 恒为 false）—— 一并收口在这里。
+    // 键盘避让由本页统一处理（读 TYPE_KEYBOARD → 底部 padding）。关掉框架默认的
+    // OFFSET 整体上移，否则会与我们的 padding 叠加，出现“抬两次”的跳动。
+    try {
+      this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.NONE)
+    } catch (e) {
+      Logger.warn('AppShell: setKeyboardAvoidMode failed: ' + String(e))
+    }
     this.bindDeviceProfile()
     app.init()
       .then(() => {
         this.loading = false
-        // 手机端设计：主页直接打开"最近编辑过"的一篇文稿（sm/md）；宽屏保持原行为
-        if (this.breakPoint !== BreakPoint.LG) {
+        // 手机 / 平板：主页直接打开"最近编辑过"的一篇（平板即使三栏也直接进正文，
+        // 避免右侧一大块空态）；桌面宽屏保持原行为（用户可自行挑一篇）
+        if (this.breakPoint !== BreakPoint.LG || app.ui.tabletMode) {
           this.openRecentForMobile()
         }
       })
@@ -85,10 +108,10 @@ export struct AppShell {
   }
 
   /**
-   * 退出沉浸后，确保宽屏第三栏仍停在编辑工作区（沉浸期间直接渲染 EditorPane，
+   * 退出沉浸后，确保宽屏第三栏仍停在编辑工作区（沉浸期间直接渲染 FocusWorkspace，
    * 不依赖 Navigation 路由栈；若栈里没有 WORKSPACE，退出后要补回来）。
    */
-  @Monitor('ui.immersiveEditing')
+  @Monitor('app.ui.immersiveEditing')
   onImmersiveEditingChanged(): void {
     if (!app.ui.immersiveEditing && this.breakPoint === BreakPoint.LG && app.editor.hasDoc) {
       ensureWorkspace()
@@ -167,6 +190,7 @@ export struct AppShell {
     this.breakPoint = nextBreakPoint
     this.safeTop = snap.safeTopVp
     this.safeBottom = snap.safeBottomVp
+    this.keyboardHeight = snap.keyboardHeightVp
     this.usesDesktopChrome = snap.isDesktopChrome
     this.chromeHeight = snap.chromeHeightVp
     // store 与 AppShell 用同一份快照：deviceClass / freeWindowMode / pointerPrimary / breakPoint
@@ -189,7 +213,9 @@ export struct AppShell {
    *    背景延伸，原有上下避让行为完全不变。
    */
   private topInset(): number {
-    return this.usesDesktopChrome ? 0 : this.safeTop
+    // 融合布局下窗口层不再占高度，内容需要自己避让状态栏/刘海；
+    // PC 自由窗口 safeTop 通常为 0，平板电脑模式若有状态栏则由这里兜住。
+    return this.safeTop
   }
 
   private colors(): WeaverColorSet {
@@ -210,6 +236,10 @@ export struct AppShell {
   private navBarWidthVp(): number {
     if (this.breakPoint === BreakPoint.MD) {
       return 240
+    }
+    // 平板：列表栏加宽（摘要/标题不被过早截断），三栏比例更接近华为电子邮件平板版
+    if (app.ui.tabletMode) {
+      return 380
     }
     return app.ui.isDesktopMode ? 320 : 280
   }
@@ -260,17 +290,6 @@ export struct AppShell {
       GlowPageBackground(app.ui.themeId)
 
       Column() {
-        // 桌面沉浸标题栏：判据是自由窗口模式（含平板电脑模式），**不是** deviceType。
-        // 它自己的高度 = 48 + safeTop（chromeHeight），并同时覆盖状态栏条区域。
-        if (this.usesDesktopChrome) {
-          DesktopTitleBar({
-            app: app,
-            safeTop: this.safeTop,
-            chromeHeight: this.chromeHeight,
-            onExport: () => this.openExportMenu(),
-            onImport: () => this.runImport()
-          })
-        }
         Column() {
           if (this.loading) {
             this.loadingView()
@@ -290,7 +309,8 @@ export struct AppShell {
       // 底部高度来自 TYPE_NAVIGATION_INDICATOR；只避让顶部会让列表末行/正文末行
       // 伸到手势条下方，且那片区域的点击优先被系统拦截。
       // 顶部：电脑模式取 0（标题栏已占位，见 topInset 注释）；手机/平板取 safeTop
-      .padding({ top: this.topInset(), bottom: this.safeBottom })
+      // 键盘弹出时内容整体抬高：取 max(导航条, 键盘)，键盘通常已覆盖导航条区域
+      .padding({ top: this.topInset(), bottom: Math.max(this.safeBottom, this.keyboardHeight) })
       // 背景交给下面的 GlowPageBackground 光感层，本容器必须透明（否则会把光感整块盖住）。
       .backgroundColor(Color.Transparent)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
@@ -300,6 +320,23 @@ export struct AppShell {
       }
     }
     .width('100%').height('100%')
+    // 光感背景要盖住状态栏/导航条区域；否则这两条会露出系统/窗口底色（平板实测黑边）
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    // 设置：居中的半模态面板（对齐电子邮件），不是从右侧推一个页面
+    .bindSheet(this.showSettings, this.settingsSheet(), {
+      preferType: SheetType.CENTER,
+      // Pura X View 等短屏（744vp）用 MEDIUM，避免半模态被截断
+      height: this.appShortScreen() ? SheetSize.MEDIUM : SheetSize.LARGE,
+      showClose: true,
+      dragBar: false,
+      // 面板背景用次级面（浅灰/深灰），分组卡片才是高一级的 bgCard —— 和电子邮件一致
+      backgroundColor: this.colors().bgSurface,
+      title: { title: '设置' },
+      onWillDismiss: (action: DismissSheetAction) => {
+        action.dismiss()
+        this.showSettings = false
+      }
+    })
     // 输入形态探测：鼠标进入窗口才触发（触摸设备不派发 hover），
     // 第一次 hover 即把平板/电脑模式升级为键鼠优先（hover 高亮、光标、快捷键提示随之启用）。
     .onHover((isHover: boolean) => {
@@ -307,21 +344,6 @@ export struct AppShell {
         deviceProfile.notePointerActivity()
       }
     })
-  }
-
-  /** 沉浸编辑：正文在窗口内居中铺开（阅读宽度上限 880vp），隐藏侧栏/列表/工具条 */
-  @Builder
-  immersiveBody() {
-    Row() {
-      Column() {
-        EditorPane({ app: app }).layoutWeight(1)
-      }
-      .width('100%').height('100%')
-      .constraintSize({ maxWidth: 880 })
-    }
-    .width('100%').height('100%')
-    .justifyContent(FlexAlign.Center)
-    .backgroundColor(this.colors().bgPrimary)
   }
 
   @Builder
@@ -368,11 +390,10 @@ export struct AppShell {
       // 平板宽屏：保留触摸友好的 appBar（无窗口三键）。
       // 沉浸编辑：窗口内只保留正文（桌面保留窗口头，手机/平板由编辑区浮动按钮退出）。
       if (app.ui.immersiveEditing) {
-        this.immersiveBody()
+        FocusWorkspace({ app: app })
       } else if (this.breakPoint === BreakPoint.LG) {
-        if (!app.ui.usesDesktopChrome) {
-          this.appBar()
-        }
+        // 融合布局：不再叠一条全宽 appBar；品牌在侧栏头、目录开关/更多在列表头、
+        // 文稿工具在编辑区头部。平板/PC 共用同一套 pane header。
         this.wideBody()
       } else {
         MobileShell({
@@ -382,23 +403,57 @@ export struct AppShell {
       }
     }
     .width('100%').height('100%')
+    // 专注切换时两栏在动画中收缩/放大，底色必须由外层补上，否则露出白边
+    .backgroundColor(this.colors().bgPrimary)
   }
 
-  // 宽屏（lg）现有三分栏 —— 原样保留，零回归。
+  // 宽屏（lg）：自绘可动画侧栏 —— SideBarContainer 的 showSideBar 切换是瞬时的，
+  // 这里用自己的宽度/位移/透明度过渡，保持三栏结构、内容不重建。
   @Builder
   wideBody() {
-    SideBarContainer(SideBarContainerType.AUTO) {
-      ProjectSidebar({
-        app: app,
-        onCreateProject: () => app.ui.requestDialog(ShellDialog.NEW_PROJECT),
-        onDeleteProject: (id: string) => this.requestDeleteProject(id)
-      })
+    Row() {
+      // 第一栏：项目/文库。内层保持固定宽度，外层宽度动画 + clip，
+      // 避免侧栏文字在收缩过程中逐帧换行造成抖动。
+      Column() {
+        // 内层固定宽度 + 独立淡出节奏：宽度走临界阻尼弹簧，文字透明度 180ms 先行，
+        // 形成“先柔和退场、再让位”的分阶段动画，避免整块一起被拖拽的僵硬感。
+        Column() {
+          ProjectSidebar({
+            app: app,
+            onCreateProject: () => app.ui.requestDialog(ShellDialog.NEW_PROJECT),
+            onDeleteProject: (id: string) => this.requestDeleteProject(id),
+            // 设置入口已下移到侧栏左下角：宽屏仍用居中半模态，内容与设置页共用
+            onSettings: () => { this.showSettings = true }
+          })
+            .width(this.sideBarWidthVp())
+            .height('100%')
+        }
+        .width(this.sideBarWidthVp())
+        .height('100%')
+        .opacity(app.ui.showSidebar ? 1 : 0)
+        .translate({ x: app.ui.showSidebar ? 0 : -16 })
+        .animation({ duration: 180, curve: Motion.standardCurve,
+          delay: app.ui.showSidebar ? 40 : 0 })
+      }
+      .width(app.ui.showSidebar ? this.sideBarWidthVp() : 0)
+      .height('100%')
+      .alignItems(HorizontalAlign.Start)
+      .clip(true)
+      .enabled(app.ui.showSidebar)
+      .animation({ duration: Motion.sidebar, curve: curves.springMotion(0.4, 1.0, 0) })
 
+      // 第二/三栏：Navigation 保持原结构与状态；宽度由 Row 自动回流。
       Column() {
         Navigation(nav) {
           DocListPane({
             app: app,
             showHeader: true,
+            // 融合布局：目录开关与「更多」归列表头，窗口头不再承载应用动作
+            showSidebarToggle: true,
+            showMore: true,
+            onExport: () => this.openExportMenu(),
+            onImport: () => this.runImport(),
+            enableLongTake: true,
             onOpenDoc: (id: string) => this.openDoc(id),
             onRenameDoc: (id: string, current: string) =>
               app.ui.requestDialog(ShellDialog.RENAME_DOC, id, current, '', app.project.currentBookId),
@@ -413,22 +468,24 @@ export struct AppShell {
         .hideTitleBar(true)
         .hideToolBar(true)
         .navDestination(this.pageMap)
+        // 一镜到底：只有注册了动画的 push 才走自定义转场，其余保持系统默认
+        .customNavContentTransition((from: NavContentInfo, to: NavContentInfo, operation: NavigationOperation) => {
+          return ezCustomTransition.customNavContentTransition(from, to, operation, {
+            onTransitionStart: () => {
+              this.navInteractive = false
+            },
+            onTransitionEnd: () => {
+              this.navInteractive = true
+            }
+          })
+        })
+        .enabled(this.navInteractive)
         .width('100%').height('100%')
       }
-      .width('100%').height('100%')
+      .layoutWeight(1)
+      .height('100%')
     }
-    .showSideBar(app.ui.showSidebar)
-    .showControlButton(false)
-    .sideBarWidth(this.sideBarWidthVp())
-    .minSideBarWidth(this.sideBarMinWidth())
-    .maxSideBarWidth(this.sideBarMaxWidth())
-    .minContentWidth(360)
-    .autoHide(false)
-    .onChange((shown: boolean) => {
-      app.ui.showSidebar = shown
-    })
-    .layoutWeight(1)
-    .width('100%')
+    .width('100%').height('100%')
   }
 
   // 命名注意：不要叫 toolbar —— 它是 ArkUI 内置属性名（基类 CustomComponent 已占用），
@@ -458,13 +515,15 @@ export struct AppShell {
         Text(app.editor.wordCount.toString() + ' 字')
           .fontSize(11).fontColor(this.colors().textTertiary)
           .margin({ right: 8 })
-        // 平板宽屏：常用工具同样上移到顶栏（compact 折叠格式组）
-        EditorTools({ app: app, compact: true, immersive: false })
+        // 平板宽屏：常用工具同样上移到顶栏。
+        // 这条顶栏还要放标题/字数/导出导入设置，工具组只能分到固定预算 →
+        // 传 260vp，落到 L2（撤销/重做/四点更多/查找/专注），格式动作进更多菜单。
+        EditorTools({ app: app, space: 260, immersive: false, historyTick: this.historyTick })
       }
 
       this.barAction('导出', () => this.openExportMenu())
       this.barAction('导入', () => this.runImport())
-      this.barAction('设置', () => nav.pushPath({ name: Routes.SETTINGS }))
+      this.barAction('设置', () => { this.showSettings = true })
     }
     .width('100%').height(this.appBarHeight())
     .padding({ left: 6, right: 10 })
@@ -502,9 +561,16 @@ export struct AppShell {
 
   private async openDoc(chapterId: string): Promise<void> {
     try {
+      // 点击当下已抓好的转场参数（可能为空：宽屏常驻第三栏时不需要）
+      const transition: LongTakeTransitionParam | undefined = takePendingLongTake()
       await app.openChapter(chapterId)
       if (!nav.getAllPathName().includes(Routes.WORKSPACE)) {
-        nav.pushPath({ name: Routes.WORKSPACE })
+        if (transition !== undefined) {
+          const navParam: LongTakeNavParam = { longTakeTransitionParam: transition }
+          nav.pushPath({ name: Routes.WORKSPACE, param: navParam })
+        } else {
+          nav.pushPath({ name: Routes.WORKSPACE })
+        }
       }
     } catch (e) {
       Logger.error('AppShell: openDoc failed: ' + String(e))
@@ -518,6 +584,25 @@ export struct AppShell {
     const found: BookModel | undefined = app.project.books.find((b: BookModel) => b.id === id)
     const name: string = found !== undefined ? found.name : '该项目'
     app.ui.requestDialog(ShellDialog.DELETE_PROJECT, id, '', name)
+  }
+
+  private appShortScreen(): boolean {
+    return app.ui.shortScreen
+  }
+
+  /** 设置面板内容：半模态宿主只给尺寸与标题，内容与设置页共用 */
+  @Builder
+  settingsSheet() {
+    Column() {
+      Scroll() {
+        SettingsPanel()
+      }
+      .layoutWeight(1)
+      .width('100%')
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(Color.Transparent)
   }
 
   @Builder
@@ -579,8 +664,8 @@ export struct AppShell {
     }
     const kind: ShellDialog = app.ui.dialog
     const target: string = app.ui.dialogTarget
-    const revision: number = app.ui.dialogRevision ?? 0
-    const ownerBookId: string = app.ui.dialogOwnerBookId ?? ''
+    const revision: number = app.ui.dialogRevision
+    const ownerBookId: string = app.ui.dialogOwnerBookId
     if (kind === ShellDialog.RENAME_DOC && ownerBookId !== '' && ownerBookId !== app.project.currentBookId) {
       app.ui.closeDialog()
       this.toast('项目已切换，请重新选择要重命名的文稿')
@@ -604,7 +689,7 @@ export struct AppShell {
         await app.hardDeleteChapter(target)
         this.toast('已删除')
       }
-      if ((app.ui.dialogRevision ?? 0) === revision) {
+      if (app.ui.dialogRevision === revision) {
         app.ui.closeDialog()
       }
     } catch (e) {
@@ -644,7 +729,7 @@ export struct AppShell {
   }
 
   private async doExport(action: ExportAction): Promise<void> {
-    const bookName: string = app.project.bookName === '' ? 'Weaver' : app.project.bookName
+    const bookName: string = app.project.bookName === '' ? '语流' : app.project.bookName
 
     if (action === ExportAction.BACKUP_JSON) {
       const payload = await app.exportBackupData()

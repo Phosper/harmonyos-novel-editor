@@ -92,6 +92,9 @@ export class AppStores {
 
   /** 当前文稿变化后同步列表选中态 */
   private syncSelection(): void {
+    for (const doc of this.editor.openDocs) {
+      this.project.updateDocPreview(doc.id, doc.title, doc.draft, countChars(doc.draft), doc.dirty)
+    }
     this.project.markSelected(this.editor.activeId)
   }
 
@@ -162,9 +165,18 @@ export class AppStores {
   }
 
   async createChapter(title?: string, format: ChapterFormat = ChapterFormat.TXT): Promise<ChapterModel> {
-    const ch: ChapterModel = await chapterRepo.createChapter(this.project.currentBookId, title, format)
+    const request: number = ++this.openRequestRev
+    const bookId: string = this.project.currentBookId
+    this.editor.cancelPendingActivation()
+    const ch: ChapterModel = await chapterRepo.createChapter(bookId, title, format)
+    if (bookId !== this.project.currentBookId) return ch
     await this.project.reloadChapters()
+    if (bookId !== this.project.currentBookId) return ch
     await this.project.refreshCounts()
+    if (bookId !== this.project.currentBookId) return ch
+    this.syncSelection()
+    // 仍在同一项目就发布已创建的列表项，但不能抢回用户后来打开的文稿。
+    if (request !== this.openRequestRev) return ch
     await this.openChapter(ch.id)
     return ch
   }
@@ -178,7 +190,8 @@ export class AppStores {
     // 而且内存里的那行可能已经被编辑过 —— 直接拿它当草稿初值，会在
     // 「关掉标签再打开」时把旧正文写回去，覆盖掉此前已保存的内容。
     const ch: ChapterModel | null = await chapterRepo.loadOne(chapterId)
-    if (ch === null || request !== this.openRequestRev || bookId !== this.project.currentBookId) {
+    if (ch === null || ch.bookId !== bookId || request !== this.openRequestRev ||
+      bookId !== this.project.currentBookId) {
       return
     }
     await this.editor.openChapter(ch)
@@ -263,9 +276,14 @@ export class AppStores {
   }
 
   async restoreChapter(chapterId: string): Promise<void> {
+    const bookId: string = this.project.currentBookId
     await chapterRepo.restore(chapterId)
+    if (bookId !== this.project.currentBookId) { return }
     await this.project.reloadChapters()
+    if (bookId !== this.project.currentBookId) { return }
     await this.project.refreshCounts()
+    if (bookId !== this.project.currentBookId) { return }
+    this.syncSelection()
   }
 
   async toggleFav(chapterId: string): Promise<void> {
@@ -296,9 +314,13 @@ export class AppStores {
     if (doc === undefined || doc.format === format) {
       return
     }
+    const bookId: string = this.project.currentBookId
     await chapterRepo.setFormat(doc.id, format)
+    if (bookId !== this.project.currentBookId || !this.editor.openDocs.includes(doc)) { return }
     doc.format = format
     await this.project.reloadChapters()
+    if (bookId !== this.project.currentBookId || !this.editor.openDocs.includes(doc)) { return }
+    this.syncSelection()
   }
 
   // ===== 素材 / 关系（写入后刷新关系图） =====
@@ -373,6 +395,8 @@ export class AppStores {
    * 返回一句可直接展示的结果摘要。
    */
   async importFiles(): Promise<string> {
+    // 归属在打开选择器时确定。恢复备份会切换项目，不能把其后的普通文件导入新项目。
+    const targetBookId: string = this.project.currentBookId
     let files: ImportedFile[] = []
     try {
       files = await ImportService.pickAndRead()
@@ -387,6 +411,7 @@ export class AppStores {
     let backupCount: number = 0
     let skipped: number = 0
     let oversized: number = 0
+    let failed: number = 0
     for (const file of files) {
       if (file.kind === ImportKind.BACKUP) {
         const restored: string = await this.importBackupText(file.text)
@@ -397,34 +422,48 @@ export class AppStores {
         }
         continue
       }
-      const content: string = file.kind === ImportKind.HTML
-        ? HtmlText.toPlainText(file.text)
-        : file.text
-      if (content.trim() === '') {
-        skipped++
-        continue
+      try {
+        const content: string = file.kind === ImportKind.HTML
+          ? HtmlText.toPlainText(file.text)
+          : file.text
+        if (content.trim() === '') {
+          skipped++
+          continue
+        }
+        if (exceedsContentLimit(content)) {
+          Logger.warn('Import skipped, too large: ' + file.fileName)
+          oversized++
+          continue
+        }
+        const htmlTitle: string = file.kind === ImportKind.HTML ? HtmlText.titleOf(file.text) : ''
+        const title: string = htmlTitle !== '' ? htmlTitle : ImportService.titleOf(file)
+        // 正文与标题一次 INSERT，失败不会留下“导入成功”的空壳文稿。
+        await chapterRepo.createChapter(targetBookId, title, file.format, content)
+        chapterCount++
+      } catch (e) {
+        Logger.warn('Import document failed: ' + String(e))
+        failed++
       }
-      // 超过单篇入库上限的文件直接跳过：先建文稿再写内容会在写入处失败，
-      // 留下一个空壳文稿，看起来像导入成功实则丢内容。
-      if (exceedsContentLimit(content)) {
-        Logger.warn('Import skipped, too large: ' + file.fileName)
-        oversized++
-        continue
-      }
-      const htmlTitle: string = file.kind === ImportKind.HTML ? HtmlText.titleOf(file.text) : ''
-      const title: string = htmlTitle !== '' ? htmlTitle : ImportService.titleOf(file)
-      const ch: ChapterModel = await chapterRepo.createChapter(this.project.currentBookId, title, file.format)
-      await chapterRepo.updateContent(ch.id, content)
-      chapterCount++
     }
-    await this.project.reloadChapters()
-    await this.project.refreshCounts()
-    this.syncSelection()
+    let refreshFailed: boolean = false
+    if (chapterCount > 0 || backupCount > 0) {
+      try {
+        await this.project.reloadChapters()
+        await this.project.refreshCounts()
+        this.syncSelection()
+      } catch (e) {
+        // 写入已完成。刷新失败不能把整批报告成导入失败，诱导重复导入。
+        Logger.warn('Import saved, list refresh failed: ' + String(e))
+        refreshFailed = true
+      }
+    }
     const parts: string[] = []
     if (chapterCount > 0) parts.push('导入 ' + chapterCount + ' 篇文稿')
     if (backupCount > 0) parts.push('恢复 ' + backupCount + ' 个备份项目')
     if (oversized > 0) parts.push(oversized + ' 个超过单篇上限未导入')
     if (skipped > 0) parts.push('跳过 ' + skipped + ' 个')
+    if (failed > 0) parts.push(failed + ' 个导入失败')
+    if (refreshFailed) parts.push('已保存，列表刷新失败，请刷新后查看')
     return parts.length > 0 ? parts.join('，') : '没有可导入的内容'
   }
 

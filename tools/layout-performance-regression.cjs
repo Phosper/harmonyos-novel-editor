@@ -55,6 +55,7 @@ class CountingEngine {
   }
   cloneConfiguration() { return new CountingEngine(this.metrics); }
   setRuns(runs) { this.runs = runs; }
+  availableWidthPx() { return 100; }
   buildTypesetWindow(content, base, end) {
     this.base = base;
     this.metrics.windows++; this.metrics.chars += end - base;

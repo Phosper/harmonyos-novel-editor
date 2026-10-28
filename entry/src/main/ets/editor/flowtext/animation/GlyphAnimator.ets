@@ -67,7 +67,9 @@ export class GlyphAnimator {
             continue;
           }
           const pt = new GlyphPoint();
-          pt.x = paddingLeftPx + run.runOffsetX + run.positions[g].x;
+          // 列表段落的文字列整体右移了 line.inset，字形动画必须跟着走，
+          // 否则接线之后列表里的动画字形会比正文偏左一个符号槽宽。
+          pt.x = paddingLeftPx + line.inset + run.runOffsetX + run.positions[g].x;
           pt.y = line.baseline + run.positions[g].y;
           pt.glyph = run.glyphs[g];
           pt.font = run.font;
