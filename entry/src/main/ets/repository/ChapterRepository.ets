@@ -117,25 +117,15 @@ export class ChapterRepository {
   }
 
   async moveToBook(chapterId: string, bookId: string): Promise<void> {
-    // 归档进某本书时清除全局文库标记（收藏/灵感只在未归类视图中维护）
-    if (bookId !== '') {
-      await this.dao.setFav(chapterId, false)
-      await this.dao.setInspiration(chapterId, false)
-    }
+    // DAO 将归属与需清除的文库标记一次写入。
     await this.dao.moveToBook(chapterId, bookId)
   }
 
   async setFav(chapterId: string, value: boolean): Promise<void> {
-    if (value) {
-      await this.dao.setInspiration(chapterId, false)
-    }
     await this.dao.setFav(chapterId, value)
   }
 
   async setInspiration(chapterId: string, value: boolean): Promise<void> {
-    if (value) {
-      await this.dao.setFav(chapterId, false)
-    }
     await this.dao.setInspiration(chapterId, value)
   }
 

@@ -54,7 +54,7 @@ try {
   $env:JAVA_HOME = $taskJavaRoot
   $env:NODE_HOME = Split-Path -Parent $taskNode
   $env:PATH = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:NODE_HOME + ';' + $taskOldPath
-  foreach ($script in @('flowtext-regression.cjs', 'data-regression.cjs', 'shell-regression.cjs',
+  foreach ($script in @('flowtext-regression.cjs', 'data-regression.cjs', 'chapter-flags-regression.cjs', 'shell-regression.cjs',
     'window-regression.cjs', 'import-regression.cjs', 'device-profile-regression.cjs',
     'layout-performance-regression.cjs', 'ime-regression.cjs', 'arkts-guard.cjs')) {
     $localLog = Join-Path $taskOutput ($script + '.log')

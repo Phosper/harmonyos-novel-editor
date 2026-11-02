@@ -43,6 +43,7 @@ export class AppStores {
   private openRequestRev: number = 0
   private projectRequestRev: number = 0
   private reloadRequestRev: number = 0
+  private libRequestRev: number = 0
 
   // ===== 启动 =====
 
@@ -107,6 +108,8 @@ export class AppStores {
     }
     await this.editor.flushAllStrict()
     if (request !== this.projectRequestRev) return
+    // 等待保存期间，目标项目可能已经完成删除。
+    if (bookId !== '' && !this.project.books.some((book: BookModel): boolean => book.id === bookId)) return
     this.openRequestRev++
     this.reloadRequestRev++
     this.project.setCurrentBook(bookId)
@@ -140,28 +143,63 @@ export class AppStores {
 
   async deleteBook(bookId: string): Promise<void> {
     await this.editor.flushAllStrict()
-    this.openRequestRev++
     await bookRepo.deleteBook(bookId)
-    await this.project.loadBooks()
-    this.editor.reset()
-    if (this.project.books.length === 0) {
-      await this.project.ensureCurrentBook(this.ui.mode)
-    } else if (this.project.currentBookId === bookId) {
-      this.project.setCurrentBook(this.project.books[0].id)
+    // 从这里起删除已提交。先同步发布结果，不能让后续查询失败留下可编辑的已删文稿。
+    this.project.removeBook(bookId)
+    if (this.project.currentBookId === bookId) {
+      const request: number = ++this.projectRequestRev
+      const openRequest: number = ++this.openRequestRev
+      this.reloadRequestRev++
+      this.libRequestRev++
+      const fallbackId: string = this.project.books.length > 0 ? this.project.books[0].id : ''
+      this.project.setCurrentBook(fallbackId)
+      this.material.setBookScope(fallbackId)
+      this.relation.setBookScope(fallbackId)
+      this.editor.reset()
+      this.enterEditorIfEmpty()
+      if (this.project.books.length === 0) {
+        try {
+          const replacement: BookModel = await bookRepo.createBook('我的作品', this.ui.mode)
+          this.project.registerBook(replacement)
+          // 默认项目只补空位；等待期间的新项目选择或新文稿意图必须保留。
+          if (request === this.projectRequestRev && openRequest === this.openRequestRev &&
+            this.project.currentBookId === '' && this.editor.openDocs.length === 0) {
+            this.project.setCurrentBook(replacement.id)
+            this.material.setBookScope(replacement.id)
+            this.relation.setBookScope(replacement.id)
+          }
+        } catch (replacementError) {
+          Logger.warn('Book deleted, creating replacement failed: ' + String(replacementError))
+        }
+      }
     }
-    await this.reloadAll()
-    this.enterEditorIfEmpty()
+    try {
+      await this.project.loadBooks()
+    } catch (refreshError) {
+      Logger.warn('Book deleted, project list refresh failed: ' + String(refreshError))
+    }
+    try {
+      await this.reloadAll()
+    } catch (reloadError) {
+      Logger.warn('Book deleted, workspace refresh failed: ' + String(reloadError))
+    }
   }
 
   // ===== 文稿 =====
 
   async setLibFilter(lib: LibId): Promise<void> {
-    await this.project.setLibFilter(lib)
-    this.syncSelection()
+    const request: number = ++this.libRequestRev
+    const bookId: string = this.project.currentBookId
     if (lib === LibId.TRASH) {
-      // 进废纸篓只列表，不打开编辑
+      // 在选择时隐藏编辑器；迟到的列表查询不能盖住用户后来打开的文稿。
+      this.openRequestRev++
+      this.editor.cancelPendingActivation()
       this.ui.view = EditorViewMode.EMPTY
     }
+    await this.project.setLibFilter(lib)
+    if (request !== this.libRequestRev || bookId !== this.project.currentBookId ||
+      lib !== this.project.libFilter) return
+    this.syncSelection()
   }
 
   async createChapter(title?: string, format: ChapterFormat = ChapterFormat.TXT): Promise<ChapterModel> {

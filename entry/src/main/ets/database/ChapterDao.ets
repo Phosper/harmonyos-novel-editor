@@ -144,15 +144,30 @@ export class ChapterDao extends BaseDao<ChapterModel> {
   }
 
   async moveToBook(chapterId: string, bookId: string): Promise<void> {
-    await this.updateColumns(chapterId, { book_id: bookId, updated_at: Date.now() })
+    const values: relationalStore.ValuesBucket = { book_id: bookId, updated_at: Date.now() }
+    // 归档与清理文库标记必须一起提交，失败时保留完整的原归属。
+    if (bookId !== '') {
+      values['is_fav'] = 0
+      values['is_inspiration'] = 0
+    }
+    await this.updateColumns(chapterId, values)
   }
 
   setFav(id: string, fav: boolean): Promise<void> {
-    return this.updateColumns(id, { is_fav: fav ? 1 : 0, updated_at: Date.now() })
+    const values: relationalStore.ValuesBucket = { is_fav: fav ? 1 : 0, updated_at: Date.now() }
+    // 互斥标记走单条 UPDATE，避免并发写成双选或失败后丢失原分类。
+    if (fav) {
+      values['is_inspiration'] = 0
+    }
+    return this.updateColumns(id, values)
   }
 
   setInspiration(id: string, insp: boolean): Promise<void> {
-    return this.updateColumns(id, { is_inspiration: insp ? 1 : 0, updated_at: Date.now() })
+    const values: relationalStore.ValuesBucket = { is_inspiration: insp ? 1 : 0, updated_at: Date.now() }
+    if (insp) {
+      values['is_fav'] = 0
+    }
+    return this.updateColumns(id, values)
   }
 
   setTrash(id: string, trash: boolean): Promise<void> {

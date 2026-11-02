@@ -28,6 +28,7 @@ export class ProjectStore {
   @Trace docItems: DocItem[] = []
   /** 项目列表项 */
   @Trace projects: ProjectItem[] = []
+  private bookLoadRev: number = 0
   private chapterLoadRev: number = 0
   private countLoadRev: number = 0
   private projectCountLoadRev: number = 0
@@ -64,7 +65,10 @@ export class ProjectStore {
   // ===== 加载 =====
 
   async loadBooks(): Promise<void> {
-    this.books = await bookRepo.getAllBooks()
+    const request: number = ++this.bookLoadRev
+    const books: BookModel[] = await bookRepo.getAllBooks()
+    if (request !== this.bookLoadRev) return
+    this.books = books
     this.syncProjects()
   }
 
@@ -81,9 +85,17 @@ export class ProjectStore {
 
   /** 已提交的项目先发布，后续刷新失败也不能让用户误以为创建/恢复失败。 */
   registerBook(book: BookModel): void {
+    this.bookLoadRev++
     if (!this.books.some((b: BookModel) => b.id === book.id)) {
       this.books.push(book)
     }
+    this.syncProjects()
+  }
+
+  /** 删除已经提交：立即摘除，并使提交前的列表查询失效。 */
+  removeBook(bookId: string): void {
+    this.bookLoadRev++
+    this.books = this.books.filter((book: BookModel): boolean => book.id !== bookId)
     this.syncProjects()
   }
 

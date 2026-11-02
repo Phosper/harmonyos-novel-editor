@@ -190,6 +190,116 @@ function assertHistoryBudget(editor) {
 }
 
 (async () => {
+  await check('deleting another project preserves the active document and its undo history', async () => {
+    const {app, doc} = fixture(); app.ui.view = 1;
+    editStep(app.editor, 'current project draft');
+    await app.deleteBook('book-b');
+    assert.equal(store.get('books', 'book-b'), undefined);
+    assert.equal(app.project.currentBookId, 'book-a'); assert.equal(app.editor.activeDoc, doc);
+    assert.equal(app.ui.view, 1); assert.equal(app.editor.canUndo, true);
+    assert.equal(store.get('chapters', 'a').content, 'current project draft');
+  });
+  await check('a delayed project deletion cannot discard a replacement project draft', async () => {
+    const {app} = fixture(); store.seed('chapters', chapter('b', 'book-b', 'B saved'));
+    const entered = deferred(), resume = deferred(), originalDelete = store.delete.bind(store);
+    store.delete = async predicates => {
+      if (predicates.table === 'books') { entered.resolve(); await resume.promise; }
+      return originalDelete(predicates);
+    };
+    const deleting = app.deleteBook('book-a'); await entered.promise;
+    await app.selectBook('book-b'); await app.openChapter('b');
+    app.editor.setContent('B entered during deletion'); const replacement = app.editor.activeDoc;
+    resume.resolve(); await deleting;
+    assert.equal(app.project.currentBookId, 'book-b'); assert.equal(app.editor.activeDoc, replacement);
+    assert.equal(replacement.draft, 'B entered during deletion'); assert.equal(replacement.dirty, true);
+    assert.equal(app.ui.view, 1); await app.flushAllStrict();
+    assert.equal(store.get('chapters', 'b').content, 'B entered during deletion');
+  });
+  await check('a committed deletion stays published when refreshing the project list fails', async () => {
+    const {app} = fixture(), originalDelete = store.delete.bind(store);
+    store.delete = async predicates => {
+      const removed = [...store.tables.get('books').values()]
+        .filter(row => predicates.table === 'books' && predicates.matches(row)).map(row => row.id);
+      const count = await originalDelete(predicates);
+      // Match the real schema's ON DELETE CASCADE, so a stale editor cannot hide behind the double.
+      for (const [id, ch] of store.tables.get('chapters')) {
+        if (removed.includes(ch.book_id)) store.tables.get('chapters').delete(id);
+      }
+      return count;
+    };
+    store.onQuery = async predicates => { if (predicates.table === 'books') throw new Error('list unavailable'); };
+    await app.deleteBook('book-a');
+    assert.equal(store.get('books', 'book-a'), undefined); assert.equal(store.get('chapters', 'a'), undefined);
+    assert.equal(app.project.currentBookId, 'book-b'); assert.equal(app.editor.openDocs.length, 0);
+    assert.equal(app.project.books.some(book => book.id === 'book-a'), false);
+    assert.equal(app.project.projects.some(book => book.id === 'book-a'), false);
+    assert.equal(app.ui.view, 0);
+  });
+  await check('an older project query cannot resurrect a project after its deletion commits', async () => {
+    const {app} = fixture(), entered = deferred(), resume = deferred(); let queries = 0;
+    store.onQuery = async predicates => {
+      if (predicates.table === 'books' && ++queries === 1) { entered.resolve(); await resume.promise; }
+    };
+    const loading = app.project.loadBooks(); await entered.promise;
+    await app.deleteBook('book-b'); resume.resolve(); await loading;
+    assert.equal(app.project.books.some(book => book.id === 'book-b'), false);
+    assert.equal(app.project.projects.some(book => book.id === 'book-b'), false);
+  });
+  await check('a default project created after deletion cannot replace a newer project or document intent', async () => {
+    for (const intent of ['project', 'document']) {
+      const {app, doc} = fixture(); doc.dirty = false; store.tables.get('books').delete('book-b');
+      app.project.books = app.project.books.filter(book => book.id === 'book-a');
+      const entered = deferred(), resume = deferred();
+      store.onInsert = async (table, row) => {
+        if (table === 'books' && row.name === '我的作品') { entered.resolve(); await resume.promise; }
+      };
+      const deleting = app.deleteBook('book-a'); await entered.promise;
+      assert.equal(app.project.currentBookId, ''); assert.equal(app.editor.openDocs.length, 0);
+      if (intent === 'project') {
+        const book = {id: 'book-b', name: 'New B', mode: api.BookMode.PROFESSIONAL};
+        store.seed('books', {...book, created_at: 1, updated_at: 1}); app.project.registerBook(book);
+        await app.selectBook('book-b');
+      }
+      const owner = app.project.currentBookId;
+      store.seed('chapters', chapter('new-draft', owner, 'initial'));
+      await app.openChapter('new-draft'); app.editor.setContent('new intent text');
+      const replacement = app.editor.activeDoc;
+      resume.resolve(); await deleting;
+      assert.equal(app.project.currentBookId, owner); assert.equal(app.editor.activeDoc, replacement);
+      assert.equal(app.editor.content, 'new intent text'); assert.equal(replacement.dirty, true);
+      assert.equal(app.ui.view, 1);
+      assert.equal(app.project.books.some(book => book.name === '我的作品'), true);
+    }
+  });
+  await check('failed replacement creation after a final deletion leaves no deleted project editable', async () => {
+    const {app, doc} = fixture(); doc.dirty = false; store.tables.get('books').delete('book-b');
+    app.project.books = app.project.books.filter(book => book.id === 'book-a');
+    store.onInsert = async table => { if (table === 'books') throw new Error('cannot create replacement'); };
+    await app.deleteBook('book-a');
+    assert.equal(app.project.currentBookId, ''); assert.equal(app.project.books.length, 0);
+    assert.equal(app.editor.openDocs.length, 0); assert.equal(app.ui.view, 0);
+  });
+  await check('a late trash query cannot hide a newer filter, project or explicit document opening', async () => {
+    for (const intent of ['filter', 'project', 'document']) {
+      const {app, doc} = fixture(); doc.dirty = false;
+      const entered = deferred(), resume = deferred(); let held = false;
+      store.onQuerySql = async (sql, args) => {
+        if (!held && sql.startsWith('SELECT id, book_id') && args[0] === 1) {
+          held = true; entered.resolve(); await resume.promise;
+        }
+      };
+      const filtering = app.setLibFilter(api.LibId.TRASH); await entered.promise;
+      if (intent === 'filter') await app.setLibFilter(api.LibId.ALL);
+      if (intent === 'project') {
+        store.seed('chapters', chapter('b', 'book-b', 'B text')); await app.selectBook('book-b');
+      }
+      const target = intent === 'project' ? 'b' : 'a';
+      await app.openChapter(target); assert.equal(app.ui.view, 1);
+      resume.resolve(); await filtering;
+      assert.equal(app.ui.view, 1); assert.equal(app.editor.activeId, target);
+      assert.equal(app.project.libFilter, intent === 'document' ? api.LibId.TRASH : api.LibId.ALL);
+    }
+  });
   await check('rename keeps the captured document target when another tab is active', async () => {
     const {app, doc} = fixture(); const other = new api.OpenDoc('b', 'Other', api.ChapterFormat.TXT, '', 'B', 0);
     app.editor.openDocs.push(other); app.editor.activeId = 'b'; let reloads = 0, syncs = 0;

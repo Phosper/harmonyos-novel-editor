@@ -41,6 +41,7 @@ API 26 输入法切换语言时会发送空 `insertText`；无组字状态时空
 ```powershell
 node tools/flowtext-regression.cjs
 node tools/data-regression.cjs
+node tools/chapter-flags-regression.cjs
 node tools/shell-regression.cjs
 node tools/window-regression.cjs
 node tools/import-regression.cjs
