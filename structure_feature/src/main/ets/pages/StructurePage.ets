@@ -61,6 +61,11 @@ export struct StructurePage {
     this.topicCount = layout.nodes.length - 1
     this.parents = outlineParents(snapshot.nodes)
     this.empty = false
+    // 诊断：真机上一眼确认"节点/画布/连线"三组数字，排查渲染问题比看截图快
+    console.info('[StructureMap] nodes=' + this.placed.length.toString() +
+      ' topics=' + this.topicCount.toString() +
+      ' map=' + this.mapW.toFixed(1) + 'x' + this.mapH.toFixed(1) +
+      ' links=' + Math.max(0, this.placed.length - 1).toString())
     // Canvas 可能还没 ready（此时绘制会被忽略），onReady 里会再画一次
     this.drawConnections()
   }
