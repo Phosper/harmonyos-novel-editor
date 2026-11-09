@@ -36,6 +36,9 @@ export class ProjectStore {
   private chapterLoadRev: number = 0
   private countLoadRev: number = 0
   private projectCountLoadRev: number = 0
+  /** 预览字数缓存（每次按键只真正数一次） */
+  private previewText: string = ''
+  private previewValue: number = 0
 
   get currentBook(): BookModel | undefined {
     return this.books.find((b: BookModel) => b.id === this.currentBookId)
@@ -190,7 +193,7 @@ export class ProjectStore {
    * 只改字段、不重建数组/DocItem，避免整列重渲染。
    */
   updateDocPreview(id: string, content: string): void {
-    const wc: number = countChars(content)
+    const wc: number = this.countOf(content)
     const item: DocItem | undefined = this.docItems.find((d: DocItem) => d.id === id)
     if (item !== undefined) {
       item.subTitle = ProjectStore.summaryOf(content)
@@ -204,6 +207,18 @@ export class ProjectStore {
       chapter.wordCount = wc
       chapter.updatedAt = Date.now()
     }
+  }
+
+  /**
+   * 每键都会走的字数统计：正文没变就复用上次结果。
+   * 逐键对整篇 countChars 在 5 万字时是白描的开销；同一帧里 store 与预览各算一次更浪费。
+   */
+  private countOf(content: string): number {
+    if (content !== this.previewText) {
+      this.previewText = content
+      this.previewValue = countChars(content)
+    }
+    return this.previewValue
   }
 
   private bookNameOf(bookId: string): string {

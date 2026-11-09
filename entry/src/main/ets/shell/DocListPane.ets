@@ -9,7 +9,8 @@
 import { promptAction } from '@kit.ArkUI'
 import { tokensFor, WeaverColorSet, WeaverRadii, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
-import { fireAndLog } from '../store/AppStores'
+import { fireAndLog, app as appStores } from '../store/AppStores'
+import { ProjectStore } from '../store/ProjectStore'
 import { DocItem } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
 import { Motion } from '../constants/Motion'
@@ -19,6 +20,7 @@ import { setPendingLongTake } from './LongTakeBridge'
 import { ezCustomTransition } from '../thirdparty/ezcustomtransition/Index'
 import { TopIconMetrics, topIconMetrics } from '../constants/LightTokens'
 import { startWindowMove, toggleWindowMaximize, isDesktopWindow } from '../utils/WindowDrag'
+import { DocItemSource } from './DocItemSource'
 
 @ComponentV2
 struct DocRow {
@@ -131,6 +133,23 @@ export struct DocListPane {
   @Local keyword: string = ''
   /** 列表滚动器：横滑动作执行后用它收起展开行 */
   private listScroller: ListScroller = new ListScroller()
+  /** LazyForEach 数据源：只建可视区附近的行（长列表不再一次性铺满） */
+  @Local docSource: DocItemSource = new DocItemSource()
+  /** 观察 store 的文稿数组：整列替换（切项目/切文库/搜索/增删）时重取 */
+  @Local projectWatch: ProjectStore = appStores.project
+
+  aboutToAppear(): void {
+    this.syncSource()
+  }
+
+  @Monitor('projectWatch.docItems')
+  onDocItemsChanged(): void {
+    this.syncSource()
+  }
+
+  private syncSource(): void {
+    this.docSource.reload(this.visibleItems())
+  }
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
@@ -519,7 +538,11 @@ export struct DocListPane {
           }))
 
           Search({ value: this.keyword, placeholder: '搜索文稿' })
-            .onChange((v: string) => { this.keyword = v })
+            .onChange((v: string) => {
+              this.keyword = v
+              // 搜索是纯内存过滤：关键字一变就重建投影，LazyForEach 才能跟着换行
+              this.syncSource()
+            })
             .width('100%').height(this.tablet() ? 44 : 36)
             .backgroundColor(this.colors().bgSurface)
             .border({ width: 1, color: this.colors().divider })
@@ -545,7 +568,7 @@ export struct DocListPane {
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       } else {
         List({ scroller: this.listScroller }) {
-          ForEach(this.visibleItems(), (item: DocItem) => {
+          LazyForEach(this.docSource, (item: DocItem) => {
             if (this.canSwipe()) {
               ListItem() {
                 this.docRow(item)

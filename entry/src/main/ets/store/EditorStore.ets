@@ -118,9 +118,18 @@ export class EditorStore {
     return d !== undefined ? d.caret : 0
   }
 
+  /** 字数缓存：同一次渲染里标题栏/中栏/状态条会各读一遍，正文没变就不该重数 */
+  private wordCountText: string = ''
+  private wordCountValue: number = 0
+
   get wordCount(): number {
     // 按字符计而非码元：emoji / 组合字符算1 字，否则会被多算
-    return countChars(this.content)
+    const text: string = this.content
+    if (text !== this.wordCountText) {
+      this.wordCountText = text
+      this.wordCountValue = countChars(text)
+    }
+    return this.wordCountValue
   }
 
   /**

@@ -1168,6 +1168,30 @@ function exportHarness(options = {}) {
     // 侧栏品牌头用的就是这张图，别再引回旧资源名
     assert.match(read('shell/ProjectSidebar.ets'), /app\.media\.startIcon/);
   });
+  await check('document list virtualises rows and keeps the projection in sync', async () => {
+    const pane = read('shell/DocListPane.ets');
+    assert.match(pane, /LazyForEach\(this\.docSource/);
+    assert.doesNotMatch(pane, /ForEach\(this\.visibleItems\(\)/,
+      'a full ForEach would build every row on each build (long lists stutter)');
+    assert.match(pane, /@Local docSource: DocItemSource = new DocItemSource\(\)/);
+    // 数组被整体替换时必须通知数据源（切项目/切文库/搜索/增删）
+    assert.match(pane, /@Monitor\('projectWatch\.docItems'\)/);
+    assert.match(pane, /this\.docSource\.reload\(this\.visibleItems\(\)\)/);
+    const source = read('shell/DocItemSource.ets');
+    assert.match(source, /implements IDataSource/);
+    assert.match(source, /onDataReloaded\(\)/);
+    assert.match(source, /registerDataChangeListener/);
+    assert.match(source, /unregisterDataChangeListener/);
+  });
+  await check('word counts are cached instead of recounting the whole document', async () => {
+    const store = read('store/EditorStore.ets');
+    assert.match(store, /private wordCountText: string = ''/);
+    assert.match(store, /if \(text !== this\.wordCountText\)[\s\S]{0,160}countChars\(text\)/,
+      'the getter must not recount when the text is unchanged');
+    const project = read('store/ProjectStore.ets');
+    assert.match(project, /private countOf\(content: string\): number/);
+    assert.match(project, /const wc: number = this\.countOf\(content\)/);
+  });
   console.log(`Shell regression: ${count} checks passed`);
   if (failures > 0) {
     console.error(`Shell regression: ${failures} checks failed`);
