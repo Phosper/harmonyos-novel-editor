@@ -60,6 +60,18 @@
           ]
         }
       ]
+    },
+    {
+      "name": "structure_feature",
+      "srcPath": "./structure_feature",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
     }
   ]
 }

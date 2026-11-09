@@ -14,10 +14,15 @@ import { closeCanvasAnimated } from '../shell/CanvasTransition'
 @Entry
 @ComponentV2
 struct Index {
-  /** 思路板是全窗口分支：返回键先收它，再交回系统 */
+  /** 思路板/导图是全窗口分支：返回键先收它，再交回系统 */
   onBackPress(): boolean {
     if (app.ui.canvasOpen) {
       closeCanvasAnimated(this.getUIContext())
+      return true
+    }
+    if (app.ui.structureOpen) {
+      // 导图只是只读视图：返回即关闭，不定位（用户没点主题就没有偏移）
+      app.ui.exitStructure()
       return true
     }
     return false

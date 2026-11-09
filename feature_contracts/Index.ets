@@ -11,3 +11,19 @@ export {
   surfaceAllowed
 } from './src/main/ets/contracts/FeatureContracts'
 export type { SubscriptionLease as SubscriptionLeaseType } from './src/main/ets/contracts/FeatureContracts'
+// 只读大纲/导图：节点、快照、纯布局
+export {
+  OutlineNode,
+  OutlineSnapshot,
+  PlacedNode,
+  MindMapLayout,
+  OUTLINE_NODE_W,
+  OUTLINE_NODE_H,
+  OUTLINE_COL_GAP,
+  OUTLINE_ROW_GAP,
+  OUTLINE_PAD,
+  buildOutline,
+  layoutOutline,
+  outlineParents
+} from './src/main/ets/contracts/OutlineLayout'
+export type { OutlineHeading } from './src/main/ets/contracts/OutlineLayout'

@@ -1,0 +1,12 @@
+{
+  "name": "structure_feature",
+  "version": "1.0.0",
+  "description": "结构类功能（只读导图起步）：按需获取的 HSP",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "feature_contracts": "file:../feature_contracts",
+    "core_runtime": "file:../core_runtime"
+  }
+}

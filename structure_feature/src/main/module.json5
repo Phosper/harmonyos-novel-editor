@@ -1,0 +1,13 @@
+{
+  "module": {
+    "name": "structure_feature",
+    // HSP：按需获取的结构类功能（先交付只读导图）
+    "type": "shared",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ],
+    "deliveryWithInstall": true
+  }
+}

@@ -33,33 +33,39 @@ function walk(dir) {
   return out;
 }
 
-check('three modules are registered with the default product', () => {
+check('every module is registered with the default product', () => {
   const profile = read('build-profile.json5');
-  for (const name of ['entry', 'feature_contracts', 'core_runtime']) {
+  for (const name of ['entry', 'feature_contracts', 'core_runtime', 'structure_feature']) {
     assert.match(profile, new RegExp('"name": "' + name + '"'), name + ' must be listed in modules');
   }
   // 没有 applyToProducts 的模块不会被放进 app 包（第一次就是这样漏掉 HSP 的）
-  assert.equal((profile.match(/applyToProducts/g) || []).length >= 3, true,
+  assert.equal((profile.match(/applyToProducts/g) || []).length >= 4, true,
     'every module needs applyToProducts so the app bundle contains it');
 });
 
 check('module types match their packaging role', () => {
   assert.match(read('feature_contracts/src/main/module.json5'), /"type": "har"/,
     'contracts must stay a static HAR');
-  const runtime = read('core_runtime/src/main/module.json5');
-  assert.match(runtime, /"type": "shared"/, 'core_runtime must be an HSP');
-  assert.match(runtime, /"deliveryWithInstall": true/, 'HSP must ship with the app');
-  assert.match(read('core_runtime/hvigorfile.ts'), /hspTasks/);
   assert.match(read('feature_contracts/hvigorfile.ts'), /harTasks/);
+  for (const hsp of ['core_runtime', 'structure_feature']) {
+    const source = read(hsp + '/src/main/module.json5');
+    assert.match(source, /"type": "shared"/, hsp + ' must be an HSP');
+    assert.match(source, /"deliveryWithInstall": true/, hsp + ' must ship with the app');
+    assert.match(read(hsp + '/hvigorfile.ts'), /hspTasks/);
+  }
 });
 
-check('entry consumes the runtime and the contracts', () => {
+check('entry consumes the runtime, the contracts and the structure package', () => {
   const pkg = read('entry/oh-package.json5');
   assert.match(pkg, /"core_runtime": "file:\.\.\/core_runtime"/);
   assert.match(pkg, /"feature_contracts": "file:\.\.\/feature_contracts"/);
+  assert.match(pkg, /"structure_feature": "file:\.\.\/structure_feature"/);
   assert.match(read('entry/src/main/ets/shell/AppShell.ets'), /from 'core_runtime'/,
     'a runtime nobody imports is not packaged into the app');
+  assert.match(read('entry/src/main/ets/shell/AppShell.ets'), /from 'structure_feature'/,
+    'the structure page must be imported by the host or it is never packaged');
   assert.match(read('core_runtime/Index.ets'), /featureCatalog/);
+  assert.match(read('structure_feature/Index.ets'), /StructurePage/);
 });
 
 check('contracts stay stateless and nothing depends back on entry', () => {
@@ -69,13 +75,39 @@ check('contracts stay stateless and nothing depends back on entry', () => {
     assert.ok(!/from 'entry'|from '\.\.\/entry'/.test(source), file + ' must not import entry');
     assert.ok(!/export (const|let) .*new /.test(source), file + ' must not export shared mutable state');
   }
-  for (const file of walk('core_runtime/src').concat(walk('feature_contracts/src'))) {
-    assert.ok(!/from ['"]entry/.test(read(file)), file + ' must not depend on the host HAP');
+  const featureFiles = walk('core_runtime/src').concat(walk('structure_feature/src')).concat(walk('feature_contracts/src'));
+  for (const file of featureFiles) {
+    const source = read(file);
+    assert.ok(!/from ['"]entry/.test(source), file + ' must not depend on the host HAP');
+    assert.ok(!/from '(board_feature|novel_feature|research_feature)'/.test(source),
+      file + ' must not depend on a sibling feature package');
   }
-  // 方向：core_runtime -> feature_contracts（单向）
+  // 方向：core_runtime / structure_feature -> feature_contracts（单向）
   assert.match(read('core_runtime/oh-package.json5'), /"feature_contracts": "file:\.\.\/feature_contracts"/);
+  assert.match(read('structure_feature/oh-package.json5'), /"feature_contracts": "file:\.\.\/feature_contracts"/);
+  assert.match(read('structure_feature/oh-package.json5'), /"core_runtime": "file:\.\.\/core_runtime"/);
   assert.ok(!fs.readFileSync(path.join(root, 'feature_contracts/oh-package.json5'), 'utf8').includes('core_runtime'),
     'contracts must not depend on the runtime');
+});
+
+check('the structure package only talks to the host through core_runtime', () => {
+  const page = read('structure_feature/src/main/ets/pages/StructurePage.ets');
+  assert.match(page, /outlineService\(\)\.current\(\)/, 'reads the snapshot published by the host');
+  assert.match(page, /requestReveal\(/, 'asks the host to move the caret instead of touching the editor');
+  assert.ok(!/editorController|CanvasTextEditor|EditorStore/.test(page),
+    'the feature package must not reach into the editor internals');
+  // 连线/节点不抢命中，否则点节点会点到线上
+  assert.match(page, /hitTestBehavior\(HitTestMode\.None\)/);
+});
+
+check('the host publishes the outline before opening the map', () => {
+  const pane = read('entry/src/main/ets/shell/EditorPane.ets');
+  assert.match(pane, /buildOutlineSnapshot\(/);
+  assert.match(pane, /outlineService\(\)\.publish\(/);
+  assert.match(pane, /enterStructure\(\)/);
+  const shell = read('entry/src/main/ets/shell/AppShell.ets');
+  assert.match(shell, /app\.ui\.structureOpen/, 'the shell renders the map as a full-window branch');
+  assert.match(shell, /takeReveal\(\)/, 'closing the map applies the requested jump');
 });
 
 console.log('Modules regression: ' + pass + ' checks passed');

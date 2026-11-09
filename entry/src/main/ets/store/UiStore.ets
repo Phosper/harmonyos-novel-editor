@@ -111,6 +111,8 @@ export class UiStore {
   @Trace immersiveEditing: boolean = false
   /** 思路板全窗口打开（不占路由；开/关由 geometryTransition 做一镜到底） */
   @Trace canvasOpen: boolean = false
+  /** 只读导图全窗口打开（内容来自 structure_feature 包；桌面优先） */
+  @Trace structureOpen: boolean = false
   /** 顶栏「查找」请求计数：EditorPane 监听后打开查找面板 */
   @Trace findRequestTick: number = 0
   /** 选区/格式状态版本号：顶栏 B/I/H 态按它刷新（不携带具体坐标） */
@@ -138,6 +140,19 @@ export class UiStore {
   exitCanvas(): void {
     if (this.canvasOpen) {
       this.canvasOpen = false
+    }
+  }
+
+  /** 打开只读导图：同一时刻只保留一个全窗口覆盖层 */
+  enterStructure(): void {
+    this.canvasOpen = false
+    this.immersiveEditing = false
+    this.structureOpen = true
+  }
+
+  exitStructure(): void {
+    if (this.structureOpen) {
+      this.structureOpen = false
     }
   }
 

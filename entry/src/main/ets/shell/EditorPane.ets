@@ -16,6 +16,9 @@ import type { CanvasEditorSelection } from '../editor/flowtext/CanvasTextEditor'
 import { ScrollPolicy, StyleKind, FormatRun } from '../editor/flowtext/model/EditorTypes'
 import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
 import { TextFormat, FormatOptions } from '../utils/TextFormat'
+import { buildOutlineSnapshot } from '../editor/OutlineExtract'
+import type { OutlineSnapshot } from 'feature_contracts'
+import { outlineService } from 'core_runtime'
 import { EditorTools } from './EditorTools'
 import { CardPicker } from './CardPicker'
 import { canvasCapturePayload } from '../editor/CanvasCapture'
@@ -454,6 +457,17 @@ export struct EditorPane {
           }
           Text(this.docStatus())
             .fontSize(12).fontColor(this.colors().textTertiary)
+          Blank()
+          // 只读导图入口：桌面/宽屏才有标题行，手机端等结构工具补全后再给入口
+          Text('导图')
+            .fontSize(12)
+            .fontColor(this.colors().textSecondary)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .borderRadius(WeaverRadii.XS)
+            .backgroundColor(this.colors().bgSurface)
+            .hoverEffect(HoverEffect.Highlight)
+            .accessibilityText('打开只读导图')
+            .onClick(() => this.openStructure())
         }
         .width('100%')
         .height(28)
@@ -563,6 +577,22 @@ export struct EditorPane {
     }
     const sel: CanvasEditorSelection = this.editorController.getSelection()
     return Math.max(0, sel.end - sel.start)
+  }
+
+  /**
+   * 打开只读导图（结构包）。宿主在这里生成快照并发布，导图页只读；
+   * 用户在图上点主题时，偏移写回 core_runtime，关闭后由 AppShell 定位。
+   */
+  private openStructure(): void {
+    const stores: AppStores | null = this.app
+    if (stores === null || !stores.editor.hasDoc) {
+      this.toast('先打开一篇文稿')
+      return
+    }
+    const snapshot: OutlineSnapshot = buildOutlineSnapshot(stores.editor.activeId, stores.editor.title,
+      stores.editor.content, stores.editor.runsJson, stores.editor.contentRev)
+    outlineService().publish(snapshot)
+    stores.ui.enterStructure()
   }
 
   private openCapture(): void {

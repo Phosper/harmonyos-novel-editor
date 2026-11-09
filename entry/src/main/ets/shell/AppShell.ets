@@ -38,7 +38,9 @@ import { ezCustomTransition, LongTakeTransitionParam } from '../thirdparty/ezcus
 import { SettingsDest } from '../pages/dest/SettingsDest'
 import { SettingsPanel } from './SettingsPanel'
 // 核心运行时（HSP）：功能目录在基础包里，缺失的扩展也能显示名字与安装状态
-import { featureCatalog } from 'core_runtime'
+import { featureCatalog, outlineService } from 'core_runtime'
+// 结构包（HSP）：只读导图（桌面优先）
+import { StructurePage, StructureTheme } from 'structure_feature'
 
 enum ExportAction {
   CHAPTER_TXT = 0,
@@ -225,6 +227,31 @@ export struct AppShell {
     return tokensFor(app.ui.themeId)
   }
 
+  /** 结构包不认识 entry 的令牌，主题色必须显式注入 */
+  private structureTheme(): StructureTheme {
+    const c: WeaverColorSet = this.colors()
+    const theme: StructureTheme = new StructureTheme()
+    theme.bg = c.bgPrimary
+    theme.card = c.bgCard
+    theme.text = c.textPrimary
+    theme.sub = c.textTertiary
+    theme.divider = c.divider
+    theme.brand = c.brand
+    theme.onBrand = c.onBrand
+    return theme
+  }
+
+  /** 关闭导图：用户在图上点了主题时，回到正文对应位置（偏移由 core_runtime 中转） */
+  private closeStructure(): void {
+    app.ui.exitStructure()
+    const offset: number = outlineService().takeReveal()
+    const controller = app.ui.editorController
+    if (offset >= 0 && controller !== null) {
+      controller.revealOffset(offset)
+      controller.focus()
+    }
+  }
+
   // 官方推荐 Auto：容器宽 ≥600vp 自动分栏（Split），不足则堆叠（Stack），
   // 不再自己按断点硬切，避免与系统应用的自由窗口表现不一致
   private navMode(): NavigationMode {
@@ -382,6 +409,13 @@ export struct AppShell {
       if (app.ui.canvasOpen) {
         // 思路板：全窗口覆盖（侧栏/列表一起盖住），关闭由 ✕ / 返回键触发逆向转场
         CanvasDest({ showBack: app.ui.isNarrow })
+      } else if (app.ui.structureOpen) {
+        // 只读导图：桌面优先，内容来自 structure_feature 包（HSP）
+        StructurePage({
+          theme: this.structureTheme(),
+          docTitle: app.editor.title,
+          onClose: () => this.closeStructure()
+        })
       } else if (app.ui.immersiveEditing) {
         FocusWorkspace({ app: app })
       } else if (this.breakPoint === BreakPoint.LG) {
