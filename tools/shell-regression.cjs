@@ -137,7 +137,8 @@ function exportHarness(options = {}) {
   } };
   const fileContext = vm.createContext({ fileIo: io, picker, Logger: log, util });
   for (const file of ['model/Chapter.ets', 'editor/flowtext/model/EditorTypes.ets',
-    'editor/flowtext/model/FormatCodec.ets', 'utils/MarkdownRenderer.ets', 'utils/ExportService.ets']) {
+    'editor/flowtext/model/FormatCodec.ets', 'utils/MarkdownBlocks.ets',
+    'utils/MarkdownRenderer.ets', 'utils/ExportService.ets']) {
     vm.runInContext(compile(read(file)), fileContext);
   }
   return { service: vm.runInContext('ExportService', fileContext),
@@ -210,7 +211,7 @@ function exportHarness(options = {}) {
   await check('dialogs use the system CustomContentDialog driven by state', async () => {
     assert.ok(shellSource.includes('CustomContentDialog('), 'system dialog component');
     assert.ok(shellSource.includes('new CustomDialogController('), 'opened through the system controller');
-    assert.ok(shellSource.includes("@Monitor('dialogWatch.dialog')"), 'open/close follows app.ui.dialog');
+    assert.ok(shellSource.includes("@Monitor('uiWatch.dialog')"), 'open/close follows app.ui.dialog');
     assert.ok(shellSource.includes('dialogInputArea'), 'content area is injected into the system dialog');
     assert.ok(!shellSource.includes('dialogView()'), 'the self-drawn overlay host must be gone');
     // 失败重试语义保持：失败后用原输入重开
@@ -460,7 +461,7 @@ function exportHarness(options = {}) {
   await check('middle column receives live text preview updates and undo sync', async () => {
     assert.match(read('store/ProjectStore.ets'), /updateDocPreview\(/);
     assert.match(read('shell/EditorPane.ets'), /updateDocPreview\(ownerId, text\)/);
-    assert.match(read('shell/EditorPane.ets'), /@Monitor\('app\.editor\.contentRev'\)/);
+    assert.match(read('shell/EditorPane.ets'), /@Monitor\('editorWatch\.contentRev'\)/);
   });
   await check('focus mode has a designed header, exit path and visible fallback animation', async () => {
     const focus = read('shell/FocusWorkspace.ets');
@@ -473,7 +474,11 @@ function exportHarness(options = {}) {
     assert.doesNotMatch(focus, /\.translate\(\{ y: this\.entered/);
     // 入场不再用透明度/位移兜底：geometryTransition 负责形变，页面本身始终不透明
     assert.doesNotMatch(focus, /\.opacity\(this\.entered/);
-    assert.match(focus, /aboutToAppear/);
+    // 只写不读的入场状态与定时器已删除（它从未参与绘制，却在每次挂载时空转一拍）
+    assert.doesNotMatch(focus, /@Local entered/);
+    assert.doesNotMatch(focus, /enterTimer/);
+    assert.doesNotMatch(focus, /\.backgroundColor\(this\.colors\(\)\.bgPrimary\)[\s\S]{0,80}\.backgroundColor\(this\.colors\(\)\.bgPrimary\)/,
+      'the root must not set the same background twice');
     assert.match(focus, /Motion\.fast/);
   });
   await check('top actions are flat Email-style icons without glass material', async () => {
@@ -536,7 +541,10 @@ function exportHarness(options = {}) {
     const pane = read('shell/EditorPane.ets');
     assert.match(pane, /EditorTools\(\{ app: this\.app, space: this\.toolSpace\(\)/);
     const shell = read('shell/AppShell.ets');
-    assert.match(shell, /EditorTools\(\{ app: app, space: 260/);
+    // 窗口头曾经有一份从未挂载的 appBar()，里面重复实现了 EditorTools / 导出 / 导入 / 设置。
+    // 现已删除：工具组只由编辑区（EditorPane）承载，避免第二份真相。
+    assert.doesNotMatch(shell, /EditorTools\(/, 'toolbar lives only in the editor pane');
+    assert.ok(!shell.includes('appBar()'), 'the never-mounted appBar builder stays deleted');
     assert.doesNotMatch(shell, /EditorTools\(\{[^}]*compact:/, 'appBar must not pass the removed compact param');
     assert.match(pane, /this\.headerWidth = width/);
     const button = read('shell/TopActionButton.ets');
@@ -851,7 +859,7 @@ function exportHarness(options = {}) {
   await check('toolbar fades out when idle and wakes on activity', async () => {
     const tools = read('shell/EditorTools.ets');
     assert.match(tools, /@Local idle: boolean = false/);
-    assert.match(tools, /@Monitor\('app\.ui\.selectionTick'\)/);
+    assert.match(tools, /@Monitor\('uiWatch\.selectionTick'\)/);
     assert.match(tools, /this\.idle = true/);
     assert.match(tools, /setTimeout\(\(\) => \{[\s\S]{0,120}?\}, 3000\)/);
     assert.match(tools, /\.opacity\(this\.idle \? 0\.3 : 1\)/);
@@ -953,6 +961,12 @@ function exportHarness(options = {}) {
     assert.match(read('shell/EvidenceDrawer.ets'), /jumpToSourceAsync/);
     assert.match(read('shell/EvidenceDrawer.ets'), /closeCanvasAnimated\(this\.getUIContext\(\)\)/);
     assert.match(read('shell/EvidenceDrawer.ets'), /keyboardHeight/);
+    // R3：跳回原文必须先核验来源锚（精确/重定位/歧义/缺失），不能盲跳旧偏移
+    const drawer = read('shell/EvidenceDrawer.ets');
+    assert.match(drawer, /SourceAnchorResolver\.resolve\(/);
+    assert.match(drawer, /AnchorState\.MISSING/);
+    assert.ok(!/setTimeout\([\s\S]{0,80}\}, 360\)/.test(drawer), 'no fixed 360ms guess before jumping');
+    assert.match(drawer, /applyAnchorWhenReady\(ev, attempt \+ 1\)/, 'waits for the editor conditionally, with a cap');
     // M4：初稿弹窗、覆盖、写作卡自身素材
     assert.match(read('shell/CanvasPane.ets'), /draftDialog\(\)/);
     assert.match(read('shell/CanvasPane.ets'), /confirmWriteDraft\(true\)/);

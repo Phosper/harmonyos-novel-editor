@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "语流"
+    },
+    {
+      "name": "pasteboard_read_reason",
+      "value": "粘贴时读取系统剪贴板中的文字"
     }
   ]
 }

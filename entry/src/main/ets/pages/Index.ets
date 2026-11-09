@@ -7,7 +7,6 @@
 // 避免逐层 @Event 透传。
 import { AppShell } from '../shell/AppShell'
 import { app } from '../store/AppStores'
-import { pageGlow } from '../constants/LightTokens'
 import { tokensFor } from '../constants/DesignTokens'
 import { fireAndLog } from '../store/AppStores'
 import { closeCanvasAnimated } from '../shell/CanvasTransition'
@@ -59,7 +58,8 @@ struct Index {
         AppShell()
       }
       .width('100%').height('100%')
-      .linearGradient({ angle: 180, colors: pageGlow(app.ui.themeId) })
+      // 页面光感只由 AppShell 的 GlowPageBackground 画一层：
+      // 这里再铺一条 linearGradient 会与它叠加，浅色主题下发灰、深色主题下发亮。
       if (app.canvas.undoLabel !== '') {
         this.undoBar()
       }

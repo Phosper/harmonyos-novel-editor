@@ -16,6 +16,7 @@ import {
 } from '../model/CanvasTypes'
 import { CanvasSpec } from '../constants/CanvasSpec'
 import { app, fireAndLog } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
 import { Logger } from '../utils/Logger'
 import {
   canvasPalette, CanvasPalette, CanvasCardView, CanvasRowView, CanvasDragKind, CanvasHitResult,
@@ -77,6 +78,8 @@ export struct CanvasPane {
   @Local renameOpen: boolean = false
   @Local renameCardId: string = ''
   @Local renameTitle: string = ''
+  /** @Monitor 的根必须是自己状态变量：把 app.ui 挂到 @Local 上（同 EditorPane） */
+  @Local uiWatch: UiStore = app.ui
 
   // ===== 非渲染状态（私有，不需要响应式）=====
   private mouthKey: string = ''
@@ -827,38 +830,70 @@ export struct CanvasPane {
     this.draftOpen = false
     try {
       if (overwrite && card.docId !== '') {
-        const docId: string = card.docId
-        const old: ChapterModel | null = await chapterRepo.loadOne(docId)
-        await chapterRepo.saveDraft(docId, result.content, 0, result.runsJson)
-        await app.project.reloadChapters()
-        await app.openChapter(docId)
-        ensureWorkspace()
-        closeCanvasAnimated(this.getUIContext())
+        const old: ChapterModel | null = await chapterRepo.loadOne(card.docId)
         if (old !== null) {
-          const oldContent: string = old.content
-          const oldRuns: string = old.formatRuns === undefined ? '' : old.formatRuns
-          app.canvas.offerUndo('已覆盖初稿', async (): Promise<void> => {
-            await chapterRepo.saveDraft(docId, oldContent, 0, oldRuns)
-            await app.project.reloadChapters()
-          })
+          await this.replaceDraft(card.docId, old, result, rows.length)
+          return
         }
-        this.toast('已覆盖初稿，共 ' + rows.length.toString() + ' 节')
-        return
+        // 卡片记的初稿已经不在了（被删）：按新建处理，不再静默写一个不存在的 id
+        this.toast('原初稿已不存在，改为新建一篇')
       }
-      const rawTitle: string = card.title.trim()
-      const title: string = rawTitle === '' ? '未命名论文' : rawTitle
-      const ch: ChapterModel = await chapterRepo.createChapter(app.project.currentBookId, title, ChapterFormat.MD)
-      await chapterRepo.saveDraft(ch.id, result.content, 0, result.runsJson)
-      await app.canvas.setCardDocId(cardId, ch.id)
-      await app.project.reloadChapters()
-      await app.openChapter(ch.id)
-      ensureWorkspace()
-      closeCanvasAnimated(this.getUIContext())
-      this.toast('已生成初稿《' + ch.title + '》，共 ' + rows.length.toString() + ' 节')
+      await this.createDraft(card, result, rows.length)
     } catch (e) {
       Logger.error('CanvasPane.writeDraft failed: ' + String(e))
       this.toast('生成初稿失败，请重试')
     }
+  }
+
+  /**
+   * 覆盖已有初稿（R1 修复点）。
+   *
+   * 旧实现直接 `chapterRepo.saveDraft` 写库：如果这篇初稿正在编辑器里打开且 dirty，
+   * 内存草稿仍是旧内容，随后的自动保存会把旧稿写回去 —— 用户看到"覆盖没生效"。
+   * 现在先把该稿切成当前草稿，再走 `EditorStore.applyGeneratedContent`（一次可撤销编辑），
+   * 紧接着立即落库；撤销条也走同一条命令。
+   */
+  private async replaceDraft(docId: string, old: ChapterModel, result: CanvasDraftResult,
+    sections: number): Promise<void> {
+    await app.openChapter(docId)
+    if (app.editor.activeId !== docId ||
+      !app.editor.applyGeneratedContent(docId, result.content, result.runsJson)) {
+      this.toast('初稿未能打开，未覆盖')
+      return
+    }
+    await app.editor.flushDoc(docId)
+    await app.project.reloadChapters()
+    ensureWorkspace()
+    closeCanvasAnimated(this.getUIContext())
+    const oldContent: string = old.content
+    const oldRuns: string = old.formatRuns === undefined ? '' : old.formatRuns
+    app.canvas.offerUndo('已覆盖初稿', async (): Promise<void> => {
+      // 撤销同样必须走命令：直接写库会让打开的草稿再次与库不一致
+      if (app.editor.applyGeneratedContent(docId, oldContent, oldRuns)) {
+        await app.editor.flushDoc(docId)
+      } else {
+        await chapterRepo.saveDraft(docId, oldContent, 0, oldRuns)
+      }
+      await app.project.reloadChapters()
+    })
+    this.toast('已覆盖初稿，共 ' + sections.toString() + ' 节')
+  }
+
+  /** 新建一篇初稿：先由 store 建稿并打开，再用同一命令写入正文（不直接改库） */
+  private async createDraft(card: CanvasCardData, result: CanvasDraftResult, sections: number): Promise<void> {
+    const rawTitle: string = card.title.trim()
+    const title: string = rawTitle === '' ? '未命名论文' : rawTitle
+    const ch: ChapterModel = await app.createChapter(title, ChapterFormat.MD)
+    if (!app.editor.applyGeneratedContent(ch.id, result.content, result.runsJson)) {
+      this.toast('新建初稿失败，请重试')
+      return
+    }
+    await app.editor.flushDoc(ch.id)
+    await app.canvas.setCardDocId(card.id, ch.id)
+    await app.project.reloadChapters()
+    ensureWorkspace()
+    closeCanvasAnimated(this.getUIContext())
+    this.toast('已生成初稿《' + ch.title + '》，共 ' + sections.toString() + ' 节')
   }
 
   private openCardMenu(cardId: string): void {
@@ -1209,15 +1244,12 @@ export struct CanvasPane {
     this.resetDrag()
   }
 
-  @Monitor('params.boardId')
-  onBoardIdChanged(): void {
-    const id: string = this.params.boardId
-    if (id !== '' && id !== app.canvas.currentBoardId) {
-      fireAndLog(app.canvas.selectBoard(id), 'CanvasPane.selectBoard')
-    }
-  }
-
-  @Monitor('app.ui.themeId')
+  /**
+   * 切板不再用 @Monitor('params.boardId')：`params` 是普通接口对象（非 @ObservedV2），
+   * 监听不到的字段只会产生编译告警；真正切板由 CanvasDest 调 `app.canvas.selectBoard` 完成，
+   * 面板通过 @Trace 的 currentBoardId/placements 自动刷新。
+   */
+  @Monitor('uiWatch.themeId')
   onThemeChanged(): void {
     this.drawDots()
   }

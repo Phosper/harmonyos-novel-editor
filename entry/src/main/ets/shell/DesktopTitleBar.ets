@@ -26,6 +26,8 @@ import { SaveState } from '../store/StoreModels'
 import { exitFocusAnimated } from './FocusTransition'
 import { ExportService } from '../utils/ExportService'
 import type { AppStores } from '../store/AppStores'
+import { app as appStores } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
 import type { EditorDraftSnapshot } from '../store/EditorStore'
 
 /** 书名尚未加载时的标题兜底 */
@@ -55,6 +57,8 @@ export struct DesktopTitleBar {
   @Local titleButtonWidth: number = 0
   /** 顶栏实测宽度（vp）：用于判断是否折叠工具组（断点只看窗口，顶栏还要看自身可用宽） */
   @Local headerWidth: number = 1200
+  /** @Monitor 的根必须是自己状态变量（模块级单例作根会告警且可能不触发） */
+  @Local uiWatch: UiStore = appStores.ui
 
   private statusListener: ((status: window.WindowStatusType) => void) | null = null
   private rectListener: ((rect: window.TitleButtonRect) => void) | null = null
@@ -77,7 +81,7 @@ export struct DesktopTitleBar {
   }
 
   /** 主题切换时同步原生三键的图标配色（深色主题给 DARK，浅色主题给 LIGHT） */
-  @Monitor('app.ui.themeId')
+  @Monitor('uiWatch.themeId')
   onThemeIdChanged(): void {
     this.applyChrome()
   }

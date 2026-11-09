@@ -45,7 +45,19 @@ export struct SettingsPanel {
 
   private resetDefaults(): void {
     app.ui.setTheme(DEFAULT_THEME_ID)
-    app.ui.typewriter = false
+    // 走同一入口：直接赋 @Trace 字段不会同步编辑器控制器（按钮会"看起来没关"）
+    this.applyTypewriter(false)
+  }
+
+  /**
+   * 打字机开关的唯一写入口：store + 编辑器控制器一起改。
+   * 只写 store 时 V1 岛屿的 @Prop 更新时序可能不触发重排，表现为"开关没反应"。
+   */
+  private applyTypewriter(on: boolean): void {
+    app.ui.setTypewriter(on)
+    if (app.ui.editorController !== null) {
+      app.ui.editorController.setTypewriter(on)
+    }
   }
 
   private loggedIn(): boolean {
@@ -362,7 +374,7 @@ export struct SettingsPanel {
       this.sectionTitle('写作')
       Column() {
         this.switchRow('打字机模式', '当前段落居中，其余段落淡化显示', app.ui.typewriter,
-          (value: boolean) => { app.ui.typewriter = value })
+          (value: boolean) => { this.applyTypewriter(value) })
       }
       .width('100%')
       .backgroundColor(this.colors().bgCard)

@@ -18,6 +18,9 @@ import type { CanvasCardPatch } from '../model/CanvasStoreModels'
 import {
   canvasPalette, CanvasPalette, CanvasLayout, canvasDepthLabel, canvasEvidenceLabel
 } from './CanvasTheme'
+import { SourceAnchorResolver, AnchorState } from '../utils/SourceAnchor'
+import type { AnchorResolution } from '../utils/SourceAnchor'
+import type { CanvasTextEditorController } from '../editor/flowtext/CanvasTextEditor'
 
 const DRAWER_KEY_ESCAPE: number = 2070
 
@@ -224,36 +227,59 @@ export struct EvidenceDrawer {
     fireAndLog(this.jumpToSourceAsync(ev), 'EvidenceDrawer.jumpToSource')
   }
 
-  /** 同文稿直接定位；跨文稿先打开、关画布，再等编辑器挂载后定位。 */
+  /** 同文稿直接定位；跨文稿先打开、关画布，再等编辑器就绪后定位。 */
   private async jumpToSourceAsync(ev: CanvasEvidenceData): Promise<void> {
     try {
       if (app.editor.activeId !== ev.docId) {
         await app.openChapter(ev.docId)
         ensureWorkspace()
         closeCanvasAnimated(this.getUIContext())
-        setTimeout(() => {
-          const ctl = app.ui.editorController
-          if (ctl !== null && ev.startOff >= 0) {
-            ctl.revealOffset(ev.startOff)
-            ctl.focus()
-          }
-        }, 360)
+        // 不用固定延时猜"编辑器好了没"：轮询真实条件（控制器已绑定且文稿匹配），
+        // 有上限，超时明确提示而不是盲跳（交接稿 R3 的另一半问题）。
+        this.applyAnchorWhenReady(ev, 0)
         return
       }
-      const ctl = app.ui.editorController
-      if (ctl === null) {
-        this.toast('编辑器未就绪，稍后再试')
-        return
-      }
-      if (ev.startOff >= 0) {
-        ctl.revealOffset(ev.startOff)
-      }
-      ctl.focus()
       // 同文稿也要先收起画布，否则用户仍停在全窗口画布上
       ensureWorkspace()
       closeCanvasAnimated(this.getUIContext())
+      this.applyAnchorWhenReady(ev, 0)
     } catch (e) {
       this.toast('原文已不存在或无法打开')
+    }
+  }
+
+  /** 等编辑器挂载（最多约 2 秒）后再核验锚点并定位 */
+  private applyAnchorWhenReady(ev: CanvasEvidenceData, attempt: number): void {
+    const ctl: CanvasTextEditorController | null = app.ui.editorController
+    if (ctl !== null && app.editor.activeId === ev.docId) {
+      this.applyAnchor(ctl, ev)
+      return
+    }
+    if (attempt >= 40) {
+      this.toast('编辑器未就绪，请稍后在正文里手动查找这段文字')
+      return
+    }
+    setTimeout(() => {
+      this.applyAnchorWhenReady(ev, attempt + 1)
+    }, 50)
+  }
+
+  /**
+   * 核验来源锚后定位：原文改过就按摘录重新找，找不到就明说，绝不"假装还准"。
+   * 命中时把摘录区间选中，用户能一眼确认对应的是哪一段。
+   */
+  private applyAnchor(ctl: CanvasTextEditorController, ev: CanvasEvidenceData): void {
+    const res: AnchorResolution = SourceAnchorResolver.resolve(
+      ctl.getText(), ev.startOff, ev.endOff, ev.quoteText, ev.fingerprint)
+    if (res.state === AnchorState.MISSING) {
+      this.toast(res.message)
+      return
+    }
+    ctl.selectRange(res.start, res.end)
+    ctl.revealOffset(res.start)
+    ctl.focus()
+    if (res.message !== '') {
+      this.toast(res.message)
     }
   }
 

@@ -3,7 +3,9 @@ import { promptAction, Chip, ChipSize } from '@kit.ArkUI'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID, blendHexColor } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
-import { fireAndLog } from '../store/AppStores'
+import { fireAndLog, app as appStores } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
+import { EditorStore } from '../store/EditorStore'
 import type { OpenDoc, DocItem } from '../store/StoreModels'
 import { SaveState } from '../store/StoreModels'
 import { ChapterFormat } from '../model/Chapter'
@@ -57,6 +59,14 @@ export struct EditorPane {
   @Local capFingerprint: string = ''
   @Local capDocId: string = ''
   @Local capSource: string = ''
+  /**
+   * @Monitor 的路径根必须是**组件自己的状态变量**：直接写 `@Monitor('app.ui.xxx')`
+   * 时根是模块级单例，编译器会告警 "needs to monitor the state variables that exist"，
+   * 运行期很可能永远不触发（顶栏「查找」点了没反应即由此而来）。
+   * 这里把单例挂到 @Local 上再监听（AppShell 的 dialogWatch 同款写法）。
+   */
+  @Local uiWatch: UiStore = appStores.ui
+  @Local editorWatch: EditorStore = appStores.editor
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
@@ -68,7 +78,7 @@ export struct EditorPane {
    * 深浅主题自动适配，不硬编码任何颜色。
    */
   /** 顶栏「查找」→ 打开查找替换面板（工具已上移到顶栏，避免编辑器内再放一条工具条） */
-  @Monitor('app.ui.findRequestTick')
+  @Monitor('uiWatch.findRequestTick')
   onFindRequested(): void {
     this.showReplace = true
   }
@@ -77,14 +87,14 @@ export struct EditorPane {
   /** 历史深度：撤销/重做按钮的禁用态靠它显式驱动（数组原地 push 不可靠） */
   @Local historyTick: number = 0
 
-  @Monitor('app.editor.historyVersion')
+  @Monitor('editorWatch.historyVersion')
   onHistoryVersion(): void {
     if (this.app !== null) {
       this.historyTick = this.app.editor.historyVersion
     }
   }
 
-  @Monitor('app.editor.contentRev')
+  @Monitor('editorWatch.contentRev')
   onContentRevChanged(): void {
     if (this.app !== null && this.app.editor.hasDoc) {
       this.app.project.updateDocPreview(this.app.editor.activeId, this.app.editor.content)

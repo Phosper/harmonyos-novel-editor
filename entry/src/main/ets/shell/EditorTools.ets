@@ -14,6 +14,8 @@
 import { tokensFor, WeaverColorSet, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import { Motion } from '../constants/Motion'
 import type { AppStores } from '../store/AppStores'
+import { app as appStores } from '../store/AppStores'
+import { UiStore } from '../store/UiStore'
 import { ParagraphKind, StyleKind } from '../editor/flowtext/model/EditorTypes'
 import { TopActionButton } from './TopActionButton'
 import { promptAction } from '@kit.ArkUI'
@@ -39,6 +41,8 @@ export struct EditorTools {
 
   /** 空闲淡出：3 秒无操作降到 55%，悬停/输入/选词即恢复 */
   @Local idle: boolean = false
+  /** @Monitor 的根必须是自己状态变量，不能是模块级单例（见 EditorPane 同款说明） */
+  @Local uiWatch: UiStore = appStores.ui
   private idleTimer: number = -1
 
   aboutToAppear(): void {
@@ -53,7 +57,7 @@ export struct EditorTools {
   }
 
   /** 任何输入/选区变化都算“活跃”（editor 每次编辑都会递增 selectionTick） */
-  @Monitor('app.ui.selectionTick')
+  @Monitor('uiWatch.selectionTick')
   onSelectionTick(): void {
     this.wake()
   }

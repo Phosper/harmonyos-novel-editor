@@ -18,7 +18,7 @@ import { BreakPoint } from '../utils/BreakPoint'
 import { Motion } from '../constants/Motion'
 import { DeviceSnapshot, deviceProfile } from '../utils/DeviceProfile'
 import { Logger } from '../utils/Logger'
-import { WeaverRadii, WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
+import { WeaverRadii, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
 import { app } from '../store/AppStores'
 import { ShellDialog, UiStore } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
@@ -27,8 +27,7 @@ import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportS
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
 import { FocusWorkspace } from './FocusWorkspace'
-import { EditorTools } from './EditorTools'
-import { GlowPageBackground, glassBarStyle } from './MaterialSurface'
+import { GlowPageBackground } from './MaterialSurface'
 import { WorkspaceDest } from './WorkspaceDest'
 import { CanvasDest } from './CanvasDest'
 import { MobileShell } from './MobileShell'
@@ -67,19 +66,12 @@ export struct AppShell {
   @Local showSettings: boolean = false
   /** 自定义转场期间禁用 Navigation 交互，避免动画被打断/布局错乱 */
   @Local navInteractive: boolean = true
-  /** 历史深度镜像：窗口头工具条的撤销/重做禁用态靠它刷新 */
-  @Local historyTick: number = 0
   /** 系统对话框（CustomContentDialog）：由 dialog 状态变化驱动开关，不再自绘遮罩卡片 */
   private dialogCtl: CustomDialogController | null = null
   /** 输入框草稿：系统对话框关闭后仍保留用户输入，失败可直接重开重试 */
   @Local dialogDraft: string = ''
-  /** 观察 app.ui.dialog（@ObservedV2 + @Trace），@Monitor 的路径必须从一个状态成员出发 */
-  @Local dialogWatch: UiStore = app.ui
-
-  @Monitor('app.editor.historyVersion')
-  onHistoryVersion(): void {
-    this.historyTick = app.editor.historyVersion
-  }
+  /** 观察 app.ui（@ObservedV2 + @Trace）：@Monitor 的根必须是组件状态变量，不能直接写模块级单例 */
+  @Local uiWatch: UiStore = app.ui
 
   /** DeviceProfile 订阅释放器 */
   private profileDisposer: (() => void) | null = null
@@ -118,7 +110,7 @@ export struct AppShell {
    * 退出沉浸后，确保宽屏第三栏仍停在编辑工作区（沉浸期间直接渲染 FocusWorkspace，
    * 不依赖 Navigation 路由栈；若栈里没有 WORKSPACE，退出后要补回来）。
    */
-  @Monitor('app.ui.immersiveEditing')
+  @Monitor('uiWatch.immersiveEditing')
   onImmersiveEditingChanged(): void {
     if (!app.ui.immersiveEditing && this.breakPoint === BreakPoint.LG && app.editor.hasDoc) {
       ensureWorkspace()
@@ -276,16 +268,6 @@ export struct AppShell {
 
   private sideBarWidthVp(): number {
     return app.ui.usesDesktopChrome ? 260 : 240
-  }
-
-  /** 顶栏高度：键鼠 44vp（紧凑）；平板触摸 52vp（命中区）；手机仍走 MobileShell */
-  private appBarHeight(): number {
-    return this.isTabletTouch() ? 52 : WeaverSpacing.TITLEBAR_H
-  }
-
-  /** 悬停反馈只在键鼠形态启用：触摸设备不显示 hover 高亮（无可悬停指针） */
-  private barHover(): HoverEffect {
-    return app.ui.pointerPrimary ? HoverEffect.Highlight : HoverEffect.None
   }
 
   // ===================== 结构 =====================
@@ -502,66 +484,6 @@ export struct AppShell {
     .width('100%').height('100%')
   }
 
-  // 命名注意：不要叫 toolbar —— 它是 ArkUI 内置属性名（基类 CustomComponent 已占用），
-  // 同名 @Builder 会被解析成属性设置器并报类型错误。
-  // 宽屏顶栏：三形态只改"动作集合 / 命中区 / 悬停反馈"，不改断点与栏位结构。
-  //   电脑（自由窗口）：撤销 / 重做 / 导出 / 导入 / 设置 全部常驻，键鼠 hover 高亮；
-  //   平板（触摸为主）：撤销 / 重做已在编辑工具条（宽屏可见），顶栏只留导出 / 导入 / 设置，
-  //                    命中区放大到 48vp，无 hover；
-  //   手机：不使用本顶栏（走 MobileShell 的最小 chrome）。
-  @Builder
-  appBar() {
-    Row() {
-      Text('☰')
-        .fontSize(16)
-        .fontColor(app.ui.showSidebar ? this.colors().textPrimary : this.colors().textTertiary)
-        .width(44).height(44).textAlign(TextAlign.Center)
-        .accessibilityText(app.ui.showSidebar ? '收起侧栏' : '展开侧栏')
-        .hoverEffect(this.barHover())
-        .onClick(() => app.ui.toggleSidebar())
-      Text(this.centerTitle())
-        .fontSize(15).fontWeight(FontWeight.Medium)
-        .fontColor(this.colors().textPrimary)
-        .margin({ left: 8 }).layoutWeight(1)
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-
-      if (app.editor.hasDoc) {
-        Text(app.editor.wordCount.toString() + ' 字')
-          .fontSize(11).fontColor(this.colors().textTertiary)
-          .margin({ right: 8 })
-        // 平板宽屏：常用工具同样上移到顶栏。
-        // 这条顶栏还要放标题/字数/导出导入设置，工具组只能分到固定预算 →
-        // 传 260vp，落到 L2（撤销/重做/四点更多/查找/专注），格式动作进更多菜单。
-        EditorTools({ app: app, space: 260, immersive: false, historyTick: this.historyTick })
-      }
-
-      this.barAction('导出', () => this.openExportMenu())
-      this.barAction('导入', () => this.runImport())
-      this.barAction('设置', () => { this.showSettings = true })
-    }
-    .width('100%').height(this.appBarHeight())
-    .padding({ left: 6, right: 10 })
-    .attributeModifier(glassBarStyle(app.ui.themeId))
-  }
-
-  /** 顶栏文字动作：触摸设备用 48vp 命中区，键鼠设备用紧凑间距 + hover 高亮 */
-  @Builder
-  barAction(label: string, action: () => void) {
-    Text(label)
-      .fontSize(this.isTabletTouch() ? 15 : 13)
-      .fontColor(this.colors().textSecondary)
-      .padding({ left: this.isTabletTouch() ? 12 : 6, right: this.isTabletTouch() ? 12 : 6,
-        top: 10, bottom: 10 })
-      .margin({ left: this.isTabletTouch() ? 4 : 14 })
-      .accessibilityText(label)
-      .hoverEffect(this.barHover())
-      .onClick(action)
-  }
-
-  private centerTitle(): string {
-    return app.project.bookName
-  }
-
   // ===================== 路由 =====================
 
   @Builder
@@ -620,9 +542,9 @@ export struct AppShell {
     .backgroundColor(Color.Transparent)
   }
 
-  @Monitor('dialogWatch.dialog')
+  @Monitor('uiWatch.dialog')
   onDialogKindChanged(): void {
-    const kind: ShellDialog = this.dialogWatch.dialog
+    const kind: ShellDialog = this.uiWatch.dialog
     if (kind === ShellDialog.NONE) {
       return
     }

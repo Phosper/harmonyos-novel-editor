@@ -291,8 +291,7 @@ export class EditorStore {
   }
 
   /** 编辑器上报光标变化 */
-  setCaret(offset: number, ownerId?: string): void {
-    const doc: OpenDoc | undefined = this.activeDoc
+  setCaret(offset: number, ownerId?: string): void {    const doc: OpenDoc | undefined = this.activeDoc
     if (doc !== undefined && (ownerId === undefined || ownerId === doc.id)) {
       doc.caret = offset
       doc.rev++
@@ -312,6 +311,42 @@ export class EditorStore {
     this.scheduleFlush()
     this.saveState = SaveState.IDLE
     this.saveHint = '编辑中…'
+  }
+
+  /**
+   * 程序化写入「生成稿」（思路板 → 写成初稿 / 覆盖初稿）。
+   *
+   * 为什么不许调用方直接 `chapterRepo.saveDraft`：正文的事实源是 `OpenDoc.draft`。
+   * 绕开它直接 UPDATE，正在编辑的内存草稿仍是旧内容，随后的防抖保存或 30 秒安全网
+   * 会把旧内容写回库（交接稿 R1 复现的就是这条）。这里把替换并成**一次可撤销编辑**，
+   * 由调用方紧接着 `flushDoc(docId)` 立即落库。
+   *
+   * @param docId 目标文稿；必须是已打开的文稿（未打开返回 false，调用方应先 openChapter）
+   * @param content 新正文
+   * @param runsJson 格式边车
+   * @returns 是否已写入（目标未打开为 false）
+   */
+  applyGeneratedContent(docId: string, content: string, runsJson: string): boolean {
+    const doc: OpenDoc | undefined = this.openDocs.find((d: OpenDoc) => d.id === docId)
+    if (doc === undefined) {
+      return false
+    }
+    if (doc.draft === content && doc.runsJson === runsJson) {
+      return true
+    }
+    this.remember(doc)
+    doc.draft = content
+    doc.runsJson = runsJson
+    doc.caret = Math.min(doc.caret, content.length)
+    doc.dirty = true
+    doc.rev++
+    // 通知画布回灌：只改 draft 不改这个值，界面会停在旧稿上（与撤销/重做同一机制）
+    this.contentRev++
+    this.scheduleFlush()
+    this.saveState = SaveState.IDLE
+    this.saveHint = '编辑中…'
+    Logger.info('Generated content applied doc=' + docId + ' chars=' + content.length.toString())
+    return true
   }
 
   /**
@@ -338,8 +373,7 @@ export class EditorStore {
   }
 
   private remember(doc: OpenDoc): void {
-    if (this.restoring) {
-      return
+    if (this.restoring) {      return
     }
     const now: number = Date.now()
     if (this.historyBoundary || this.undoStack.length === 0 || this.undoStack[this.undoStack.length - 1].docId !== doc.id ||

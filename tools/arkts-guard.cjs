@@ -458,6 +458,54 @@ check('no struct member shadows a built-in CommonAttribute name', () => {
   }
 });
 
+// ===================== 18. @Monitor 的根必须是组件状态变量 =====================
+check('every @Monitor path is rooted at a component state variable', () => {
+  // 以 import 进来的模块级单例（app.*）作根时，ArkTS 只给告警
+  // "needs to monitor the state variables that exist"，运行期通常永远不触发 ——
+  // 顶栏「查找」点了没反应就是这么来的。正确写法：@Local watch: X = app.x + @Monitor('watch.field')。
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = dir === '' ? entry.name : dir + '/' + entry.name;
+      if (entry.isDirectory()) {
+        walk(rel);
+      } else if (entry.name.endsWith('.ets')) {
+        const source = stripComments(read(rel));
+        const pattern = /@Monitor\('([^']+)'\)/g;
+        let match;
+        while ((match = pattern.exec(source)) !== null) {
+          const member = match[1].split('.')[0];
+          if (member === 'app' || member === 'this') {
+            offenders.push(rel + ' -> ' + match[1]);
+          }
+        }
+      }
+    }
+  };
+  walk('');
+  assert.deepEqual(offenders, [], 'module-level singleton used as @Monitor root');
+});
+
+// ===================== 19. 生成稿必须走编辑命令，不能直接写库 =====================
+check('generated drafts are written through EditorStore, never straight to the DAO', () => {
+  const editorStore = read('store/EditorStore.ets');
+  assert.match(editorStore, /applyGeneratedContent\(docId: string, content: string, runsJson: string\): boolean/);
+  assert.match(editorStore, /applyGeneratedContent[\s\S]{0,900}this\.contentRev\+\+/,
+    'the command must notify the canvas (contentRev)');
+  const pane = read('shell/CanvasPane.ets');
+  const draftPath = pane.slice(pane.indexOf('private async replaceDraft'),
+    pane.indexOf('private async openDraft'));
+  assert.ok(draftPath.length > 0, 'replaceDraft exists');
+  assert.match(draftPath, /applyGeneratedContent\(/);
+  assert.match(draftPath, /flushDoc\(/);
+  assert.ok(!/chapterRepo\.saveDraft\(docId, result\.content/.test(draftPath),
+    'covering a draft must not UPDATE behind the open document (R1)');
+  const createPath = pane.slice(pane.indexOf('private async createDraft'),
+    pane.indexOf('private async openDraft'));
+  assert.match(createPath, /applyGeneratedContent\(/);
+  assert.ok(!/chapterRepo\.saveDraft\(ch\.id/.test(createPath), 'new drafts must not be written behind the editor');
+});
+
 // ===================== 15. guard self-test（防止规则空转成"假绿"） =====================
 check('the guard rules actually flag synthetic red-line snippets', () => {
   assert.equal(RULE.anyUnknown.test('let value: any = 1'), true);

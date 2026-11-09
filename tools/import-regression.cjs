@@ -48,7 +48,16 @@ function harness(text, options = {}) {
     util: { TextDecoder: { create() { return { decodeToString(bytes) { return new TextDecoder().decode(bytes); } }; } } }
   });
   vm.runInContext(compiled, context);
-  return { service: vm.runInContext('ImportService', context), handles, calls, errors };
+  // Markdown 块级解析是纯模块（只依赖 EditorTypes），直接装进同一个沙箱：
+  // 导入侧的剥离规则与导出侧的"已带标记"判定必须由同一份代码决定（R4）。
+  const ets = file => fs.readFileSync(path.join(__dirname, '../entry/src/main/ets', file), 'utf8');
+  const strip = text => stripTypeScriptTypes(text
+    .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
+    .replace(/\bexport\s+/g, ''), { mode: 'transform' });
+  vm.runInContext(strip(ets('editor/flowtext/model/EditorTypes.ets')), context);
+  vm.runInContext(strip(ets('utils/MarkdownBlocks.ets')), context);
+  const markdown = vm.runInContext('MarkdownBlocks', context);
+  return { service: vm.runInContext('ImportService', context), markdown, handles, calls, errors };
 }
 let count = 0;
 async function check(name, action) { await action(); count++; console.log('PASS ' + name); }
@@ -90,6 +99,25 @@ async function check(name, action) { await action(); count++; console.log('PASS 
     const canceled = harness('ignored', { cancel: true });
     assert.equal((await canceled.service.pickAndRead()).length, 0);
     assert.equal(canceled.calls.length, 0);
+  });
+  await check('markdown blocks become paragraph runs and the markers leave the text', async () => {
+    const h = harness('');
+    const parsed = h.markdown.parse('# 标题\n正文\n- [ ] 待办\n  - 列表\n#### 四级');
+    // 一~三级标题/列表/待办去掉行首标记；四级标题没有对应段落种类，保留原文（不静默改）
+    assert.equal(parsed.content, '标题\n正文\n待办\n列表\n#### 四级');
+    assert.deepEqual(JSON.parse(JSON.stringify(parsed.runs.map(r => [r.startOffset, r.endOffset, r.heading, r.indent]))),
+      [[0, 3, 1, 0], [6, 9, 5, 0], [9, 12, 4, 1]]);
+  });
+  await check('a markdown round trip never stacks a second heading marker', async () => {
+    const h = harness('');
+    const parsed = h.markdown.parse('# 标题\n- [x] 已完成');
+    assert.equal(parsed.content, '标题\n已完成');
+    assert.equal(h.markdown.alreadyMarked('标题', 1), false, 'fresh text needs its prefix back');
+    assert.equal(h.markdown.alreadyMarked('- 项', 4), true, 'already a list item');
+    // 历史脏数据（正文里留了 #）：解析后导出只还原一层，不会变成 `# # #`
+    const legacy = h.markdown.parse('# # 标题');
+    assert.equal(legacy.content, '# 标题');
+    assert.equal(h.markdown.alreadyMarked(legacy.content, 1), true, 'legacy marker is recognised, not doubled');
   });
   console.log('Import regression: ' + count + ' checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

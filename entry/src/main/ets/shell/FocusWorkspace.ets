@@ -1,9 +1,8 @@
 // 专注编辑面（沉浸模式）
 //
-// 关键：入场动画不依赖 AppShell 的 @Monitor 或全局状态，而由本组件每次挂载时
-// 在 aboutToAppear 里触发。这样“进入 → 退出 → 再次进入”时，即使外部状态通知
-// 有延迟，本组件也一定会重新开始自己的入场动画；且初始状态保持可见（scale 0.99），
-// 不会出现 opacity 0 导致整页空白。
+// 入场/退场的"生长"效果由 FocusTransition 的 geometryTransition 负责（共享元素），
+// 本组件不再自己做 scale/opacity 入场：两者叠加会出现白边与标题跳变。
+// 退出时保留一个短延时，让编辑器先收好键盘/选区，再恢复工作台，避免硬切。
 import { tokensFor, WeaverColorSet, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import { Motion } from '../constants/Motion'
 import type { AppStores } from '../store/AppStores'
@@ -15,30 +14,15 @@ const KEY_ESCAPE_CODE: number = 2070;
 @ComponentV2
 export struct FocusWorkspace {
   @Param app: AppStores | null = null
-  /** 入场动画进度：初始 0.99/8vp，下一拍回到 1/0 */
-  @Local entered: boolean = false
   /** 退出胶囊的悬停态：改用极淡底色反馈，不再使用玻璃材质 */
   @Local exitHovered: boolean = false
-  private enterTimer: number = -1
   private exitTimer: number = -1
 
   private colors(): WeaverColorSet {
     return tokensFor(this.app !== null ? this.app.ui.themeId : DEFAULT_THEME_ID)
   }
 
-  aboutToAppear(): void {
-    this.entered = false
-    this.enterTimer = setTimeout(() => {
-      this.enterTimer = -1
-      this.entered = true
-    }, 16)
-  }
-
   aboutToDisappear(): void {
-    if (this.enterTimer >= 0) {
-      clearTimeout(this.enterTimer)
-      this.enterTimer = -1
-    }
     if (this.exitTimer >= 0) {
       clearTimeout(this.exitTimer)
       this.exitTimer = -1
@@ -61,12 +45,11 @@ export struct FocusWorkspace {
     return this.app.editor.wordCount.toString() + ' 字 · ' + state
   }
 
-  /** 退出：先让专注面轻微收缩/下移，再恢复工作台，避免硬切 */
+  /** 退出：先让专注面轻微下移，再恢复工作台，避免硬切 */
   private exitFocus(): void {
     if (this.app === null || !this.app.ui.immersiveEditing) {
       return
     }
-    this.entered = false
     if (this.exitTimer >= 0) {
       clearTimeout(this.exitTimer)
     }
@@ -128,8 +111,6 @@ export struct FocusWorkspace {
     }
     .width('100%').height('100%')
     .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.colors().bgPrimary)
-    // 始终可见：动画未触发/被打断时仍显示完整页面（0.94 也清晰可读），不再出现空白页
     .backgroundColor(this.colors().bgPrimary)
 
       // 右下角常驻退出胶囊：36vp（触摸 44），半透明，hover 不透明

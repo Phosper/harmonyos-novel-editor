@@ -299,11 +299,6 @@ export struct TopicCard {
     .onTouch((event: TouchEvent) => {
       this.capturePointer(event)
     })
-    .onMouse((event: MouseEvent) => {
-      if (event.action === MouseAction.Press && event.button === MouseButton.Right) {
-        this.onCardMenu(this.cardData.id)
-      }
-    })
     .gesture(
       GestureGroup(GestureMode.Exclusive,
         PanGesture({ fingers: 1, direction: PanDirection.All, distance: CanvasLayout.DRAG_DISTANCE })

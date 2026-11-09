@@ -6,6 +6,7 @@ import { ChapterFormat } from '../model/Chapter'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { FormatRun } from '../editor/flowtext/model/EditorTypes'
 import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
+import { MarkdownBlocks } from './MarkdownBlocks'
 
 const EXPORT_WRITE_CHUNK_BYTES: number = 64 * 1024
 
@@ -87,7 +88,9 @@ export class ExportService {
       const indent: number = ExportService.paragraphAttrFor(runs, base, base + line.length + 1, 1)
       let text: string = ExportService.applyInlineMarkdown(line, runs, base)
       const prefix: string = ExportService.paragraphPrefix(kind, indent)
-      if (prefix !== '') {
+      // 该行本身已带同类标记（常见于从 Markdown 导入、尚未经过解析的旧数据）时不再追加，
+      // 否则会导出成 `# # 标题`（交接稿 R4）。解析入的新数据不会有这个问题。
+      if (prefix !== '' && !MarkdownBlocks.alreadyMarked(line, kind)) {
         text = prefix + text
       }
       out.push(text)

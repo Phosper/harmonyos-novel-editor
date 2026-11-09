@@ -23,9 +23,11 @@ vm.runInContext(compile([
   'editor/flowtext/model/EditorTypes.ets',
   'editor/flowtext/model/FormatCodec.ets',
   'editor/CanvasDraftWriter.ets',
-  'editor/CanvasCapture.ets'
+  'editor/CanvasCapture.ets',
+  'utils/SourceAnchor.ets'
 ]), context);
-const api = vm.runInContext('({ CanvasDraftWriter, FormatCodec, FormatRun, canvasFingerprint, canvasParagraphIndex, canvasCapturePayload })', context);
+const api = vm.runInContext('({ CanvasDraftWriter, FormatCodec, FormatRun, canvasFingerprint, canvasParagraphIndex,'+
+  ' canvasCapturePayload, SourceAnchorResolver, AnchorState })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -179,6 +181,60 @@ check('捕获：段号/出处/指纹稳定，空选区返回 undefined', () => {
 check('捕获：指纹对内容敏感、对位置不敏感', () => {
   assert.equal(api.canvasFingerprint('均势'), api.canvasFingerprint('均势'));
   assert.notEqual(api.canvasFingerprint('均势'), api.canvasFingerprint('均势。'));
+});
+
+// ===== 来源锚（R3）：跳回原文字段必须能被核验，而不是盲跳旧偏移 =====
+check('来源锚：原文不变时判为精确命中', () => {
+  const text = '第一段\n第二段内容\n第三段';
+  const quote = '第二段内容';
+  const r = api.SourceAnchorResolver.resolve(text, 4, 4 + quote.length, quote, api.canvasFingerprint(quote));
+  assert.equal(r.state, api.AnchorState.EXACT);
+  assert.equal(r.start, 4);
+  assert.equal(r.message, '');
+});
+
+check('来源锚：前面插入段落后按摘录重定位', () => {
+  const quote = '第二段内容';
+  const shifted = '新增开头\n' + '第一段\n' + quote + '\n第三段';
+  const r = api.SourceAnchorResolver.resolve(shifted, 4, 4 + quote.length, quote, api.canvasFingerprint(quote));
+  assert.equal(r.state, api.AnchorState.RELOCATED);
+  assert.equal(shifted.substring(r.start, r.end), quote);
+  assert.ok(r.message.includes('重新定位'));
+});
+
+check('来源锚：重复文字取最近的一处并标为需要核对', () => {
+  const quote = '均势';
+  const filler = '甲'.repeat(40);
+  const text = quote + filler + quote;
+  const second = text.lastIndexOf(quote);
+  // 旧偏移落在两处之间靠近末端的位置：不能直接取第一个命中
+  const stale = second - 2;
+  const r = api.SourceAnchorResolver.resolve(text, stale, stale + quote.length, quote, api.canvasFingerprint(quote));
+  assert.equal(r.state, api.AnchorState.AMBIGUOUS);
+  assert.equal(r.start, second, 'nearest occurrence wins, not the first one');
+  assert.ok(r.message.includes('核对'));
+});
+
+check('来源锚：文字被改掉时明确失败，不假装还能跳', () => {
+  const quote = '已经不存在的句子';
+  const text = '完全不同的正文';
+  const r = api.SourceAnchorResolver.resolve(text, 2, 8, quote, api.canvasFingerprint(quote));
+  assert.equal(r.state, api.AnchorState.MISSING);
+  assert.ok(r.message.length > 0);
+});
+
+check('来源锚：没有摘录快照的老数据不接受盲跳', () => {
+  const text = '第一段\n第二段';
+  const r = api.SourceAnchorResolver.resolve(text, 4, 7, '', 'deadbeef');
+  assert.equal(r.state, api.AnchorState.MISSING);
+});
+
+check('来源锚：只有指纹的老数据仍能确认原位', () => {
+  const text = '第一段\n第二段';
+  const quote = '第二段';
+  const r = api.SourceAnchorResolver.resolve(text, 4, 7, '', api.canvasFingerprint(quote));
+  assert.equal(r.state, api.AnchorState.EXACT);
+  assert.equal(r.start, 4);
 });
 
 console.log('Draft regression: ' + pass + ' checks passed');

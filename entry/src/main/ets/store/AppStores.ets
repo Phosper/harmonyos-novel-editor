@@ -9,6 +9,9 @@ import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { IdGenerator } from '../utils/IdGenerator'
 import { ImportService, ImportedFile, ImportKind } from '../utils/ImportService'
+import { MarkdownBlocks } from '../utils/MarkdownBlocks'
+import type { MarkdownParseResult } from '../utils/MarkdownBlocks'
+import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
 import { HtmlText } from '../utils/HtmlText'
 import { exceedsContentLimit, countChars } from '../utils/TextLimit'
 import { EditorViewMode, LibId } from '../constants/DesignTokens'
@@ -480,7 +483,14 @@ export class AppStores {
       const htmlTitle: string = file.kind === ImportKind.HTML ? HtmlText.titleOf(file.text) : ''
       const title: string = htmlTitle !== '' ? htmlTitle : ImportService.titleOf(file)
       const ch: ChapterModel = await chapterRepo.createChapter(this.project.currentBookId, title, file.format)
-      await chapterRepo.updateContent(ch.id, content)
+      if (file.format === ChapterFormat.MD) {
+        // Markdown 的块级标记（标题/列表/待办）转成段落标注并从正文剥离：
+        // 否则"导入的 # 标题"再设 H1 会导出成 `# # 标题`（交接稿 R4）。
+        const parsed: MarkdownParseResult = MarkdownBlocks.parse(content)
+        await chapterRepo.saveDraft(ch.id, parsed.content, 0, FormatCodec.encode(parsed.runs))
+      } else {
+        await chapterRepo.updateContent(ch.id, content)
+      }
       chapterCount++
     }
     await this.project.reloadChapters()

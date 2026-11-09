@@ -90,7 +90,9 @@ const context = vm.createContext({console, setTimeout() {return 1;}, clearTimeou
   SourceTool: { UNKNOWN: 0, FINGER: 1, STYLUS: 2, MOUSE: 3, TOUCHPAD: 4, JOYSTICK: 5 },
   // EditorStore 的延迟 flush 会调 Logger.error/warn；替身缺口会让进程在汇总后 exit=1，
   // 掩盖真实失败，所以替身要补齐四档日志（输出丢弃）。
-  Logger:{info(){},warn(){},error(){},debug(){}}, inputMethod:{getController(){return controller;}}
+  Logger:{info(){},warn(){},error(){},debug(){}}, inputMethod:{getController(){return controller;}},
+  // 剪贴板权限申请：沙箱里恒为已授权（未授权分支由 shell/data 层的静态断言覆盖）
+  PasteboardAccess:{ensure(){return Promise.resolve(true);}}
 });
 const read = file => fs.readFileSync(path.join(root,file),'utf8');
 function compile(source) {
@@ -132,10 +134,10 @@ vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','g
   'shouldAutoOpenSelectionMenu','isDesktopLike','menuMetrics','buildMenuLayout','menuItemWidth','menuLabels',
   'handleKeyPreIme','handleKeyEvent','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
   'readEditorModifiers','adoptKeyFocus','dispatchCommand','editHost','insertFromKeyboard','hostInsertText','hostDismiss','handleMenuKey',
-  'pasteAtCaret','insertAtCaret','aboutToDisappear','insertPlainText','insertNewline','beginInsert','endInsert',
+  'pasteAtCaret','pasteFromSystem','insertAtCaret','aboutToDisappear','insertPlainText','insertNewline','beginInsert','endInsert',
   'stopCaretAnimation','stopScrollAnimation','stopGlyphAnimation','syncSelectionToCaret','handlePositions','selectAllText',
   'captureViewAnchor','refreshDensity','ensureLayoutThroughY','engineSignature','extendWordSelection','clampScroll','tailPadVp','laidOutHeightVp',
-  'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n}'),context);
+  'effectivePolicy','leadPadVp','paragraphStartAt','paragraphEndAt','refreshTypewriterFocus','typewriterScrollTarget','ensureCaretVisible','followTypewriter','isPointerInput','retargetTypewriterScale','snapTypewriterScale','stopTypewriterScaleAnimation'].map(name=>method(canvas,name)).join('\n')+'\n  loadText(text: string): void { this.loadDocument(text, [], text.length); }\n  currentCaret(): number { return this.doc.caretOffset; }\n  getUIContext() { return { getHostContext() { return undefined; } }; }\n}'),context);
 vm.runInContext(compile('class HostProbe {\n'+method(read('editor/TextEditorHost.ets'),'onContentRevChanged')+'\n}'),context);
 const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionManager,FormatRun,StyleKind,LayoutLine,GlyphRunData,'+
   'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
@@ -1532,13 +1534,16 @@ check('desktop keeps the selection quiet, touch still pops the bar',()=>{
 });
 
 (async()=>{
+  // 粘贴现在先异步申请剪贴板权限（PasteboardAccess.ensure 由沙箱替身同步 resolve），
+  // 因此要先把微任务跑干净，才能拿到 getData 的 completer。
+  const settle=()=>new Promise(r=>setTimeout(r,0));
   for(const failed of [false,true]) {
     let completePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise((resolve,reject)=>{
       completePaste=()=>failed?reject({code:1}):resolve({getPrimaryText(){return 'X';}});
     });}};}};
     vm.runInContext("appClipboard='FALLBACK'",context);
     const e=editor('ABCDE');e.selMgr.setSelection(1,4);e.emitSelection();let edits=0;e.onEdit=()=>edits++;
-    e.pasteAtCaret();completePaste();await Promise.resolve();await Promise.resolve();
+    e.pasteAtCaret();await settle();completePaste();await settle();
     assert.equal(e.doc.text,failed?'AFALLBACKE':'AXE');assert.equal(edits,1);
     count++;console.log('PASS current-document paste '+(failed?'fallback':'success')+' replaces its selection');
   }
@@ -1548,7 +1553,8 @@ check('desktop keeps the selection quiet, touch still pops the bar',()=>{
     });}};}};
     vm.runInContext("appClipboard='FALLBACK'",context);
     const e=editor('Document A');let edits=0;e.onEdit=()=>edits++;e.pasteAtCaret();
-    e.loadDocument('Document B',[],10);completePaste();await Promise.resolve();await Promise.resolve();
+    await settle();
+    e.loadDocument('Document B',[],10);completePaste();await settle();
     assert.equal(e.doc.text,'Document B');assert.equal(edits,0);
     count++;console.log('PASS delayed paste '+(failed?'fallback':'success')+' cannot edit a replacement document');
   }
@@ -1560,16 +1566,19 @@ check('desktop keeps the selection quiet, touch still pops the bar',()=>{
     const a=new api.OpenDoc('a','A',0,'','Document A',10),b=new api.OpenDoc('b','B',0,'','Document B',10);
     store.openDocs=[a,b];store.activeId='a';const e=editor(a.draft);
     e.onEdit=(text,runs,caret)=>store.setEditorState(text,'',caret,'a');e.pasteAtCaret();
+    await settle();
     // activeId changes before the host's next UI update has loaded B into the canvas.
-    store.activeId='b';completePaste();await Promise.resolve();await Promise.resolve();
+    store.activeId='b';completePaste();await settle();
     assert.equal(b.draft,'Document B');assert.equal(b.caret,10);assert.equal(b.dirty,false);
     assert.equal(a.draft,'Document A');assert.equal(store.undoStack.length,0);
     count++;console.log('PASS paste '+(failed?'fallback':'success')+' cannot edit a new active document before host reload');
   }
   {
     let resolvePaste;context.pasteboard={getSystemPasteboard(){return {getData(){return new Promise(resolve=>{resolvePaste=resolve;});}};}};
-    const e=editor('closed document');let edits=0;e.onEdit=()=>edits++;e.pasteAtCaret();e.aboutToDisappear();
-    resolvePaste({getPrimaryText(){return 'PASTE';}});await Promise.resolve();await Promise.resolve();
+    const e=editor('closed document');let edits=0;e.onEdit=()=>edits++;e.pasteAtCaret();
+    await settle();
+    e.aboutToDisappear();
+    resolvePaste({getPrimaryText(){return 'PASTE';}});await settle();
     assert.equal(e.doc.text,'closed document');assert.equal(edits,0);
     count++;console.log('PASS delayed paste cannot edit an unmounted editor');
   }

@@ -14,6 +14,7 @@
 import { inputMethod } from '@kit.IMEKit';
 import { pointer } from '@kit.InputKit';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
+import { common } from '@kit.AbilityKit';
 import { common2D } from '@kit.ArkGraphics2D';
 import { LengthMetricsUnit } from '@kit.ArkUI';
 import { TextDocument } from './model/TextDocument';
@@ -40,6 +41,7 @@ import { resolveShortcut } from '../interaction/ShortcutMap';
 import { EditorCommandRouter, EditCommandHost } from '../interaction/EditorCommandRouter';
 import { ImeEchoGuard, shouldConsumePreIme } from '../interaction/InputArbiter';
 import { deviceProfile } from '../../utils/DeviceProfile';
+import { PasteboardAccess } from '../../utils/Pasteboard';
 
 /** 运行时诊断开关：真机排查"动画/交互错乱"时置 true，便于比对 触摸坐标/命中/caret/scrollY/progress。 */
 const DIAG_ENABLED: boolean = false;
@@ -1050,6 +1052,29 @@ export struct CanvasTextEditor {
     const generation: number = this.documentGeneration;
     this.hideSelectionMenu();
     this.diag('paste action invoked buffer=' + appClipboard.length.toString());
+    // READ_PASTEBOARD 是 user_grant：先申请一次；拒绝则只能用应用内缓冲。
+    // 申请是异步的，期间必须用 generation 防止"载入新文稿后旧粘贴落到新文稿"。
+    const host: common.Context | undefined = this.getUIContext().getHostContext();
+    PasteboardAccess.ensure(host).then((granted: boolean) => {
+      if (generation !== this.documentGeneration) { return; }
+      if (!granted) {
+        this.diag('paste without permission, fallback to app buffer');
+        if (appClipboard.length > 0) {
+          this.insertAtCaret(appClipboard);
+        }
+        return;
+      }
+      this.pasteFromSystem(generation);
+    }).catch((e: BusinessError) => {
+      this.diag('paste permission failed: ' + e.code);
+      if (generation === this.documentGeneration && appClipboard.length > 0) {
+        this.insertAtCaret(appClipboard);
+      }
+    });
+  }
+
+  /** 真正读取系统剪贴板（已获授权）；失败时退回应用内缓冲 */
+  private pasteFromSystem(generation: number): void {
     const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
     board.getData().then((data: pasteboard.PasteData) => {
       if (generation !== this.documentGeneration) { return; }

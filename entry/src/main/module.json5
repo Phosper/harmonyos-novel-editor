@@ -14,6 +14,21 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    // 读取系统剪贴板：自绘编辑器的「粘贴」要读其它应用复制的内容。
+    // 不声明时 getData() 返回空，只能退回应用内缓冲（编辑器已有兜底，但跨应用粘贴会失效）。
+    // READ_PASTEBOARD 是 user_grant：必须给 reason + usedScene，并在真正要读时申请一次。
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.READ_PASTEBOARD",
+        "reason": "$string:pasteboard_read_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      }
+    ],
     // 沉浸光感材质使能（API 26，仅 entry 模块生效）：T3 的 ImmersiveMaterial 依赖此项
     "metadata": [
       {
