@@ -9,6 +9,8 @@ import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { IdGenerator } from '../utils/IdGenerator'
 import { ImportService, ImportedFile, ImportKind } from '../utils/ImportService'
+import { EpubImporter } from '../utils/EpubImporter'
+import type { EpubBook } from '../utils/EpubParser'
 import { MarkdownBlocks } from '../utils/MarkdownBlocks'
 import type { MarkdownParseResult } from '../utils/MarkdownBlocks'
 import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
@@ -456,6 +458,8 @@ export class AppStores {
     let backupCount: number = 0
     let skipped: number = 0
     let oversized: number = 0
+    let epubCount: number = 0
+    let epubChapters: number = 0
     for (const file of files) {
       if (file.kind === ImportKind.BACKUP) {
         const restored: string = await this.importBackupText(file.text)
@@ -463,6 +467,37 @@ export class AppStores {
           backupCount++
         } else {
           skipped++
+        }
+        continue
+      }
+      if (file.kind === ImportKind.EPUB) {
+        const ctx = getAppContext()
+        const book: EpubBook | undefined = ctx === null
+          ? undefined : await EpubImporter.load(file.uri, ctx.cacheDir)
+        if (book === undefined) {
+          Logger.warn('EPUB parse failed: ' + file.fileName)
+          skipped++
+          continue
+        }
+        let made: number = 0
+        for (const chapter of book.chapters) {
+          // 单章超限：跳过这一章，其余照常导入（不整本失败）
+          if (exceedsContentLimit(chapter.content)) {
+            Logger.warn('EPUB chapter skipped, too large: ' + chapter.title)
+            oversized++
+            continue
+          }
+          const title: string = chapter.title.trim() === '' ? '未命名章节' : chapter.title.trim()
+          const created: ChapterModel = await chapterRepo.createChapter(
+            this.project.currentBookId, title, ChapterFormat.TXT)
+          await chapterRepo.updateContent(created.id, chapter.content)
+          made++
+        }
+        if (made === 0) {
+          skipped++
+        } else {
+          epubCount++
+          epubChapters += made
         }
         continue
       }
@@ -498,7 +533,11 @@ export class AppStores {
     this.syncSelection()
     const parts: string[] = []
     if (chapterCount > 0) parts.push('导入 ' + chapterCount + ' 篇文稿')
-    if (backupCount > 0) parts.push('恢复 ' + backupCount + ' 个备份项目')
+    if (epubChapters > 0) {
+      parts.push('从 ' + epubCount + ' 本 EPUB 导入 ' + epubChapters + ' 篇')
+      // 明确告知降级：图片/版式/脚注链接都不保留，避免用户以为"导入等于完整还原"
+      parts.push('EPUB 仅保留文字，图片与版式未导入')
+    }    if (backupCount > 0) parts.push('恢复 ' + backupCount + ' 个备份项目')
     if (oversized > 0) parts.push(oversized + ' 个超过单篇上限未导入')
     if (skipped > 0) parts.push('跳过 ' + skipped + ' 个')
     return parts.length > 0 ? parts.join('，') : '没有可导入的内容'

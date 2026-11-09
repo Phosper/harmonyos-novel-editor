@@ -9,6 +9,7 @@ export enum ImportKind {
   TEXT = 'text',
   MD = 'md',
   HTML = 'html',
+  EPUB = 'epub',
   BACKUP = 'backup'
 }
 
@@ -31,15 +32,20 @@ export class ImportService {
   static async pickAndRead(): Promise<ImportedFile[]> {
     const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions()
     options.maxSelectNumber = MAX_FILES
-    options.fileSuffixFilters = ['文稿与备份|.txt,.md,.markdown,.html,.htm,.json']
+    options.fileSuffixFilters = ['文稿与备份|.txt,.md,.markdown,.html,.htm,.json,.epub']
     const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker()
     const uris: string[] = await documentPicker.select(options)
     const files: ImportedFile[] = []
     for (const uri of uris) {
       const name: string = ImportService.baseName(uri)
+      const kind: ImportKind = ImportService.kindOf(name)
+      // EPUB 是 zip（二进制）：这里只登记，真正解压与解析交给 EpubImporter
+      if (kind === ImportKind.EPUB) {
+        files.push({ fileName: name, uri: uri, kind: kind, format: ChapterFormat.TXT, text: '' })
+        continue
+      }
       try {
         const text: string = await ImportService.readText(uri)
-        const kind: ImportKind = ImportService.kindOf(name)
         files.push({
           fileName: name,
           uri: uri,
@@ -63,6 +69,7 @@ export class ImportService {
 
   static kindOf(fileName: string): ImportKind {
     const name: string = fileName.toLowerCase()
+    if (name.endsWith('.epub')) return ImportKind.EPUB
     if (name.endsWith('.md') || name.endsWith('.markdown')) return ImportKind.MD
     if (name.endsWith('.html') || name.endsWith('.htm')) return ImportKind.HTML
     if (name.endsWith('.json')) return ImportKind.BACKUP

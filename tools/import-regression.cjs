@@ -119,6 +119,14 @@ async function check(name, action) { await action(); count++; console.log('PASS 
     assert.equal(legacy.content, '# 标题');
     assert.equal(h.markdown.alreadyMarked(legacy.content, 1), true, 'legacy marker is recognised, not doubled');
   });
+  await check('epub is classified but never decoded as text', async () => {
+    const h = harness('');
+    assert.equal(h.service.kindOf('book.epub'), 'epub');
+    assert.equal(h.service.kindOf('BOOK.EPUB'), 'epub');
+    // 分类必须在 readText 之前完成：二进制文件按 UTF-8 解码只会得到垃圾
+    assert.match(fs.readFileSync(path.join(__dirname, '../entry/src/main/ets/utils/ImportService.ets'), 'utf8'),
+      /kind === ImportKind\.EPUB[\s\S]{0,200}continue/);
+  });
   console.log('Import regression: ' + count + ' checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {
   fs.unlinkSync(input);
