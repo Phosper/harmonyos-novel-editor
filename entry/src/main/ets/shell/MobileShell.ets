@@ -20,7 +20,6 @@ import { LongTakeNavParam, takePendingLongTake } from './LongTakeBridge'
 import { ezCustomTransition, LongTakeTransitionParam } from '../thirdparty/ezcustomtransition/Index'
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
-import { MobileTabBar, MobileTabItem } from './MobileTabBar'
 import { WorkspaceDest } from './WorkspaceDest'
 import { SettingsDest } from '../pages/dest/SettingsDest'
 import { GlowPageBackground, glassBarStyle } from './MaterialSurface'
@@ -39,14 +38,6 @@ export struct MobileShell {
 
   private isNarrow(): boolean {
     return app.ui.breakPoint === BreakPoint.SM
-  }
-
-  private tabItems(): MobileTabItem[] {
-    // 手机端按新设计：只保留 项目 / 文稿 —— 砍掉素材与关系图
-    return [
-      { id: MobileTab.PROJECT, label: '项目' },
-      { id: MobileTab.DOCS, label: '文稿' }
-    ]
   }
 
   private titleText(): string {

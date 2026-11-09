@@ -13,20 +13,19 @@
 // 3. Navigation 显式写死 mode（默认 Auto 会在平板自动分栏，与自绘外壳冲突），
 //    hideNavBar 保持 false —— 设为 true 会连同**内容区**一起隐藏，栈空即整屏空白。
 // 4. 二级页面用 NavDestination（官方路径），返回键由路由栈接管，无需手写 onBackPress。
-import { curves, KeyboardAvoidMode, promptAction, window } from '@kit.ArkUI'
+import { curves, CustomContentDialog, KeyboardAvoidMode, promptAction, window } from '@kit.ArkUI'
 import { BreakPoint } from '../utils/BreakPoint'
 import { Motion } from '../constants/Motion'
 import { DeviceSnapshot, deviceProfile } from '../utils/DeviceProfile'
 import { Logger } from '../utils/Logger'
-import { WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
+import { WeaverRadii, WeaverSpacing, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
 import { app } from '../store/AppStores'
-import { ShellDialog } from '../store/UiStore'
+import { ShellDialog, UiStore } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
 import type { ChapterModel } from '../model/Chapter'
 import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportService'
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
-import { InputDialog } from './InputDialog'
 import { FocusWorkspace } from './FocusWorkspace'
 import { EditorTools } from './EditorTools'
 import { GlowPageBackground, glassBarStyle } from './MaterialSurface'
@@ -70,6 +69,12 @@ export struct AppShell {
   @Local navInteractive: boolean = true
   /** 历史深度镜像：窗口头工具条的撤销/重做禁用态靠它刷新 */
   @Local historyTick: number = 0
+  /** 系统对话框（CustomContentDialog）：由 dialog 状态变化驱动开关，不再自绘遮罩卡片 */
+  private dialogCtl: CustomDialogController | null = null
+  /** 输入框草稿：系统对话框关闭后仍保留用户输入，失败可直接重开重试 */
+  @Local dialogDraft: string = ''
+  /** 观察 app.ui.dialog（@ObservedV2 + @Trace），@Monitor 的路径必须从一个状态成员出发 */
+  @Local dialogWatch: UiStore = app.ui
 
   @Monitor('app.editor.historyVersion')
   onHistoryVersion(): void {
@@ -317,9 +322,6 @@ export struct AppShell {
       .backgroundColor(Color.Transparent)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
-      if (app.ui.dialog !== ShellDialog.NONE) {
-        this.dialogView()
-      }
     }
     .width('100%').height('100%')
     // 光感背景要盖住状态栏/导航条区域；否则这两条会露出系统/窗口底色（平板实测黑边）
@@ -618,21 +620,90 @@ export struct AppShell {
     .backgroundColor(Color.Transparent)
   }
 
-  @Builder
-  dialogView() {
-    InputDialog({
-      app: app,
-      title: this.dialogTitle(),
-      message: this.dialogMessage(),
-      placeholder: this.dialogPlaceholder(),
-      initialValue: app.ui.dialogInitial,
-      confirmLabel: this.dialogConfirmLabel(),
-      danger: app.ui.dialog === ShellDialog.DELETE_PROJECT || app.ui.dialog === ShellDialog.DELETE_DOC,
-      withInput: app.ui.dialog !== ShellDialog.DELETE_PROJECT && app.ui.dialog !== ShellDialog.DELETE_DOC,
-      onConfirm: (value: string) => this.handleDialogConfirm(value),
-      onCancel: () => app.ui.closeDialog()
+  @Monitor('dialogWatch.dialog')
+  onDialogKindChanged(): void {
+    const kind: ShellDialog = this.dialogWatch.dialog
+    if (kind === ShellDialog.NONE) {
+      return
+    }
+    this.dialogDraft = app.ui.dialogInitial
+    this.presentDialog()
+  }
+
+  private closePresentedDialog(): void {
+    if (this.dialogCtl !== null) {
+      this.dialogCtl.close()
+      this.dialogCtl = null
+    }
+  }
+
+  private dialogDanger(): boolean {
+    return app.ui.dialog === ShellDialog.DELETE_PROJECT || app.ui.dialog === ShellDialog.DELETE_DOC
+  }
+
+  private dialogWithInput(): boolean {
+    return app.ui.dialog !== ShellDialog.DELETE_PROJECT && app.ui.dialog !== ShellDialog.DELETE_DOC
+  }
+
+  /**
+   * 打开系统自定义内容对话框（`CustomContentDialog`）：标题/辅助文本/按钮/圆角/材质/出入场动效
+   * 全部由系统提供，我们只提供内容区（可选输入框）。替换掉原来的"自绘遮罩 + 玻璃卡片"。
+   */
+  private presentDialog(): void {
+    this.closePresentedDialog()
+    this.dialogCtl = new CustomDialogController({
+      builder: CustomContentDialog({
+        primaryTitle: this.dialogTitle(),
+        secondaryTitle: this.dialogMessage(),
+        contentBuilder: () => {
+          this.dialogInputArea()
+        },
+        buttons: [
+          {
+            value: '取消',
+            buttonStyle: ButtonStyleMode.TEXTUAL,
+            action: () => {
+              this.closePresentedDialog()
+              app.ui.closeDialog()
+            }
+          },
+          {
+            value: this.dialogConfirmLabel(),
+            buttonStyle: ButtonStyleMode.EMPHASIZED,
+            role: this.dialogDanger() ? ButtonRole.ERROR : ButtonRole.NORMAL,
+            action: () => {
+              const value: string = this.dialogDraft
+              this.closePresentedDialog()
+              this.handleDialogConfirm(value).catch((e: Error): void => {
+                Logger.error('AppShell: dialog confirm rejected: ' + String(e))
+              })
+            }
+          }
+        ]
+      }),
+      autoCancel: true,
+      alignment: DialogAlignment.Center
     })
-      .enabled(!this.dialogPending)
+    this.dialogCtl.open()
+  }
+
+  /** 系统对话框的内容区：仅"需要命名"的场景给输入框（删除类只确认） */
+  @Builder
+  dialogInputArea() {
+    Column() {
+      if (this.dialogWithInput()) {
+        TextInput({ text: this.dialogDraft, placeholder: this.dialogPlaceholder() })
+          .onChange((v: string) => {
+            this.dialogDraft = v
+          })
+          .width('100%')
+          .height(44)
+          .fontSize(15)
+          .backgroundColor(this.colors().bgSurface)
+          .borderRadius(WeaverRadii.SM)
+      }
+    }
+    .width('100%')
   }
 
   private dialogTitle(): string {
@@ -711,6 +782,11 @@ export struct AppShell {
       const text: string = (detail === '' || detail === 'undefined')
         ? '操作失败，请重试' : '操作失败，请重试：' + detail
       this.toast(text)
+      // 失败后重开系统对话框，保留用户刚才的输入（原自绘弹窗是"保持打开"，语义不变）
+      if (app.ui.dialog !== ShellDialog.NONE) {
+        app.ui.dialogInitial = value
+        this.presentDialog()
+      }
     } finally {
       this.dialogPending = false
     }

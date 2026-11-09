@@ -19,7 +19,7 @@ const T2 = ['utils/DeviceProfile.ets', 'utils/BreakPoint.ets', 'utils/SafeArea.e
   'shell/AppShell.ets', 'shell/DesktopTitleBar.ets', 'shell/PcWindowBar.ets', 'store/UiStore.ets'];
 const T3 = ['constants/DesignTokens.ets', 'constants/LightTokens.ets', 'shell/MaterialSurface.ets',
   'shell/MobileShell.ets', 'shell/DocListPane.ets', 'shell/ProjectSidebar.ets', 'shell/WorkspaceDest.ets',
-  'shell/InputDialog.ets', 'shell/MobileTabBar.ets', 'shell/MobileSectionTabs.ets', 'shell/SettingsPanel.ets',
+  'shell/SettingsPanel.ets',
   'shell/TopActionButton.ets', 'shell/MenuButton.ets', 'shell/EditorTools.ets', 'shell/FocusWorkspace.ets',
   'shell/CanvasDest.ets', 'shell/CanvasBoardLibrary.ets', 'shell/CardLibrary.ets',
   'pages/Index.ets', 'pages/GuideSwiperPage.ets', 'pages/dest/SettingsDest.ets'];

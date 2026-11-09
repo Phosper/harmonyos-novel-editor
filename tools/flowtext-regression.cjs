@@ -98,6 +98,8 @@ function compile(source) {
     .replace(/\bexport\s+/g,'').replace(/@ObservedV2\s*/g,'').replace(/@Trace\s*/g,''), {mode:'transform'});
 }
 function load(file) {vm.runInContext(compile(read(file)),context,{filename:file});}
+// DesignTokens 是纯常量/纯函数模块（无 import），先装进来给菜单度量与 LibId 用
+load('constants/DesignTokens.ets');
 for (const file of ['model/EditorTypes','model/TextIndexMap','model/UnicodeGraphemeData','model/GraphemeUtil','model/TextDocument','model/FormatCodec','theme/TypewriterScale',
   'interaction/SelectionManager','interaction/CursorState','interaction/HitTester','render/TextLayoutEngine',
   'render/LayoutCache','render/GlyphRenderer','animation/GlyphAnimator','ime/PreviewTextManager','ime/KeyboardHandler','ime/ImeBridge']) {
@@ -127,6 +129,7 @@ vm.runInContext(compile('class EditorProbe {\n'+['loadDocument','currentText','g
   'paragraphKind','setParagraphKind','toggleTodoAt','toggleTodoAtMarker',
   'updateAutoScrollSelection','stopAutoScrollSelection','autoScrollDir','onAutoScrollSelectionTick','ensureVisibleLayout','dispatchLegacy',
   'emitSelectionDuringDrag','requestDraw','flushDraw','placeholderColorFor','animateCaretMove','shouldHandleTapUp','isSyntheticTouch','placeCaretImmediately',
+  'shouldAutoOpenSelectionMenu','isDesktopLike','menuMetrics','buildMenuLayout','menuItemWidth','menuLabels',
   'handleKeyPreIme','handleKeyEvent','isNavigationAction','readModifiers','registerImeCallbacks','refreshPreview','displayText','displayCaret','deletePreview','deleteExternalLeft',
   'readEditorModifiers','adoptKeyFocus','dispatchCommand','editHost','insertFromKeyboard','hostInsertText','hostDismiss','handleMenuKey',
   'pasteAtCaret','insertAtCaret','aboutToDisappear','insertPlainText','insertNewline','beginInsert','endInsert',
@@ -138,7 +141,7 @@ const api = vm.runInContext('({TextIndexMap,GraphemeUtil,TextDocument,SelectionM
   'CursorState,HitTester,TextLayoutEngine,LayoutCache,GlyphRenderer,RenderTheme,ViewportInfo,GlyphAnimator,GlyphDiffOptions,'+
   'PreviewTextManager,KeyAction,KeyboardEvent,KeyboardHandler,ImeBridge,CanvasTextEditorController,EditorProbe,HostProbe,EditorStore,OpenDoc,CaretAffinity,LineBox,PreviewInfo,'+
   'EditCommand,EditCommandKind,EditorInputSource,EditorModifiers,EditorCommandRouter,ImeEchoGuard,shouldConsumePreIme,isCaretCommand,isEditingCommand,resolveShortcut,KeyCode,'+
-  'TypewriterScaleOptions,typewriterLineDistance,typewriterScaleForDistance,typewriterDimWeight,FormatCodec,'+
+  'TypewriterScaleOptions,typewriterLineDistance,typewriterScaleForDistance,typewriterDimWeight,FormatCodec,selectionMenuMetrics,'+
   'ParagraphKind,isListParagraph})',context);
 let count=0;
 function check(name, fn) {fn(); count++; console.log('PASS '+name);}
@@ -181,7 +184,7 @@ function editor(value) {
     documentGeneration:0,controller:null,ime:new api.ImeBridge(),caretAnimator:null,glyphAnimator:null,scrollAnimator:null,
     caretAnimating:false,viewHeightVp:600,scrollY:0,
     commandRouter:new api.EditorCommandRouter(),hostAdapter:null,echoGuard:new api.ImeEchoGuard(),
-    imeUsable:false,focused:false,focusConfirmed:false,menuVisible:false,menuIndex:0,previewDoc:null,previewCache:null,
+    imeUsable:false,focused:false,focusConfirmed:false,desktopMode:false,menuVisible:false,menuIndex:0,previewDoc:null,previewCache:null,
     startBlink(){},
     padLeftVp(){return 0;},padTopVp(){return 0;},ensureCaretLayout(){},ensureVisibleLayout(){},ensureCaretVisible(){},effectivePolicy(){return 0;},
     relayout(){},drawNow(){},reportSelection(){},reportCursor(){},hideSelectionMenu(){},diag(){},
@@ -1486,6 +1489,46 @@ check('auto-scroll prefers the near edge for a mouse and a fat edge for a finger
   e.stopAutoScrollSelection();
   assert.equal(e.selScrollDwellTimer,-1);
   assert.equal(e.selScrollTimer,-1,'leaving the edge cancels both timers');
+});
+
+// ===== 选区浮层：桌面/触摸尺寸分档 + 桌面不自动弹 =====
+check('selection menu uses different radii and hit sizes on desktop and touch',()=>{
+  const desktop=api.selectionMenuMetrics(true);
+  const touch=api.selectionMenuMetrics(false);
+  assert.equal(desktop.radius,8,'desktop outer radius is the tighter 8vp window/menu family');
+  assert.equal(touch.radius,16,'touch outer radius matches the 16vp sheet/card family');
+  assert.equal(desktop.itemRadius,6);
+  assert.equal(touch.itemRadius,10);
+  assert.ok(touch.itemHeight>=44,'touch targets must stay >=44vp');
+  assert.ok(desktop.itemHeight<touch.itemHeight,'desktop is denser than touch');
+  assert.ok(touch.shadowRadius>desktop.shadowRadius,'touch gets a softer shadow');
+  assert.notEqual(desktop.radius,touch.radius,'the two platforms must not share one radius');
+});
+check('touch selection bar wraps to the editor width and never overflows',()=>{
+  const e=editor('abc');
+  e.pointerPrimary=false;
+  for (const width of [360, 320, 240]) {
+    e.viewWidthVp=width;
+    const bar=e.buildMenuLayout(e.menuMetrics());
+    assert.ok(bar.width<=width-16+0.001,'bar must fit the editor width ('+width+')');
+    assert.ok(bar.rows.length>=2,'many actions wrap into rows');
+    const flat=[];
+    for (const row of bar.rows) { for (const idx of row) { flat.push(idx); } }
+    assert.equal(flat.length,11,'every action is reachable');
+    assert.deepEqual([...new Set(flat)].sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9,10],'no duplicates or gaps');
+  }
+  // 矮窗口：浮条本身仍然放得下（折行后 3 行 ≈156vp），行高不被压缩
+  e.viewWidthVp=360; e.viewHeightVp=320;
+  const shortBar=e.buildMenuLayout(e.menuMetrics());
+  assert.equal(shortBar.itemHeight,e.menuMetrics().itemHeight,'rows keep a readable height');
+  assert.ok(shortBar.height<=320-16,'the touch bar fits a short window instead of being clipped');
+});
+check('desktop keeps the selection quiet, touch still pops the bar',()=>{
+  const e=editor('abc');
+  e.pointerPrimary=true;
+  assert.equal(e.shouldAutoOpenSelectionMenu(),false,'mouse drag/double-click must not open the menu');
+  e.pointerPrimary=false;
+  assert.equal(e.shouldAutoOpenSelectionMenu(),true,'touch selection still shows the floating bar');
 });
 
 (async()=>{

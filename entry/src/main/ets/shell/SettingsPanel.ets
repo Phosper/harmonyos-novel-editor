@@ -259,12 +259,13 @@ export struct SettingsPanel {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
-      if (app.ui.themeId === theme.id) {
-        Text('✓')
-          .fontSize(19)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.colors().brand)
-      }
+      // 单选态用系统 Radio（不再是 '✓' 字形图标；整行点击仍然生效，Radio 只做视觉与无障碍语义）
+      Radio({ value: theme.id, group: 'weaverThemeGroup' })
+        .checked(app.ui.themeId === theme.id)
+        .width(22)
+        .height(22)
+        .hitTestBehavior(HitTestMode.None)
+        .accessibilityText(theme.name + (app.ui.themeId === theme.id ? '，已选中' : ''))
     }
     .width('100%')
     .height(this.rowHeight())

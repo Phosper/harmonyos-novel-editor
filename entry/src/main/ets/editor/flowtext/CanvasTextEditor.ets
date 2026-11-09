@@ -20,6 +20,8 @@ import { TextDocument } from './model/TextDocument';
 import { GraphemeUtil } from './model/GraphemeUtil';
 import { SelectionInfo, PreviewInfo, ViewportInfo, ScrollPolicy, StyleKind, FormatRun, CaretAffinity,
   ParagraphKind, isListParagraph } from './model/EditorTypes';
+import { SelectionMenuMetrics, selectionMenuMetrics } from '../../constants/DesignTokens';
+import { Motion } from '../../constants/Motion';
 import { EditorTheme } from './theme/EditorTheme';
 import { TextLayoutEngine, LayoutLine } from './render/TextLayoutEngine';
 import { LayoutCache } from './render/LayoutCache';
@@ -43,6 +45,42 @@ import { deviceProfile } from '../../utils/DeviceProfile';
 const DIAG_ENABLED: boolean = false;
 /** 本特性预留的量化诊断标签（经 diag() 输出，供 Phase 5 真机核验）：
  *  scroll=滚动偏移、center=居中偏差、anim=字符动画、fmt=格式变更。 */
+/** 选区浮层动作：顺序 === activateMenuItem 的索引，也是键盘导航顺序 */
+class SelectionMenuAction {
+  label: string = '';
+  /** 桌面快捷键提示（触摸模式不显示）；空串 = 无快捷键 */
+  hint: string = '';
+
+  constructor(label: string, hint: string) {
+    this.label = label;
+    this.hint = hint;
+  }
+}
+
+const SELECTION_MENU_ACTIONS: SelectionMenuAction[] = [
+  new SelectionMenuAction('撤销', 'Ctrl+Z'),
+  new SelectionMenuAction('重做', 'Ctrl+Shift+Z'),
+  new SelectionMenuAction('粗体', 'Ctrl+B'),
+  new SelectionMenuAction('斜体', 'Ctrl+I'),
+  new SelectionMenuAction('标题', ''),
+  new SelectionMenuAction('复制', 'Ctrl+C'),
+  new SelectionMenuAction('剪切', 'Ctrl+X'),
+  new SelectionMenuAction('粘贴', 'Ctrl+V'),
+  new SelectionMenuAction('全选', 'Ctrl+A'),
+  new SelectionMenuAction('查找', 'Ctrl+F'),
+  new SelectionMenuAction('复制到系统', '')
+];
+
+/** 一个浮层布局：rows[i] 是第 i 行要放的 action 索引；splitBefore[i] 表示该行前是否画分隔线 */
+class SelectionMenuLayout {
+  rows: number[][] = [];
+  splitBefore: boolean[] = [];
+  width: number = 0;
+  height: number = 0;
+  /** 实际行高 */
+  itemHeight: number = 0;
+}
+
 /** 诊断日志 tag（console.info，JSAPP 通道；hilog 缓冲不可靠） */
 const DIAG_TAG: string = 'FlowTextDiag';
 /** 容器 id：.id() 与 requestFocus 必须一致，单独提出常量防止两处漂移。
@@ -371,6 +409,12 @@ export struct CanvasTextEditor {
   @Prop placeholder: string = '';
   /** 占位文字颜色：与正文共用 Canvas 排版，颜色由主题 tertiary 传入 */
   @Prop placeholderColor: string = '#9AA0A6';
+  /* 选区浮层配色：由宿主按当前主题注入，避免在画布里硬编码一套"临时菜单色" */
+  @Prop menuSurfaceColor: string = '#FFFFFF';
+  @Prop menuBorderColor: string = '#ECECEE';
+  @Prop menuTextColor: string = '#1C1C1E';
+  @Prop menuAccentColor: string = '#1C1C1E';
+  @Prop menuActiveBgColor: string = '#0F1C1C1E';
   /**
    * 打字机模式：为 true 时按 scrollPolicy=CENTER 使当前段居中（默认关）。
    * @Watch 是必要的：仅改这个 prop 时组件不会重排，表现为"点了按钮没有任何反应"。
@@ -585,78 +629,284 @@ export struct CanvasTextEditor {
   @State menuBelow: boolean = false;
   /** 键盘操作浮层时的高亮项（0..10，顺序与 menuLabels() 一致） */
   @State menuIndex: number = 0;
+  /** 小三角相对浮层左边的偏移（vp）：让箭头始终指向选区起点 */
+  @State menuArrowOffset: number = 12;
+  /** 当前浮层的排版（展开前算好，避免 build 里重算）：行 → action 索引；行前是否分隔线 */
+  @State menuRows: number[][] = [];
+  @State menuWidthVp: number = 0;
+  /** 内容区可见高度（窗口过矮时小于内容高度，靠 Scroll 滚动） */
+  @State menuScrollHeightVp: number = 0;
 
   // ================= 选区操作浮层（补齐自绘化后丢失的系统选择菜单） =================
+  //
+  // 视觉规范（详情见 docs/ux/2026-10-25-selection-menu-and-desktop-ux-plan.md）：
+  //   - 桌面（键鼠）：外圆角 12 / 项圆角 8 / 项高 38 / 阴影 14 —— 与工具栏、原生菜单同族；
+  //   - 移动（触摸）：外圆角 16 / 项圆角 10 / 项高 44 / 阴影 20 —— 更软、更好按；
+  //   - 表面 = 主题 bgCard，边框 = divider，文字 = textPrimary，高亮 = activeBg，
+  //     键盘高亮额外加 1vp 品牌色描边（键鼠可见焦点）；
+  //   - 两行分组：撤销/重做 | 粗/斜/标题，复制/剪切/粘贴/全选 | 查找/复制到系统；
+  //   - 小三角由旋转 45° 的方块绘制（不再依赖 ▼/▲ 字形），并跟随选区起点水平定位。
+
+  /**
+   * 选区浮条尺寸：**电脑模式（desktopMode）与键鼠形态都走桌面档**（12/8/38），
+   * 只有纯触摸设备才用移动档（16/10/44）。之前只看 pointerPrimary，导致电脑模式下
+   * 仍按平板圆角绘制（用户实测：电脑模式圆角应更收敛）。
+   */
+  private menuMetrics(): SelectionMenuMetrics {
+    return selectionMenuMetrics(this.desktopMode || this.pointerPrimary);
+  }
+
+  /** 键鼠/电脑模式：选区只保留，右键走系统菜单；触摸才自动弹浮条 */
+  private isDesktopLike(): boolean {
+    return this.desktopMode || this.pointerPrimary;
+  }
+
+  /** 内容区可见高度（未打开时回落到 0，由 Scroll 自然撑开） */
+  private menuScrollHeight(): number {
+    return this.menuScrollHeightVp > 0 ? this.menuScrollHeightVp : this.menuMetrics().itemHeight;
+  }
+
+  /** 动作标签（供键盘导航顺序与测试使用） */
+  private menuLabels(): string[] {
+    const out: string[] = [];
+    for (let i: number = 0; i < SELECTION_MENU_ACTIONS.length; i++) {
+      out.push(SELECTION_MENU_ACTIONS[i].label);
+    }
+    return out;
+  }
+
+  /** 单项宽度（触摸横排时用于装行；桌面单列不用） */
+  private menuItemWidth(actionIndex: number, m: SelectionMenuMetrics): number {
+    const label: string = SELECTION_MENU_ACTIONS[actionIndex].label;
+    return Math.max(m.itemMinWidth, label.length * m.fontSize + 20);
+  }
+
+  /**
+   * 计算触摸浮条布局：按可用宽度贪心装行（每项 ≥44vp 命中、字号 14），窄屏自动折成 2–4 行。
+   *
+   * 桌面不再使用这套自绘浮层 —— 右键走系统 `bindContextMenu`（沉浸材质 + 自动边缘避让 +
+   * `labelInfo` 快捷键位），从根本上避免"浮层比编辑区宽、被窗口裁切"。
+   */
+  private buildMenuLayout(m: SelectionMenuMetrics): SelectionMenuLayout {
+    const layout: SelectionMenuLayout = new SelectionMenuLayout();
+    const maxWidth: number = Math.max(160, this.viewWidthVp - 16);
+    const availableHeight: number = Math.max(120, this.viewHeightVp - 16);
+    const innerMax: number = maxWidth - m.padding * 2;
+    let row: number[] = [];
+    let rowWidth: number = 0;
+    let widest: number = 0;
+    for (let i: number = 0; i < SELECTION_MENU_ACTIONS.length; i++) {
+      const itemW: number = this.menuItemWidth(i, m);
+      const nextW: number = row.length === 0 ? itemW : rowWidth + m.gap + itemW;
+      if (row.length > 0 && nextW > innerMax) {
+        layout.rows.push(row);
+        widest = Math.max(widest, rowWidth);
+        row = [i];
+        rowWidth = itemW;
+      } else {
+        row.push(i);
+        rowWidth = nextW;
+      }
+    }
+    if (row.length > 0) {
+      layout.rows.push(row);
+      widest = Math.max(widest, rowWidth);
+    }
+    layout.width = Math.min(maxWidth, widest + m.padding * 2);
+    const extra: number = m.padding * 2 + m.gap * (layout.rows.length - 1);
+    layout.itemHeight = m.itemHeight;
+    layout.height = extra + layout.itemHeight * layout.rows.length;
+    return layout;
+  }
+
+  /**
+   * 桌面右键菜单：直接用系统 Menu + MenuItemGroup（`bindContextMenu` 触发）。
+   *
+   * 为什么不再自绘：系统菜单自带沉浸材质、屏幕边缘避让（溢出时自动换向/内收）、
+   * 出现/消失动效、键盘可达性与 `labelInfo` 快捷键提示位 —— 自绘浮层要重做这些，
+   * 且容易像上一版那样越出编辑区被窗口裁切。触摸端仍保留浮条（系统没有"抬手即弹"的触发）。
+   */
+  @Builder
+  systemSelectionMenu() {
+    Menu() {
+      MenuItemGroup() {
+        MenuItem({ content: SELECTION_MENU_ACTIONS[0].label, labelInfo: SELECTION_MENU_ACTIONS[0].hint })
+          .onClick(() => this.activateMenuItem(0))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[1].label, labelInfo: SELECTION_MENU_ACTIONS[1].hint })
+          .onClick(() => this.activateMenuItem(1))
+      }
+      MenuItemGroup() {
+        MenuItem({ content: SELECTION_MENU_ACTIONS[2].label, labelInfo: SELECTION_MENU_ACTIONS[2].hint })
+          .onClick(() => this.activateMenuItem(2))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[3].label, labelInfo: SELECTION_MENU_ACTIONS[3].hint })
+          .onClick(() => this.activateMenuItem(3))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[4].label })
+          .onClick(() => this.activateMenuItem(4))
+      }
+      MenuItemGroup() {
+        MenuItem({ content: SELECTION_MENU_ACTIONS[5].label, labelInfo: SELECTION_MENU_ACTIONS[5].hint })
+          .onClick(() => this.activateMenuItem(5))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[6].label, labelInfo: SELECTION_MENU_ACTIONS[6].hint })
+          .onClick(() => this.activateMenuItem(6))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[7].label, labelInfo: SELECTION_MENU_ACTIONS[7].hint })
+          .onClick(() => this.activateMenuItem(7))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[8].label, labelInfo: SELECTION_MENU_ACTIONS[8].hint })
+          .onClick(() => this.activateMenuItem(8))
+      }
+      MenuItemGroup() {
+        MenuItem({ content: SELECTION_MENU_ACTIONS[9].label, labelInfo: SELECTION_MENU_ACTIONS[9].hint })
+          .onClick(() => this.activateMenuItem(9))
+        MenuItem({ content: SELECTION_MENU_ACTIONS[10].label })
+          .onClick(() => this.activateMenuItem(10))
+      }
+    }
+    // 官方 Menu.radius 默认值：2in1 设备 8vp，其他设备 20vp。
+    // 平板/窗口形态跑电脑模式时会拿到 20vp（"平板圆角"），这里显式钉成桌面档 8vp。
+    .radius(selectionMenuMetrics(true).radius)
+  }
+
+  /** 触摸横排项：只显示短标签，命中高 44vp、最小宽 56vp */
+  @Builder
+  menuBarItem(index: number) {
+    Text(SELECTION_MENU_ACTIONS[index].label)
+      .fontSize(this.menuMetrics().fontSize)
+      .fontColor(this.menuTextColor)
+      .textAlign(TextAlign.Center)
+      .maxLines(1)
+      .height(this.menuMetrics().itemHeight)
+      .constraintSize({ minWidth: this.menuMetrics().itemMinWidth })
+      .padding({ left: 6, right: 6 })
+      .borderRadius(this.menuMetrics().itemRadius)
+      .backgroundColor(this.menuIndex === index ? this.menuActiveBgColor : Color.Transparent)
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText(SELECTION_MENU_ACTIONS[index].label)
+      .onClick(() => this.activateMenuItem(index))
+  }
+
+  /** 一行横排项（触摸浮条） */
+  @Builder
+  menuRow(row: number[]) {
+    Row() {
+      ForEach(row, (actionIndex: number) => {
+        this.menuBarItem(actionIndex)
+      }, (actionIndex: number): string => 'menu_item_' + actionIndex.toString())
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Center)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  /** 指向选区的小三角：旋转方块，只填表面色（不描边，避免与浮层交界处压出双线） */
+  @Builder
+  menuCaret() {
+    Column()
+      .width(this.menuMetrics().caretSize)
+      .height(this.menuMetrics().caretSize)
+      .backgroundColor(this.menuSurfaceColor)
+      .rotate({ angle: 45 })
+  }
 
   @Builder
   selectionMenu() {
     Column() {
       if (!this.menuBelow) {
-        Text('▼').fontSize(9).fontColor('#E61F2329')
+        Row() {
+          this.menuCaret()
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Start)
+        .padding({ left: this.menuArrowOffset })
+        .margin({ bottom: -this.menuMetrics().caretSize / 2 })
       }
       Column() {
-        Row() {
-          ForEach(this.menuLabels().slice(0, 5), (label: string, index: number) => {
-            Text(label)
-              .fontSize(13).fontColor('#FFFFFF')
-              .padding({ left: 12, right: 12, top: 9, bottom: 9 })
-              .backgroundColor(this.menuIndex === index ? '#33FFFFFF' : Color.Transparent)
-              .borderRadius(4)
-              .onClick(() => this.activateMenuItem(index))
-          }, (label: string, index: number): string => 'menu0:' + label)
+        Scroll() {
+          Column() {
+            ForEach(this.menuRows, (row: number[], rowIndex: number) => {
+              this.menuRow(row)
+            }, (row: number[], rowIndex: number): string => 'menu_row_' + rowIndex.toString())
+          }
+          .width('100%')
         }
-        Row() {
-          ForEach(this.menuLabels().slice(5), (label: string, index: number) => {
-            Text(label)
-              .fontSize(13).fontColor('#FFFFFF')
-              .padding({ left: 12, right: 12, top: 9, bottom: 9 })
-              .backgroundColor(this.menuIndex === index + 5 ? '#33FFFFFF' : Color.Transparent)
-              .borderRadius(4)
-              .onClick(() => this.activateMenuItem(index + 5))
-          }, (label: string, index: number): string => 'menu1:' + label)
-        }
+        .width('100%')
+        .height(this.menuScrollHeight())
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.None)
       }
-      .backgroundColor('#E61F2329')
-      .borderRadius(8)
+      .width(this.menuWidthVp)
+      .padding(this.menuMetrics().padding)
+      .backgroundColor(this.menuSurfaceColor)
+      .borderRadius(this.menuMetrics().radius)
+      .border({ width: 1, color: this.menuBorderColor })
+      .shadow({
+        radius: this.menuMetrics().shadowRadius,
+        color: this.menuMetrics().shadowColor,
+        offsetX: 0,
+        offsetY: this.menuMetrics().shadowOffsetY
+      })
       if (this.menuBelow) {
-        Text('▲').fontSize(9).fontColor('#E61F2329')
+        Row() {
+          this.menuCaret()
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Start)
+        .padding({ left: this.menuArrowOffset })
+        .margin({ top: -this.menuMetrics().caretSize / 2 })
       }
     }
     .position({ x: this.menuX, y: this.menuY })
+    .transition(TransitionEffect.OPACITY.animation({ duration: Motion.fast, curve: Motion.standardCurve }))
   }
 
-  /** 在选区上方/下方弹出操作浮层（带箭头，自动避让屏幕边缘） */
+  /**
+   * 在选区上方/下方弹出操作浮层（带小三角，自动避让视口边缘）。
+   *
+   * 尺寸完全来自 buildMenuLayout：桌面单列竖排、触摸按可用宽度折行，
+   * 因此不会再出现"横条比编辑区宽、右侧被裁掉"的情况。
+   */
   private showSelectionMenu(): void {
     const sel: SelectionInfo = this.selMgr.selection;
     if (sel.isEmpty()) {
       this.menuVisible = false;
       return;
     }
+    const m: SelectionMenuMetrics = this.menuMetrics();
+    const layout: SelectionMenuLayout = this.buildMenuLayout(m);
+    const bodyW: number = layout.width;
+    const bodyH: number = layout.height;
     const h: CursorState = HitTester.caretPositionFor(sel.startOffset, this.lines,
       this.padLeftVp(), this.padTopVp(), this.theme.fontSize, CaretAffinity.UPSTREAM);
-    const menuW: number = 320; // 两行各 5/6 项，约 320vp
-    const menuH: number = 88;
-    const topEdgeVp: number = this.theme.paddingTop + h.y - this.scrollY;
-    let x: number = h.x;
-    if (x + menuW > this.viewWidthVp) {
-      x = Math.max(0, this.viewWidthVp - menuW);
-    }
-    if (x < 0) {
-      x = 0;
-    }
+    const anchorX: number = h.x;
+    const anchorTop: number = this.theme.paddingTop + h.y - this.scrollY;
+    const anchorBottom: number = anchorTop + h.height + this.theme.fontSize * 0.35;
+    const edge: number = 8;
+    let x: number = anchorX - m.caretSize / 2 - m.padding;
+    x = Math.max(edge, Math.min(x, Math.max(edge, this.viewWidthVp - bodyW - edge)));
     let below: boolean = false;
-    let y: number = topEdgeVp - menuH - 6;
-    if (y < 0) {
+    let y: number = anchorTop - bodyH - m.caretSize / 2 - 6;
+    if (y < edge) {
       below = true;
-      y = topEdgeVp + h.height + 6;
+      y = anchorBottom + m.caretSize / 2 + 6;
+    }
+    const maxY: number = this.viewHeightVp - bodyH - m.caretSize / 2 - edge;
+    if (y > maxY) {
+      y = Math.max(edge, maxY);
     }
     this.menuBelow = below;
     this.menuX = x;
     this.menuY = y;
+    this.menuRows = layout.rows;
+    this.menuWidthVp = bodyW;
+    const availableHeight: number = Math.max(120, this.viewHeightVp - 16);
+    this.menuScrollHeightVp = Math.min(layout.height - m.padding * 2,
+      Math.max(80, availableHeight - m.padding * 2));
+    this.menuArrowOffset = Math.max(m.caretSize,
+      Math.min(anchorX - x - m.caretSize / 2, bodyW - m.caretSize * 2));
     // 每次弹出都把键盘高亮复位到第一项（方向键从这里开始移动）
     this.menuIndex = 0;
     this.menuVisible = true;
-    this.diag('menu show x=' + x.toFixed(1) + ' y=' + y.toFixed(1) + ' below=' + below.toString() +
+    this.diag('menu show rows=' + layout.rows.length.toString() +
+      ' x=' + x.toFixed(1) + ' y=' + y.toFixed(1) + ' below=' + below.toString() +
+      ' w=' + bodyW.toFixed(1) + ' h=' + bodyH.toFixed(1) +
       ' sel=' + sel.startOffset.toString() + '-' + sel.endOffset.toString());
   }
 
@@ -972,6 +1222,8 @@ export struct CanvasTextEditor {
       this.requestEditorFocus();
     })
     // 鼠标按下兜底：鼠标点击不派发 onTouch（onTouch 是触屏事件）
+    // 桌面右键：系统菜单（沉浸材质 + 自动边缘避让 + labelInfo 快捷键位）
+    .bindContextMenu(this.systemSelectionMenu, ResponseType.RightClick)
     .onMouse((event: MouseEvent) => {
       // 输入形态校正 + 指针点击判定：真的收到鼠标事件才把当前点击视为指针操作
       deviceProfile.notePointerActivity();
@@ -1009,9 +1261,9 @@ export struct CanvasTextEditor {
         const offset: number = this.offsetAt(event.x, event.y);
         const handle: number = this.handleAt(event.x, event.y);
         if (doubleClick && handle === 0) {
-          // 双击：按词选中并直接弹出操作浮层（与右键选词同一个收口）
+          // 双击：按词选中；桌面不自动弹浮层（否则方向键会变成菜单导航），右键才开
           this.mouseSelecting = false;
-          this.selectWordAt(event.x, event.y, 'doubleClick');
+          this.selectWordAt(event.x, event.y, 'doubleClick', false);
           this.flushDraw();
           return;
         }
@@ -1054,9 +1306,11 @@ export struct CanvasTextEditor {
           const sel: SelectionInfo = this.selMgr.selection;
           const off: number = this.offsetAt(px, py);
           if (sel.isEmpty() || off < sel.startOffset || off > sel.endOffset) {
-            this.selectWordAt(px, py, 'rightClick');
+            // 右键在选区外：先按词选中；菜单由 bindContextMenu 的系统菜单弹出
+            this.selectWordAt(px, py, 'rightClick', false);
           } else {
-            this.showSelectionMenu();
+            // 右键在选区内：保持选区，系统菜单由 bindContextMenu 在指针位置弹出
+            this.hideSelectionMenu();
           }
           this.diag('rightClick x=' + px.toFixed(1) + ',y=' + py.toFixed(1));
           return;
@@ -3252,12 +3506,18 @@ export struct CanvasTextEditor {
     this.selMgr.endDrag();
     this.syncSelectionToCaret();
     this.emitSelection(true);
-    if (!this.selMgr.selection.isEmpty()) {
+    // 桌面拖选只保留选区（右键再开菜单）：否则方向键会被菜单接管，用户没法继续微调选区
+    if (!this.selMgr.selection.isEmpty() && this.shouldAutoOpenSelectionMenu()) {
       this.showSelectionMenu();
     } else {
       this.hideSelectionMenu();
     }
     this.flushDraw();
+  }
+
+  /** 只有触摸（选区浮条）才自动弹菜单；桌面键鼠用右键/菜单键主动打开 */
+  private shouldAutoOpenSelectionMenu(): boolean {
+    return !this.isDesktopLike();
   }
 
   /** 视口坐标 → 字符偏移（考虑滚动；结果已吸附到字符边界） */
@@ -3289,7 +3549,7 @@ export struct CanvasTextEditor {
   }
 
   /** 在 (x,y) 处按词选中（长按 / 双击共用）并弹出操作浮层 */
-  private selectWordAt(x: number, y: number, source: string): void {
+  private selectWordAt(x: number, y: number, source: string, openMenu: boolean = true): void {
     this.stopCaretAnimation();
     const offset: number = this.offsetAt(x, y);
     const text: string = this.doc.text;
@@ -3328,7 +3588,11 @@ export struct CanvasTextEditor {
       this.theme.fontSize, this.selMgr.headAffinity);
     this.diag(source + ' offset=' + offset.toString() + ' sel=' + start.toString() + '-' + end.toString());
     this.emitSelection(true);
-    this.showSelectionMenu();
+    if (openMenu) {
+      this.showSelectionMenu();
+    } else {
+      this.hideSelectionMenu();
+    }
     this.drawNow();
     this.reportCursor();
   }
@@ -3977,11 +4241,7 @@ export struct CanvasTextEditor {
     this.menuIndex = (this.menuIndex + delta + count) % count;
   }
 
-  /** 浮层项顺序：与 selectionMenu() 的两行 ForEach 一致 */
-  private menuLabels(): string[] {
-    return ['撤销', '重做', '粗', '斜', '标题', '复制', '剪切', '粘贴', '全选', '查找', '复制到系统'];
-  }
-
+  /** 浮层项顺序：与 SELECTION_MENU_LABELS（模块级常量）和 activateMenuItem 的索引一一对应 */
   /** 浮层项执行：统一走命令（撤销/格式/剪贴板/查找），分享仍走宿主回调 */
   private activateMenuItem(index: number): void {
     this.hideSelectionMenu();

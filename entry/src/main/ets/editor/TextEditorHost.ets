@@ -41,6 +41,12 @@ export struct TextEditorHost {
   @Prop dimTextColor: string = '#9AA0A6'
   @Prop placeholder: string = '开始写作…'
   @Prop placeholderColor: string = '#9AA0A6'
+  /** 选区浮层配色：由应用层按当前主题传入，保证与卡片/原生菜单同色 */
+  @Prop menuSurfaceColor: string = '#FFFFFF'
+  @Prop menuBorderColor: string = '#ECECEE'
+  @Prop menuTextColor: string = '#1C1C1E'
+  @Prop menuAccentColor: string = '#1C1C1E'
+  @Prop menuActiveBgColor: string = '#0F1C1C1E'
   /** 打字机模式（默认关）：开启后当前段垂直居中跟随 */
   @Prop typewriter: boolean = false
   /** 滚动策略（打字机关时为 NORMAL） */
@@ -161,6 +167,11 @@ export struct TextEditorHost {
         dimTextColor: this.dimTextColor,
         placeholder: this.placeholder,
         placeholderColor: this.placeholderColor,
+        menuSurfaceColor: this.menuSurfaceColor,
+        menuBorderColor: this.menuBorderColor,
+        menuTextColor: this.menuTextColor,
+        menuAccentColor: this.menuAccentColor,
+        menuActiveBgColor: this.menuActiveBgColor,
         typewriter: this.typewriter,
         scrollPolicy: this.scrollPolicy,
         desktopMode: this.desktopMode,

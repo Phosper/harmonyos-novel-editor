@@ -51,7 +51,11 @@ struct DocRow {
               .margin({ left: 6 })
           }
           if (this.item.isFav) {
-            Text('★').fontSize(11).fontColor(this.colors().warning).margin({ left: 6 })
+            // 系统 Symbol（不再用 '★' 字形：字体缺字形会变豆腐块，且无法随系统字号缩放）
+            SymbolGlyph($r('sys.symbol.star'))
+              .fontSize(11)
+              .fontColor([this.colors().warning])
+              .margin({ left: 6 })
           }
         }.width('100%')
 

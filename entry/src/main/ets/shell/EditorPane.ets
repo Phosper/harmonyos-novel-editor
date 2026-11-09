@@ -1,5 +1,5 @@
 // 编辑视图 —— 标签栏 + 工具条 + 正文编辑面
-import { promptAction } from '@kit.ArkUI'
+import { promptAction, Chip, ChipSize } from '@kit.ArkUI'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID, blendHexColor } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
@@ -192,6 +192,12 @@ export struct EditorPane {
             textColor: this.colors().textPrimary,
             bgColor: this.colors().editorBg,
             caretColor: this.colors().brand,
+            // 选区浮层与卡片/原生菜单共用同一套语义色（亮/暗主题都跟随）
+            menuSurfaceColor: this.colors().bgCard,
+            menuBorderColor: this.colors().divider,
+            menuTextColor: this.colors().textPrimary,
+            menuAccentColor: this.colors().brand,
+            menuActiveBgColor: this.colors().activeBg,
             dimTextColor: this.typewriterDimColor(),
             placeholder: '开始写作…',
             placeholderColor: this.colors().textTertiary,
@@ -601,22 +607,33 @@ export struct EditorPane {
         .fontSize(11.5)
         .fontColor(this.colors().textSecondary)
         .margin({ right: 10 })
-      Text('加到卡片')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.colors().onBrand)
-        .backgroundColor(this.colors().brand)
-        .borderRadius(7)
-        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-        .onClick(() => this.openCapture())
-        .accessibilityText('把选中文字加到卡片')
+      // 动作块用系统 Chip（自带最小尺寸、按下态与无障碍语义），不再手绘"带底色的小圆角文字"。
+      // Chip 是 @Builder 形式的系统高级组件（返回 void），属性/事件挂在容器上。
+      Row() {
+        Chip({
+          label: {
+            text: '加到卡片',
+            fontSize: 12,
+            fontColor: this.colors().onBrand
+          },
+          size: ChipSize.SMALL,
+          allowClose: false,
+          enabled: true,
+          backgroundColor: this.colors().brand,
+          borderRadius: WeaverRadii.SM
+        })
+      }
+      .onClick(() => this.openCapture())
+      .accessibilityText('把选中文字加到卡片')
     }
     .height(36)
     .padding({ left: 12, right: 8 })
-    .backgroundColor(this.colors().bgCard)
-    .borderRadius(9)
+    // 浮在正文上的小面板：用系统材质（模糊 + 蒙版）而不是不透明卡片，
+    // 阴影颜色修正为半透明黑（旧代码误用 divider，浅色主题下几乎看不见）
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+    .borderRadius(WeaverRadii.MD)
     .border({ width: 1, color: this.colors().divider })
-    .shadow({ radius: 16, color: this.colors().divider, offsetX: 0, offsetY: 4 })
+    .shadow({ radius: 16, color: '#1F000000', offsetX: 0, offsetY: 4 })
     .margin({ top: 56, right: 18 })
   }
 

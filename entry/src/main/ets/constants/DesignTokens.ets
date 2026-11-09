@@ -197,6 +197,59 @@ export class WeaverRadii {
   static readonly XXL: number = 32
 }
 
+/**
+ * 选区浮层（多选文字后弹出的菜单）的平台化尺寸与圆角。
+ *
+ * 圆角策略刻意按输入形态分档：
+ * - 桌面（键鼠）：12vp 外圆角 / 8vp 项圆角 —— 与 44vp 工具栏、12vp 菜单/弹层同族，
+ *   更"文档工具"、更克制；
+ * - 移动（触摸）：16vp 外圆角 / 10vp 项圆角 —— 触摸设备上一律更"软"，
+ *   与 16vp 半模态、16vp 卡片一致，且手指命中面积更大（44vp 起）。
+ * 两端共用同一套圆角会让桌面显笨、移动显硬，所以这里由 pointerPrimary 分档，不写死。
+ */
+export interface SelectionMenuMetrics {
+  /** 浮层外圆角 */
+  radius: number
+  /** 菜单项圆角 */
+  itemRadius: number
+  /** 菜单项高度（>=44 才满足触摸命中） */
+  itemHeight: number
+  /** 菜单项最小宽度 */
+  itemMinWidth: number
+  /** 标签字号 */
+  fontSize: number
+  /** 浮层内边距 */
+  padding: number
+  /** 项间距 */
+  gap: number
+  /** 分组分隔线两侧间距 */
+  groupGap: number
+  /** 投影半径 */
+  shadowRadius: number
+  /** 投影纵向偏移 */
+  shadowOffsetY: number
+  /** 投影颜色（ARGB） */
+  shadowColor: string
+  /** 指向选区的小三角边长 */
+  caretSize: number
+}
+
+export function selectionMenuMetrics(pointerPrimary: boolean): SelectionMenuMetrics {
+  if (pointerPrimary) {
+    return {
+      // 电脑模式：跟窗口/工具栏同一档（外侧 8、项 6），比平板更"方"更克制
+      radius: 8, itemRadius: 6, itemHeight: 38, itemMinWidth: 52, fontSize: 13,
+      padding: 6, gap: 2, groupGap: 6, shadowRadius: 14, shadowOffsetY: 6,
+      shadowColor: '#2E000000', caretSize: 10
+    }
+  }
+  return {
+    radius: 16, itemRadius: 10, itemHeight: 44, itemMinWidth: 56, fontSize: 14,
+    padding: 8, gap: 4, groupGap: 8, shadowRadius: 20, shadowOffsetY: 8,
+    shadowColor: '#3D000000', caretSize: 12
+  }
+}
+
 // 间距/尺寸规范
 export class WeaverSpacing {
   static readonly UNIT: number = 4

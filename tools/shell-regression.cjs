@@ -45,6 +45,9 @@ function shell() {
   probe.toasts = [];
   probe.toast = value => probe.toasts.push(value);
   probe.dialogPending = false;
+  probe.dialogDraft = '';
+  probe.presentDialog = () => {};
+  probe.closePresentedDialog = () => {};
   Object.assign(app, {
     project: { bookName: 'Book' },
     editor: { hasDoc: true, title: 'Chapter', content: 'latest draft', format: 0, runsJson: '' },
@@ -204,6 +207,15 @@ function exportHarness(options = {}) {
     assert.equal(nav.paths.length, 0);
     assert.deepEqual(probe.toasts, ['打开文稿失败，请重试']);
   });
+  await check('dialogs use the system CustomContentDialog driven by state', async () => {
+    assert.ok(shellSource.includes('CustomContentDialog('), 'system dialog component');
+    assert.ok(shellSource.includes('new CustomDialogController('), 'opened through the system controller');
+    assert.ok(shellSource.includes("@Monitor('dialogWatch.dialog')"), 'open/close follows app.ui.dialog');
+    assert.ok(shellSource.includes('dialogInputArea'), 'content area is injected into the system dialog');
+    assert.ok(!shellSource.includes('dialogView()'), 'the self-drawn overlay host must be gone');
+    // 失败重试语义保持：失败后用原输入重开
+    assert.ok(shellSource.includes('app.ui.dialogInitial = value'), 'retry keeps the typed value');
+  });
   await check('dialog write failures retain input and can be retried', async () => {
     for (const [kind, operation] of [['NEW_PROJECT', 'createBook'], ['RENAME_DOC', 'renameChapter'],
       ['DELETE_PROJECT', 'deleteBook'], ['DELETE_DOC', 'hardDeleteChapter']]) {
@@ -237,7 +249,9 @@ function exportHarness(options = {}) {
     await pending;
     assert.equal(probe.dialogPending, false);
     assert.equal(app.ui.closeCount, 1);
-    assert.match(shellSource, /\.enabled\(!this\.dialogPending\)/);
+    // 系统对话框（CustomContentDialog）确认后立即关闭，重复点击由 handleDialogConfirm 的早退守卫拦住；
+    // 原来的"弹窗内按钮禁用"只能在自绘浮层上做，已随自绘弹窗一起移除
+    assert.match(shellSource, /if \(this\.dialogPending\) \{\s*return/);
   });
   await check('empty project names keep the dialog available for correction', async () => {
     const probe = shell();
@@ -1087,6 +1101,18 @@ function exportHarness(options = {}) {
     assert.ok(nullCount(light, 'HALO_CACHE') >= themeCount, 'HALO_CACHE needs one slot per theme');
     assert.ok(nullCount(light, 'SPEC_CACHE') >= themeCount * 5, 'SPEC_CACHE needs one row per theme (5 kinds each)');
     assert.ok(nullCount(material, 'MODIFIER_CACHE') >= themeCount * 6, 'MODIFIER_CACHE needs one row per theme (6 shapes each)');
+  });
+  await check('desktop selection menu uses the native Menu with shortcut hints', async () => {
+    const editor = read('editor/flowtext/CanvasTextEditor.ets');
+    // 右键菜单交给系统 bindContextMenu：沉浸材质 + 自动边缘避让 + labelInfo 快捷键位
+    assert.match(editor, /\.bindContextMenu\(this\.systemSelectionMenu, ResponseType\.RightClick\)/);
+    assert.match(editor, /Menu\(\)\s*\{/);
+    assert.ok(editor.includes('MenuItemGroup()'), 'sections render as system groups');
+    assert.ok(editor.includes('labelInfo: SELECTION_MENU_ACTIONS['), 'shortcut hints come from labelInfo');
+    // 系统 Menu.radius 默认 2in1=8 / 其他=20：必须显式钉成桌面档，否则平板形态跑电脑模式会拿 20vp
+    assert.match(editor, /\.radius\(selectionMenuMetrics\(true\)\.radius\)/);
+    // 自绘浮层只保留给触摸（系统没有"抬手即弹"的触发方式）
+    assert.doesNotMatch(editor, /menuListRow/, 'the hand-drawn desktop list must be gone');
   });
   await check('project delete is right-click on desktop and long-press on touch', async () => {
     const sidebar = read('shell/ProjectSidebar.ets');
