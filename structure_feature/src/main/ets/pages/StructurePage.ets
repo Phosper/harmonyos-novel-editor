@@ -29,11 +29,18 @@ export struct StructurePage {
   @Event onClose: () => void = () => {}
 
   @Local placed: PlacedNode[] = []
-  @Local links: string[] = []
   @Local mapW: number = 0
   @Local mapH: number = 0
   @Local empty: boolean = true
   @Local topicCount: number = 0
+  /** 每个节点在 placed 里的父索引（-1 = 根） */
+  private parents: number[] = []
+  /**
+   * 连线用 Canvas 画，不用 Path。
+   * 原因：Path 的 commands 坐标与组件尺寸单位实测不一致（真机上只画出一小段），
+   * 而 CanvasRenderingContext2D 的坐标就是 vp，和思路板点阵背景同一套已验证的画法。
+   */
+  private connCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true))
 
   aboutToAppear(): void {
     this.load()
@@ -52,27 +59,38 @@ export struct StructurePage {
     this.mapW = layout.width
     this.mapH = layout.height
     this.topicCount = layout.nodes.length - 1
-    const parents: number[] = outlineParents(snapshot.nodes)
-    const links: string[] = []
-    for (let i: number = 1; i < layout.nodes.length; i++) {
-      const parent: number = parents[i]
+    this.parents = outlineParents(snapshot.nodes)
+    this.empty = false
+    // Canvas 可能还没 ready（此时绘制会被忽略），onReady 里会再画一次
+    this.drawConnections()
+  }
+
+  /** 画父子连线：三次贝塞尔，端点取父节点右缘中点与子节点左缘中点 */
+  private drawConnections(): void {
+    const ctx: CanvasRenderingContext2D = this.connCtx
+    if (this.mapW <= 0 || this.mapH <= 0 || this.placed.length === 0) {
+      return
+    }
+    ctx.clearRect(0, 0, this.mapW, this.mapH)
+    ctx.strokeStyle = this.theme.divider
+    ctx.lineWidth = 1.2
+    for (let i: number = 1; i < this.placed.length; i++) {
+      const parent: number = this.parents[i]
       if (parent < 0) {
         continue
       }
-      const from: PlacedNode = layout.nodes[parent]
-      const to: PlacedNode = layout.nodes[i]
+      const from: PlacedNode = this.placed[parent]
+      const to: PlacedNode = this.placed[i]
       const x1: number = from.x + OUTLINE_NODE_W
       const y1: number = from.y + OUTLINE_NODE_H / 2
       const x2: number = to.x
       const y2: number = to.y + OUTLINE_NODE_H / 2
       const mid: number = (x1 + x2) / 2
-      links.push('M' + x1.toString() + ' ' + y1.toString() +
-        ' C' + mid.toString() + ' ' + y1.toString() +
-        ' ' + mid.toString() + ' ' + y2.toString() +
-        ' ' + x2.toString() + ' ' + y2.toString())
+      ctx.beginPath()
+      ctx.moveTo(x1, y1)
+      ctx.bezierCurveTo(mid, y1, mid, y2, x2, y2)
+      ctx.stroke()
     }
-    this.links = links
-    this.empty = false
   }
 
   /** 点主题：记下偏移、请求宿主回正文（本包不碰编辑器） */
@@ -178,16 +196,13 @@ export struct StructurePage {
         Scroll() {
           Scroll() {
             Stack({ alignContent: Alignment.TopStart }) {
-              ForEach(this.links, (command: string, index: number) => {
-                Path()
-                  .width(this.mapW)
-                  .height(this.mapH)
-                  .commands(command)
-                  .fillOpacity(0)
-                  .stroke(this.theme.divider)
-                  .strokeWidth(1.2)
-                  .hitTestBehavior(HitTestMode.None)
-              }, (command: string, index: number) => 'link' + index.toString())
+              // 连线层在最底下，不参与命中
+              Canvas(this.connCtx)
+                .width(this.mapW)
+                .height(this.mapH)
+                .hitTestBehavior(HitTestMode.None)
+                .accessibilityLevel('no')
+                .onReady(() => { this.drawConnections() })
               ForEach(this.placed, (node: PlacedNode) => {
                 this.nodeChip(node)
               }, (node: PlacedNode) => node.id)

@@ -68,7 +68,7 @@ export class MindMapLayout {
 /** 节点尺寸与间距（vp）：桌面端优先，手机端后续再单独调 */
 export const OUTLINE_NODE_W: number = 220
 export const OUTLINE_NODE_H: number = 38
-export const OUTLINE_COL_GAP: number = 268
+export const OUTLINE_COL_GAP: number = 300
 export const OUTLINE_ROW_GAP: number = 52
 export const OUTLINE_PAD: number = 24
 
