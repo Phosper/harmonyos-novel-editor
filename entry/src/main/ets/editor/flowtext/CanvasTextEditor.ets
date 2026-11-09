@@ -43,6 +43,8 @@ import { ImeEchoGuard, shouldConsumePreIme } from '../interaction/InputArbiter';
 import { deviceProfile } from '../../utils/DeviceProfile';
 import { PasteboardAccess } from '../../utils/Pasteboard';
 
+/** 性能探针开关：排查大文档滚动卡顿时置 true，只在每 60 帧打一行；平时保持 false */
+const PERF_PROBE: boolean = true;
 /** 运行时诊断开关：真机排查"动画/交互错乱"时置 true，便于比对 触摸坐标/命中/caret/scrollY/progress。 */
 const DIAG_ENABLED: boolean = false;
 /** 本特性预留的量化诊断标签（经 diag() 输出，供 Phase 5 真机核验）：
@@ -502,6 +504,13 @@ export struct CanvasTextEditor {
   private breathDrawnAlpha: number = 1;
   /** 拖选期间选区上报的限频时间戳 */
   private lastDragEmitAt: number = 0;
+  /** 滚动结束后的光标上报定时器（-1 = 没有排队） */
+  private cursorReportTimer: number = -1;
+  /** 性能探针累计（60 帧一报） */
+  private perfFrames: number = 0;
+  private perfLayoutMs: number = 0;
+  private perfDrawMs: number = 0;
+  private perfMaxMs: number = 0;
   /** 桌面双击选词：鼠标 Press 不走触摸的连击判定，这里单独记时间与位置 */
   /** 鼠标按下进行中（松手前一直为 true）：据此识别整个拖动期间的合成触摸事件 */
   private pointerPressed: boolean = false;
@@ -1160,6 +1169,10 @@ export struct CanvasTextEditor {
   aboutToDisappear(): void {
     this.documentGeneration++;
     this.cancelLongPress();
+    if (this.cursorReportTimer !== -1) {
+      clearTimeout(this.cursorReportTimer);
+      this.cursorReportTimer = -1;
+    }
     // 卸载时必须停掉贴边自动滚动的定时器，否则它会继续改 scrollY/drawNow（画布已没了）
     this.stopAutoScrollSelection();
     if (this.controller !== null) { this.controller.unbind(this); }
@@ -1365,14 +1378,11 @@ export struct CanvasTextEditor {
         this.scrollY += delta;
         this.ensureVisibleLayout();
         this.clampScroll();
-        // 触控板一次滑动会连发几十个 axis 事件：合并到一帧画一次，
-        // 光标位置也按 32ms 限频上报（否则滚动时每秒数十次 store 写入）
+        // 触控板一次滑动会连发几十个 axis 事件：合并到一帧画一次。
+        // 光标位置不在滚动途中上报——每帧给输入法发 updateCursor 会让候选窗跟着重排，
+        // 在平板/带输入法的形态下是明显的滚动卡顿来源。滚动停下来再报一次。
         this.requestDraw();
-        const now: number = Date.now();
-        if (now - this.lastDragEmitAt >= 32) {
-          this.lastDragEmitAt = now;
-          this.reportCursor();
-        }
+        this.scheduleCursorReportAfterScroll();
       }
     })
     // 方向键必须走 onKeyPreIme：官方按键三次派发顺序为
@@ -2870,6 +2880,7 @@ export struct CanvasTextEditor {
       this.diag('drawNow renderer=null (skip)');
       return;
     }
+    const layoutStart: number = Date.now();
     // 排版宽度与打字机状态必须一致：某些输入路径可能只更新了 prop 而未触发重建，
     // 导致"文字按 1.08 缩放、排版仍按全宽换行"→ 高亮段越界。这里在绘制前兜底校正一次。
     const typewriterMode: boolean = this.effectivePolicy() === ScrollPolicy.CENTER;
@@ -2907,6 +2918,7 @@ export struct CanvasTextEditor {
     }
     const viewport = new ViewportInfo(this.scrollY, this.viewHeightVp);
     const preview: PreviewInfo | null = this.previewMgr.isComposing ? this.previewMgr.previewInfo : null;
+    const layoutCost: number = Date.now() - layoutStart;
     // 打字机：当前段落之外的行淡化；段落区间按需重算（dirty 标记，热路径无额外分配）
     const typewriterOn: boolean = this.effectivePolicy() === ScrollPolicy.CENTER;
     if (typewriterOn) {
@@ -2916,12 +2928,45 @@ export struct CanvasTextEditor {
     // 淡化与缩放共用同一组"动画中的焦点边界"，段落切换时两者一起平滑过渡
     const focusFirst: number = this.twAnimFirst >= 0 ? this.twAnimFirst : this.twFirstLine;
     const focusLast: number = this.twAnimLast >= 0 ? this.twAnimLast : this.twLastLine;
-    const caretLine: number = this.lines.length > 0
+    // 光标所在行只有打字机缩放才用得上；非打字机模式每帧白扫一遍全部行，
+    // 长文（十几万字、几千行）时就是纯粹的滚动开销。
+    const caretLine: number = typewriterOn && this.lines.length > 0
       ? HitTester.lineIndexOf(this.doc.caretOffset, this.lines) : -1;
+    const renderStart: number = Date.now();
     renderer.draw(this.ctx, this.lines, this.caret,
       preview === null ? this.selMgr.selection : null, preview, viewport, this.anims, this.handlePositions(),
       dimEnabled, focusFirst, focusLast, typewriterOn, caretLine,
       (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', this.placeholderColorFor());
+    this.notePerf(layoutCost, Date.now() - renderStart);
+  }
+
+  /**
+   * 性能探针：每 60 帧打一行，用来定位"大文档滚动卡顿"到底花在排版还是绘制。
+   * 排查完把 PERF_PROBE 置 false 即可完全静默。
+   */
+  private notePerf(layoutMs: number, drawMs: number): void {
+    if (!PERF_PROBE) {
+      return;
+    }
+    this.perfFrames++;
+    this.perfLayoutMs += layoutMs;
+    this.perfDrawMs += drawMs;
+    if (layoutMs + drawMs > this.perfMaxMs) {
+      this.perfMaxMs = layoutMs + drawMs;
+    }
+    if (this.perfFrames < 60) {
+      return;
+    }
+    console.info('[FlowTextPerf] frames=60 layoutAvg=' + (this.perfLayoutMs / 60).toFixed(2) +
+      'ms drawAvg=' + (this.perfDrawMs / 60).toFixed(2) +
+      'ms maxFrame=' + this.perfMaxMs.toString() +
+      'ms lines=' + this.lines.length.toString() +
+      ' scrollY=' + Math.round(this.scrollY).toString() +
+      ' docLen=' + this.doc.length.toString());
+    this.perfFrames = 0;
+    this.perfLayoutMs = 0;
+    this.perfDrawMs = 0;
+    this.perfMaxMs = 0;
   }
 
   /**
@@ -3039,6 +3084,21 @@ export struct CanvasTextEditor {
    *   光标 top 采用组件内可视 y（padTop + 内容 y - scrollY，并 clamp ≥0），
    *   避免仅上报内容 y 造成键盘悬浮偏移；完整窗口绝对位置需组件在窗口中的坐标（后续扩展）。
    *   left 与绘制一致：以边界为中线居中（边界 - 半宽），保证 IME 悬浮元素与可视光标对齐。 */
+  /**
+   * 滚动结束后再上报光标（滚动途中不报）。
+   * 原因：滚动时每帧一次 updateCursor 会让输入法候选窗跟着动，平板形态下肉眼可见地卡。
+   * 120ms 相当于"手指停下来的那一拍"，此时光标位置才稳定。
+   */
+  private scheduleCursorReportAfterScroll(): void {
+    if (this.cursorReportTimer !== -1) {
+      clearTimeout(this.cursorReportTimer);
+    }
+    this.cursorReportTimer = setTimeout(() => {
+      this.cursorReportTimer = -1;
+      this.reportCursor();
+    }, 120);
+  }
+
   private reportCursor(): void {
     if (!this.ime.attached) {
       return;
