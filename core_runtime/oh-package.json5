@@ -1,0 +1,11 @@
+{
+  "name": "core_runtime",
+  "version": "1.0.0",
+  "description": "常驻核心运行时：文稿会话、命令、仓储、备份与宿主服务（P4 先落骨架）",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "feature_contracts": "file:../feature_contracts"
+  }
+}

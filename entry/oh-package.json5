@@ -5,5 +5,8 @@
   "main": "",
   "author": "",
   "license": "",
-  "dependencies": {}
+  "dependencies": {
+    "feature_contracts": "file:../feature_contracts",
+    "core_runtime": "file:../core_runtime"
+  }
 }

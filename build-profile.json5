@@ -36,6 +36,30 @@
           ]
         }
       ]
+    },
+    {
+      "name": "feature_contracts",
+      "srcPath": "./feature_contracts",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "core_runtime",
+      "srcPath": "./core_runtime",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
     }
   ]
 }

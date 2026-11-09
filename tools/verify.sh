@@ -33,6 +33,27 @@ if [ "$MODE" != "--skip-build" ] && [ "$MODE" != "--tests-only" ]; then
   if [ "$warns" -eq 0 ] && grep -q "up-to-date" /tmp/weaver-build.log; then
     echo "  注：本次为增量构建（未重新编译），告警数需用 hvigorw clean 后重跑才准确"
   fi
+
+  # 分包后必须看 APP：assembleHap 不会把 HSP 打进产物，
+  # 版 module 少写 applyToProducts 时 HSP 会被静默漏掉（第一次就踩过）。
+  echo "== 打包 APP（HAP + HSP）=="
+  if ! hvigorw assembleApp --mode project -p product=default -p buildMode=debug --no-daemon \
+      > /tmp/weaver-appbuild.log 2>&1; then
+    echo "APP BUILD FAILED（日志：/tmp/weaver-appbuild.log）"
+    grep -E "ArkTS:ERROR|ERROR:" /tmp/weaver-appbuild.log | head -10
+    exit 1
+  fi
+  app="$(ls -t build/outputs/default/*-signed.app 2>/dev/null | head -1)"
+  if [ -z "$app" ]; then
+    echo "APP 产物缺失（build/outputs/default/*.app）"
+    exit 1
+  fi
+  hsp_count="$(unzip -l "$app" 2>/dev/null | grep -c '\.hsp$' || true)"
+  echo "APP OK  $(basename "$app")  hsp=$hsp_count"
+  if [ "$hsp_count" -lt 1 ]; then
+    echo "APP 里没有 HSP：检查 build-profile 的模块是否 applyToProducts 到当前产品"
+    exit 1
+  fi
 fi
 
 if [ "$MODE" = "--tests-only" ]; then

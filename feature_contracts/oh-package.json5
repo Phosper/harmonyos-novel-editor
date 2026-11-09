@@ -1,0 +1,9 @@
+{
+  "name": "feature_contracts",
+  "version": "1.0.0",
+  "description": "无状态功能契约（类型/枚举/纯规则），可被 entry 与各功能包共同依赖",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

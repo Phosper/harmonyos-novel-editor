@@ -1,0 +1,12 @@
+{
+  "module": {
+    "name": "feature_contracts",
+    // HAR：编译期静态共享，不单独安装
+    "type": "har",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ]
+  }
+}

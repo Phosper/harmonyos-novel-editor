@@ -37,6 +37,8 @@ import { LongTakeNavParam, takePendingLongTake } from './LongTakeBridge'
 import { ezCustomTransition, LongTakeTransitionParam } from '../thirdparty/ezcustomtransition/Index'
 import { SettingsDest } from '../pages/dest/SettingsDest'
 import { SettingsPanel } from './SettingsPanel'
+// 核心运行时（HSP）：功能目录在基础包里，缺失的扩展也能显示名字与安装状态
+import { featureCatalog } from 'core_runtime'
 
 enum ExportAction {
   CHAPTER_TXT = 0,
@@ -88,6 +90,8 @@ export struct AppShell {
       Logger.warn('AppShell: setKeyboardAvoidMode failed: ' + String(e))
     }
     this.bindDeviceProfile()
+    // 跨包引用自检：这里能编译并打印，说明 entry → core_runtime(HSP) → feature_contracts(HAR) 链路成立
+    Logger.info('Feature catalog entries=' + featureCatalog().length.toString())
     app.init()
       .then(() => {
         this.loading = false

@@ -1,0 +1,13 @@
+{
+  "module": {
+    "name": "core_runtime",
+    // HSP：动态共享包，始终随应用安装、与宿主同进程
+    "type": "shared",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ],
+    "deliveryWithInstall": true
+  }
+}
