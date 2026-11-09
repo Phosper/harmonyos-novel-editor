@@ -506,6 +506,13 @@ export struct CanvasTextEditor {
   private lastDragEmitAt: number = 0;
   /** 滚动结束后的光标上报定时器（-1 = 没有排队） */
   private cursorReportTimer: number = -1;
+  /**
+   * 有滚动事件待夹取。
+   * 滚轮/触控板一秒能发几十上百个事件，而绘制是 16ms 合并的：
+   * 如果每个事件都做一遍排版推进 + 夹取，主线程会被排版吃掉（鼠标滑动手感明显差于手指，
+   * 原因就在这里）。事件里只改 scrollY 并置这个标记，真正的排版与夹取放到绘制那一帧。
+   */
+  private scrollClampPending: boolean = false;
   /** 性能探针累计（60 帧一报） */
   private perfFrames: number = 0;
   private perfLayoutMs: number = 0;
@@ -1376,11 +1383,9 @@ export struct CanvasTextEditor {
         this.stopScrollAnimation();
         this.hideSelectionMenu();
         this.scrollY += delta;
-        this.ensureVisibleLayout();
-        this.clampScroll();
-        // 触控板一次滑动会连发几十个 axis 事件：合并到一帧画一次。
-        // 光标位置不在滚动途中上报——每帧给输入法发 updateCursor 会让候选窗跟着重排，
-        // 在平板/带输入法的形态下是明显的滚动卡顿来源。滚动停下来再报一次。
+        // 排版与夹取交给绘制那一帧（见 scrollClampPending 的说明）：
+        // 滚动事件里不做 ensureVisibleLayout/clampScroll，避免"每个事件排版一次"。
+        this.scrollClampPending = true;
         this.requestDraw();
         this.scheduleCursorReportAfterScroll();
       }
@@ -2899,6 +2904,11 @@ export struct CanvasTextEditor {
       this.twScaleInitialized = false;
     }
     this.ensureVisibleLayout();
+    // 滚动事件只改 scrollY；在这里统一夹取（此时排版已推进到视口底部）
+    if (this.scrollClampPending) {
+      this.scrollClampPending = false;
+      this.clampScroll();
+    }
     // 上面的兜底同步会把 renderer 置空后重建；此处重新取一次并收窄类型，
     // 否则 TS 仍认为 this.renderer 可能为 null（10505001）。
     if (this.renderer === null) {
@@ -3263,7 +3273,8 @@ export struct CanvasTextEditor {
         this.requestDraw();
       } else if (this.dragging && this.scrollMode) {
         this.scrollY = this.pressScrollY - dy;
-        this.clampScroll();
+        // 同上：手指拖动时也不逐事件排版，交给绘制帧
+        this.scrollClampPending = true;
         // 记录滚动速度（vp/ms），供抬起后的惯性滑动
         const nowMs: number = Date.now();
         const dtMs: number = nowMs - this.lastScrollAt;

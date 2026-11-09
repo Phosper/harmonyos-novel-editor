@@ -1618,5 +1618,15 @@ check('desktop keeps the selection quiet, touch still pops the bar',()=>{
       else context.Date = frozenDate;
     }
   }
+  check('wheel scrolling defers layout and clamping to the draw frame',()=>{
+    const src=read('editor/flowtext/CanvasTextEditor.ets');
+    // 滚动事件只改 scrollY；排版与夹取放到绘制帧，否则每个滚轮/触控板事件都要排版一次
+    assert.ok(/this\.scrollY \+= delta;[\s\S]{0,260}?this\.scrollClampPending = true;/.test(src),
+      'axis handler must mark the clamp instead of laying out per event');
+    assert.ok(!/this\.scrollY \+= delta;[\s\S]{0,200}?this\.ensureVisibleLayout\(\);/.test(src),
+      'axis handler must not run layout synchronously');
+    assert.ok(/if \(this\.scrollClampPending\) \{[\s\S]{0,140}?this\.clampScroll\(\);/.test(src),
+      'drawNow applies the pending clamp once per frame');
+  });
   console.log(`FlowText regression: ${count} checks passed`);
 })().catch(error=>{console.error(error);process.exitCode=1;});
