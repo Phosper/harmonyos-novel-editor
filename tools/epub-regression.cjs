@@ -5,12 +5,18 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { stripTypeScriptTypes } = require('node:module');
-const source = fs.readFileSync(path.join(__dirname, '../entry/src/main/ets/utils/EpubParser.ets'), 'utf8');
-const compiled = stripTypeScriptTypes(source.replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
+const ets = file => fs.readFileSync(path.join(__dirname, '../entry/src/main/ets', file), 'utf8');
+const strip = text => stripTypeScriptTypes(text
+  .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
   .replace(/\bexport\s+/g, ''), { mode: 'transform' });
 const context = vm.createContext({ console: { log() {}, warn() {}, error() {} } });
-vm.runInContext(compiled, context);
-const api = vm.runInContext('({ parseEpub, epubHtmlToText, epubDecodeEntities, epubResolvePath, epubTocTitles })', context);
+// 合并成一册要用到 FormatRun/FormatCodec，按依赖顺序装进同一个沙箱
+for (const file of ['editor/flowtext/model/EditorTypes.ets', 'editor/flowtext/model/FormatCodec.ets',
+  'utils/EpubParser.ets', 'utils/EpubMerger.ets']) {
+  vm.runInContext(strip(ets(file)), context);
+}
+const api = vm.runInContext('({ parseEpub, epubHtmlToText, epubDecodeEntities, epubResolvePath,' +
+  ' epubTocTitles, mergeEpubChapters, FormatCodec })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -143,6 +149,31 @@ check('目录名优先生效（路径一致时）', () => {
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(book.chapters.map(c => c.title))),
     ['封面', '第一章 软实力'], 'toc titles win over "第 N 部分"');
+});
+
+check('合并为一篇：文内目录 + 每章 H1，偏移与正文对得上', () => {
+  const book = { title: '书名', author: '', chapters: [
+    { title: '第一章', content: '第一段\n第二段' },
+    { title: '第二章', content: '另一段' }
+  ] };
+  const merged = api.mergeEpubChapters(book, true);
+  assert.ok(merged.content.startsWith('目录\n· 第一章\n· 第二章\n'), merged.content.slice(0, 40));
+  const runs = api.FormatCodec.decode(merged.runsJson);
+  // 目录 1 + 每章标题 2
+  assert.equal(runs.length, 3);
+  assert.deepEqual(JSON.parse(JSON.stringify(runs.map(r => [r.heading, merged.content.slice(r.startOffset, r.endOffset)]))),
+    [[1, '目录'], [1, '第一章'], [1, '第二章']]);
+  assert.equal(merged.chapterCount, 2);
+  // 正文段落没有被写进标题 run
+  assert.ok(merged.content.includes('第一段\n第二段'));
+});
+
+check('合并为一篇：不要目录时直接从第一章开始', () => {
+  const merged = api.mergeEpubChapters({ title: '书名', author: '', chapters: [
+    { title: '第一章', content: '正文' }
+  ] }, false);
+  assert.ok(merged.content.startsWith('第一章\n正文\n'));
+  assert.equal(api.FormatCodec.decode(merged.runsJson).length, 1);
 });
 
 console.log('EPUB regression: ' + pass + ' checks passed');

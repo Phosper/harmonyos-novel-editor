@@ -20,10 +20,12 @@ import { DeviceSnapshot, deviceProfile } from '../utils/DeviceProfile'
 import { Logger } from '../utils/Logger'
 import { WeaverRadii, tokensFor, WeaverColorSet } from '../constants/DesignTokens'
 import { app } from '../store/AppStores'
+import { EpubImportMode } from '../store/AppStores'
 import { ShellDialog, UiStore } from '../store/UiStore'
 import type { BookModel } from '../model/Book'
 import type { ChapterModel } from '../model/Chapter'
 import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportService'
+import { ImportService, ImportedFile, ImportKind } from '../utils/ImportService'
 import { ProjectSidebar } from './ProjectSidebar'
 import { DocListPane } from './DocListPane'
 import { FocusWorkspace } from './FocusWorkspace'
@@ -839,8 +841,42 @@ export struct AppShell {
   }
 
   private runImport(): void {
-    // 同上：导入会读文件、写库、恢复备份，失败必须收敛到提示而不是未处理拒绝
-    app.importFiles()
+    // 先选文件：只有 EPUB 需要问"拆成多篇还是合并成一篇"，txt/md 直接导入
+    ImportService.pickAndRead().then((files: ImportedFile[]) => {
+      if (files.length === 0) {
+        return
+      }
+      let hasEpub: boolean = false
+      for (const file of files) {
+        if (file.kind === ImportKind.EPUB) {
+          hasEpub = true
+        }
+      }
+      if (!hasEpub) {
+        this.importWithMode(files, EpubImportMode.SPLIT)
+        return
+      }
+      const menuColor: string = this.colors().textPrimary
+      const split: promptAction.Button = { text: '拆成多篇（每章一篇）', color: menuColor }
+      const merged: promptAction.Button = { text: '合并为一篇（文内带目录）', color: menuColor }
+      this.getUIContext().getPromptAction().showActionMenu({
+        title: 'EPUB 导入方式',
+        buttons: [split, merged]
+      }, (err, data) => {
+        if (err) {
+          return
+        }
+        const mode: EpubImportMode = data.index === 1 ? EpubImportMode.SINGLE : EpubImportMode.SPLIT
+        this.importWithMode(files, mode)
+      })
+    }).catch((e: Error) => {
+      Logger.error('AppShell: pick files failed: ' + String(e))
+      this.toast('导入失败：无法读取所选文件')
+    })
+  }
+
+  private importWithMode(files: ImportedFile[], mode: EpubImportMode): void {
+    app.importPickedFiles(files, mode)
       .then((result: string) => {
         if (result !== '') {
           this.toast(result)

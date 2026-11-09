@@ -10,6 +10,8 @@ import { Logger } from '../utils/Logger'
 import { IdGenerator } from '../utils/IdGenerator'
 import { ImportService, ImportedFile, ImportKind } from '../utils/ImportService'
 import { EpubImporter, EpubLoadResult, EpubError } from '../utils/EpubImporter'
+import { mergeEpubChapters } from '../utils/EpubMerger'
+import type { MergedDocument } from '../utils/EpubMerger'
 import type { EpubBook } from '../utils/EpubParser'
 import { MarkdownBlocks } from '../utils/MarkdownBlocks'
 import type { MarkdownParseResult } from '../utils/MarkdownBlocks'
@@ -39,8 +41,13 @@ import { MaterialStore } from './MaterialStore'
 import { RelationStore } from './RelationStore'
 import { CanvasStore } from './CanvasStore'
 
-export class AppStores {
-  readonly ui: UiStore = new UiStore()
+/** EPUB 的两种落法：按章拆成多篇 / 合并为一篇（文内带目录） */
+export enum EpubImportMode {
+  SPLIT = 0,
+  SINGLE = 1
+}
+
+export class AppStores {  readonly ui: UiStore = new UiStore()
   readonly project: ProjectStore = new ProjectStore()
   readonly editor: EditorStore = new EditorStore()
   readonly material: MaterialStore = new MaterialStore()
@@ -441,9 +448,9 @@ export class AppStores {
 
   /**
    * 批量导入：TXT / MD 建文稿，HTML 抽正文建文稿，JSON（Weaver 备份）恢复为新项目。
-   * 返回一句可直接展示的结果摘要。
+   * EPUB 支持两种落法（见 EpubImportMode）。返回一句可直接展示的结果摘要。
    */
-  async importFiles(): Promise<string> {
+  async importFiles(mode: EpubImportMode = EpubImportMode.SPLIT): Promise<string> {
     let files: ImportedFile[] = []
     try {
       files = await ImportService.pickAndRead()
@@ -451,6 +458,15 @@ export class AppStores {
       Logger.error('Pick files failed: ' + String(e))
       return '导入失败：无法读取所选文件'
     }
+    return await this.importPickedFiles(files, mode)
+  }
+
+  /**
+   * 处理已选好的一批文件。
+   * 拆出来是因为"EPUB 用哪种方式导入"要在选完文件之后才问（只有 EPUB 才需要选）。
+   */
+  async importPickedFiles(files: ImportedFile[],
+    mode: EpubImportMode = EpubImportMode.SPLIT): Promise<string> {
     if (files.length === 0) {
       return ''
     }
@@ -460,6 +476,8 @@ export class AppStores {
     let oversized: number = 0
     let epubCount: number = 0
     let epubChapters: number = 0
+    let epubMerged: number = 0
+    let epubMergedChapters: number = 0
     const epubErrors: string[] = []
     for (const file of files) {
       if (file.kind === ImportKind.BACKUP) {
@@ -483,6 +501,22 @@ export class AppStores {
           skipped++
           epubErrors.push(file.fileName + '：' + loaded.detail)
           continue
+        }
+        // 合并模式：一篇文稿 + 文内目录（章节名写成 H1，大纲/导图可直接派生）
+        if (mode === EpubImportMode.SINGLE) {
+          const merged: MergedDocument = mergeEpubChapters(book, true)
+          if (!exceedsContentLimit(merged.content)) {
+            const mergedTitle: string = book.title.trim() === ''
+              ? ImportService.titleOf(file) : book.title.trim()
+            const created: ChapterModel = await chapterRepo.createChapter(
+              this.project.currentBookId, mergedTitle, ChapterFormat.TXT)
+            await chapterRepo.saveDraft(created.id, merged.content, 0, merged.runsJson)
+            epubMerged++
+            epubMergedChapters += merged.chapterCount
+            continue
+          }
+          // 合并后超限：退回拆分，至少内容能进来
+          Logger.warn('EPUB merged content too large, fallback to split: ' + file.fileName)
         }
         let made: number = 0
         for (const chapter of book.chapters) {
@@ -539,9 +573,12 @@ export class AppStores {
     const parts: string[] = []
     if (chapterCount > 0) parts.push('导入 ' + chapterCount + ' 篇文稿')
     if (epubChapters > 0) {
-      parts.push('从 ' + epubCount + ' 本 EPUB 导入 ' + epubChapters + ' 篇')
+      parts.push('EPUB 拆分导入 ' + epubChapters + ' 篇')
       // 明确告知降级：图片/版式/脚注链接都不保留，避免用户以为"导入等于完整还原"
       parts.push('EPUB 仅保留文字，图片与版式未导入')
+    }
+    if (epubMerged > 0) {
+      parts.push(epubMerged.toString() + ' 本合并为单篇（' + epubMergedChapters.toString() + ' 章，文内带目录）')
     }
     if (epubErrors.length > 0) parts.push('EPUB 未导入：' + epubErrors.join('；'))
     if (backupCount > 0) parts.push('恢复 ' + backupCount + ' 个备份项目')
