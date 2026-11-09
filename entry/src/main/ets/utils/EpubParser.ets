@@ -210,6 +210,29 @@ export function epubOpfInfo(opfXml: string, opfPath: string): EpubOpfInfo {
 }
 
 /**
+ * 从 toc.ncx 取"包内路径 → 目录标题"。
+ * Calibre 生成的书正文里往往没有 h1–h3（标题只是一段加粗段落），
+ * 只靠标题标签会得到一堆"第 N 部分"；目录里的名字才是读者看到的章节名。
+ */
+export function epubTocTitles(ncxXml: string, ncxPath: string): Map<string, string> {
+  const baseDir: string = epubBaseDir(ncxPath)
+  const out: Map<string, string> = new Map<string, string>()
+  // 每个 navLabel 紧跟它自己的 content；嵌套 navPoint 也按出现顺序一一配对
+  const pattern: RegExp = /<navLabel>\s*<text>([\s\S]*?)<\/text>\s*<\/navLabel>\s*<content\s+src="([^"]*)"/gi
+  let match: RegExpExecArray | null = pattern.exec(ncxXml)
+  while (match !== null) {
+    const raw: string = epubDecodeEntities(match[1].replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+    const target: string = epubResolvePath(baseDir, match[2])
+    const title: string = raw.length > MAX_TITLE_LEN ? raw.substring(0, MAX_TITLE_LEN) : raw
+    if (title !== '' && target !== '' && !out.has(target)) {
+      out.set(target, title)
+    }
+    match = pattern.exec(ncxXml)
+  }
+  return out
+}
+
+/**
  * 把解压后的文件解析成书：书名/作者 + 按 spine 顺序的章节。
  * 任何一步缺失都退化为"按文件顺序取正文"，避免整本导入失败。
  */
@@ -243,7 +266,10 @@ export function parseEpub(files: EpubFile[]): EpubBook | undefined {
       spinePaths.push(sorted[i].path)
     }
   }
-  // 3) 逐章转文本
+  // 3) 逐章转文本：标题优先取目录名（toc.ncx），其次取章节内 h1–h3，最后兜底
+  const ncx: EpubFile | undefined = files.find((f: EpubFile): boolean => f.path.toLowerCase().endsWith('.ncx'))
+  const tocTitles: Map<string, string> = ncx === undefined
+    ? new Map<string, string>() : epubTocTitles(ncx.text, ncx.path)
   const chapters: EpubChapter[] = []
   for (let i: number = 0; i < spinePaths.length; i++) {
     const file: EpubFile | undefined = epubFind(files, spinePaths[i])
@@ -254,9 +280,12 @@ export function parseEpub(files: EpubFile[]): EpubBook | undefined {
     if (content === '') {
       continue
     }
+    const fromToc: string | undefined = tocTitles.get(file.path)
     const heading: string = epubFirstHeading(file.text)
     const fallback: string = '第 ' + (chapters.length + 1).toString() + ' 部分'
-    chapters.push({ title: heading === '' ? fallback : heading, content: content })
+    const title: string = fromToc !== undefined && fromToc !== ''
+      ? fromToc : (heading === '' ? fallback : heading)
+    chapters.push({ title: title, content: content })
   }
   if (chapters.length === 0) {
     return undefined

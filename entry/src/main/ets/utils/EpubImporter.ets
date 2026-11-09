@@ -107,7 +107,14 @@ export class EpubImporter {
     } else {
       epubLog('step=opf missing')
     }
-    // 3) 读 spine 指向的章节；一个都没有就扫 html
+    // 目录：只用于章节标题（Calibre 的书正文里大多没有 h1–h3）
+    const ncxRel: string = await EpubImporter.locate(outDir, '.ncx', '')
+    if (ncxRel !== '') {
+      files.push({ path: ncxRel, text: await EpubImporter.read(outDir, ncxRel) })
+      epubLog('step=toc ok rel=' + ncxRel)
+    }
+    // 3) 读 spine 指向的章节；一个都没读到就扫 html 兜底
+    let chapterFiles: number = 0
     for (let i: number = 0; i < info.spinePaths.length; i++) {
       const rel: string = info.spinePaths[i]
       if (!(await EpubImporter.exists(outDir, rel))) {
@@ -115,8 +122,9 @@ export class EpubImporter {
         continue
       }
       files.push({ path: rel, text: await EpubImporter.read(outDir, rel) })
+      chapterFiles++
     }
-    if (files.length <= 1) {
+    if (chapterFiles === 0) {
       const htmls: string[] = await EpubImporter.listBySuffix(outDir,
         ['.xhtml', '.html', '.htm'], MAX_FALLBACK_CHAPTERS)
       for (let i: number = 0; i < htmls.length; i++) {

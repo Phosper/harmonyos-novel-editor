@@ -10,7 +10,7 @@ const compiled = stripTypeScriptTypes(source.replace(/^import\s+[\s\S]*?from\s+[
   .replace(/\bexport\s+/g, ''), { mode: 'transform' });
 const context = vm.createContext({ console: { log() {}, warn() {}, error() {} } });
 vm.runInContext(compiled, context);
-const api = vm.runInContext('({ parseEpub, epubHtmlToText, epubDecodeEntities, epubResolvePath })', context);
+const api = vm.runInContext('({ parseEpub, epubHtmlToText, epubDecodeEntities, epubResolvePath, epubTocTitles })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -54,6 +54,17 @@ const ch1 = `<?xml version="1.0" encoding="utf-8"?>
 </body></html>`;
 
 const ch2 = `<html><body><h2>第二章 新现实主义</h2><p>结构压力：&#8220;体系&#8221;决定行为。</p></body></html>`;
+
+// Calibre 常见的书：正文没有 h1，章节名只在 toc.ncx 里
+const ncx = `<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <navMap>
+    <navPoint id="n1" playOrder="1"><navLabel><text>封面</text></navLabel><content src="text/ch1.xhtml"/></navPoint>
+    <navPoint id="n2" playOrder="2"><navLabel><text>第一章 软实力</text></navLabel><content src="text/ch2.xhtml"/>
+      <navPoint id="n3" playOrder="3"><navLabel><text>何谓实力</text></navLabel><content src="text/ch2.xhtml#sec2"/></navPoint>
+    </navPoint>
+  </navMap>
+</ncx>`;
 
 const files = () => [
   { path: 'META-INF/container.xml', text: container },
@@ -101,6 +112,37 @@ check('相对路径与 URL 编码', () => {
 check('空包或没有正文时返回 undefined，不抛错', () => {
   assert.equal(api.parseEpub([]), undefined);
   assert.equal(api.parseEpub([{ path: 'META-INF/container.xml', text: container }]), undefined);
+});
+
+check('toc.ncx 提供章节名：同名文件只取第一条，锚点被忽略', () => {
+  const titles = api.epubTocTitles(ncx, 'toc.ncx');
+  assert.equal(titles.get('text/ch1.xhtml'), '封面');
+  assert.equal(titles.get('text/ch2.xhtml'), '第一章 软实力', 'nested nav point must not override the parent');
+  // 同一文件的不同锚点归一成同一路径，不会产生重复章节
+  assert.equal(titles.get('text/ch2.xhtml#sec2'), undefined);
+  const book = api.parseEpub([
+    { path: 'META-INF/container.xml', text: container },
+    { path: 'OEBPS/content.opf', text: opf },
+    { path: 'toc.ncx', text: ncx },
+    { path: 'OEBPS/text/ch1.xhtml', text: '<html><body><p>封面文字</p></body></html>' },
+    { path: 'OEBPS/text/ch2.xhtml', text: '<html><body><p>正文</p></body></html>' }
+  ]);
+  // NCX 路径（text/...）与包内实际路径（OEBPS/text/...）不一致时退回标题标签/兜底，
+  // 不会把别的章节名硬套上去
+  assert.equal(book.chapters.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(book.chapters.map(c => c.title))), ['第 1 部分', '第 2 部分']);
+});
+
+check('目录名优先生效（路径一致时）', () => {
+  const book = api.parseEpub([
+    { path: 'META-INF/container.xml', text: container },
+    { path: 'OEBPS/content.opf', text: opf },
+    { path: 'OEBPS/toc.ncx', text: ncx },
+    { path: 'OEBPS/text/ch1.xhtml', text: '<html><body><p>封面文字</p></body></html>' },
+    { path: 'OEBPS/text/ch2.xhtml', text: '<html><body><p>正文</p></body></html>' }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(book.chapters.map(c => c.title))),
+    ['封面', '第一章 软实力'], 'toc titles win over "第 N 部分"');
 });
 
 console.log('EPUB regression: ' + pass + ' checks passed');
