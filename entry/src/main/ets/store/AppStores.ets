@@ -9,7 +9,7 @@ import { prefs } from '../utils/PreferenceHelper'
 import { Logger } from '../utils/Logger'
 import { IdGenerator } from '../utils/IdGenerator'
 import { ImportService, ImportedFile, ImportKind } from '../utils/ImportService'
-import { EpubImporter } from '../utils/EpubImporter'
+import { EpubImporter, EpubLoadResult, EpubError } from '../utils/EpubImporter'
 import type { EpubBook } from '../utils/EpubParser'
 import { MarkdownBlocks } from '../utils/MarkdownBlocks'
 import type { MarkdownParseResult } from '../utils/MarkdownBlocks'
@@ -460,6 +460,7 @@ export class AppStores {
     let oversized: number = 0
     let epubCount: number = 0
     let epubChapters: number = 0
+    const epubErrors: string[] = []
     for (const file of files) {
       if (file.kind === ImportKind.BACKUP) {
         const restored: string = await this.importBackupText(file.text)
@@ -472,11 +473,15 @@ export class AppStores {
       }
       if (file.kind === ImportKind.EPUB) {
         const ctx = getAppContext()
-        const book: EpubBook | undefined = ctx === null
-          ? undefined : await EpubImporter.load(file.uri, ctx.cacheDir)
+        const loaded: EpubLoadResult = ctx === null
+          ? new EpubLoadResult(EpubError.COPY_FAILED, '应用上下文不可用')
+          : await EpubImporter.load(file.uri, ctx.cacheDir)
+        const book: EpubBook | undefined = loaded.book
         if (book === undefined) {
-          Logger.warn('EPUB parse failed: ' + file.fileName)
+          // 失败原因要透出：只报"跳过一个"用户没法判断是 DRM、坏包还是结构特殊
+          Logger.warn('EPUB parse failed: ' + file.fileName + ' :: ' + loaded.detail)
           skipped++
+          epubErrors.push(file.fileName + '：' + loaded.detail)
           continue
         }
         let made: number = 0
@@ -537,7 +542,9 @@ export class AppStores {
       parts.push('从 ' + epubCount + ' 本 EPUB 导入 ' + epubChapters + ' 篇')
       // 明确告知降级：图片/版式/脚注链接都不保留，避免用户以为"导入等于完整还原"
       parts.push('EPUB 仅保留文字，图片与版式未导入')
-    }    if (backupCount > 0) parts.push('恢复 ' + backupCount + ' 个备份项目')
+    }
+    if (epubErrors.length > 0) parts.push('EPUB 未导入：' + epubErrors.join('；'))
+    if (backupCount > 0) parts.push('恢复 ' + backupCount + ' 个备份项目')
     if (oversized > 0) parts.push(oversized + ' 个超过单篇上限未导入')
     if (skipped > 0) parts.push('跳过 ' + skipped + ' 个')
     return parts.length > 0 ? parts.join('，') : '没有可导入的内容'
