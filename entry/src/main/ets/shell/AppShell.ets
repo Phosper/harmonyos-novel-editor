@@ -27,6 +27,7 @@ import type { ChapterModel } from '../model/Chapter'
 import { ExportService, ExportFormat, ExportableChapter } from '../utils/ExportService'
 import { ImportService, ImportedFile, ImportKind } from '../utils/ImportService'
 import { ProjectSidebar } from './ProjectSidebar'
+import { dropMapExtras } from '../editor/MapExtras'
 import { DocListPane } from './DocListPane'
 import { FocusWorkspace } from './FocusWorkspace'
 import { GlowPageBackground } from './MaterialSurface'
@@ -246,6 +247,8 @@ export struct AppShell {
   /** 关闭导图：用户在图上点了主题时，回到正文对应位置（偏移由 core_runtime 中转） */
   private closeStructure(): void {
     app.ui.exitStructure()
+    // 附加信息的内存副本只服务于打开期间的导图；写链会自己落库，这里只丢副本
+    dropMapExtras()
     const offset: number = outlineService().takeReveal()
     const controller = app.ui.editorController
     if (offset >= 0 && controller !== null) {

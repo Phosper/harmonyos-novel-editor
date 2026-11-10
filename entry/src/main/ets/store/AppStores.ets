@@ -29,10 +29,11 @@ import type { WorldSettingModel } from '../model/WorldSetting'
 import type { InspirationModel } from '../model/Inspiration'
 import type { RelationshipModel } from '../model/Relationship'
 import { RelationshipType } from '../model/Relationship'
-import { bookRepo, chapterRepo, materialRepo, relationRepo, canvasRepo, runInTransaction } from './Repos'
+import { bookRepo, chapterRepo, materialRepo, relationRepo, canvasRepo, mapExtraRepo, runInTransaction } from './Repos'
 import type { TransactionRepos } from './Repos'
 import { BookBackupSnapshot, BackupPayload, BackupPayloadLoose } from './BackupTypes'
 import { CanvasBackupBundle, CanvasBackupLooseBundle } from '../model/CanvasStoreModels'
+import type { MapExtraBackupBundle, MapExtraBackupLoose } from '../repository/MapExtraRepository'
 import { paragraphMigration } from '../repository/ParagraphMigration'
 import { UiStore } from './UiStore'
 import { ProjectStore } from './ProjectStore'
@@ -703,6 +704,12 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
           canvasLinks: payload.canvasLinks ?? []
         }
         await repos.canvasRepo.restoreBundle(looseCanvas, created.id, chapterIdMap)
+        // 导图附加信息（M5）：概要与关系线的 chapterId 换成新章节 id，自身 id 重新发号
+        const looseMap: MapExtraBackupLoose = {
+          summaries: payload.mapSummaries ?? [],
+          relations: payload.mapRelations ?? []
+        }
+        await repos.mapExtraRepo.restoreRows(looseMap, chapterIdMap)
         return created
       })
 
@@ -765,6 +772,12 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
     const relationships: RelationshipModel[] = await relationRepo.loadRelationships(bookId)
     // 思路板：按 bookId 查库，不用 canvases 缓存（导出时可能正切项目）
     const canvasBundle: CanvasBackupBundle = await canvasRepo.exportBundle(bookId)
+    // 导图附加信息：本章节集合逐篇读（概要与关系线各自按 chapter_id 存）
+    const chapterIds: string[] = []
+    for (let i: number = 0; i < chapters.length; i++) {
+      chapterIds.push(chapters[i].id)
+    }
+    const mapBundle: MapExtraBackupBundle = await mapExtraRepo.exportByChapterIds(chapterIds)
     const payload: BackupPayload = {
       app: 'Weaver',
       version: 2,
@@ -779,7 +792,9 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
       topicEvidence: canvasBundle.topicEvidence,
       canvases: canvasBundle.canvases,
       canvasPlacements: canvasBundle.canvasPlacements,
-      canvasLinks: canvasBundle.canvasLinks
+      canvasLinks: canvasBundle.canvasLinks,
+      mapSummaries: mapBundle.summaries,
+      mapRelations: mapBundle.relations
     }
     return payload
   }

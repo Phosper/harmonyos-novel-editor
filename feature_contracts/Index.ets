@@ -40,3 +40,22 @@ export {
 export type { OutlineHeading, OutlineParagraph } from './src/main/ets/contracts/OutlineLayout'
 // 导图 → 正文的结构命令
 export { OutlineCommand, OutlineCommandKind } from './src/main/ets/contracts/OutlineCommands'
+// 导图的附加信息（M5）：概要 / 关系线（独立侧车，不进正文）
+export {
+  OutlineSummary,
+  OutlineRelation,
+  OutlineExtras,
+  OutlineExtraCommand,
+  OUTLINE_EXTRA_ADD_SUMMARY,
+  OUTLINE_EXTRA_REMOVE_SUMMARY,
+  OUTLINE_EXTRA_ADD_RELATION,
+  OUTLINE_EXTRA_REMOVE_RELATION,
+  OUTLINE_SUMMARY_GAP,
+  OUTLINE_SUMMARY_TEXT_W,
+  OUTLINE_EXTRA_PAD,
+  OutlineSummaryBox,
+  OutlineRelationWire,
+  outlineSummaryBoxes,
+  outlineRelationWires,
+  summaryRangeOf
+} from './src/main/ets/contracts/OutlineExtras'

@@ -7,6 +7,8 @@
 // 可变状态放在 core_runtime（允许），契约包保持无状态。
 import { OutlineSnapshot } from 'feature_contracts'
 import { OutlineCommand } from 'feature_contracts'
+import { OutlineExtras } from 'feature_contracts'
+import { OutlineExtraCommand } from 'feature_contracts'
 
 /**
  * 宿主注册的命令处理者：把命令翻成正文编辑，成功后返回**新的快照**。
@@ -14,11 +16,20 @@ import { OutlineCommand } from 'feature_contracts'
  */
 export type OutlineCommandHandler = (command: OutlineCommand) => OutlineSnapshot | null
 
+/**
+ * 附加信息（概要/关系线）的处理者：改的是侧车，不碰正文。
+ * 与结构命令一样同步返回新副本——落库由宿主异步排队。
+ */
+export type OutlineExtrasHandler = (command: OutlineExtraCommand) => OutlineExtras | null
+
 class OutlineService {
   private snapshot: OutlineSnapshot | null = null
   private pendingReveal: number = -1
   /** 宿主注入；未注入时 dispatch 直接失败（导图只读） */
   private handler: OutlineCommandHandler | null = null
+  /** 当前文稿的附加信息（概要/关系线）：不进正文，也不进快照版本号 */
+  private extras: OutlineExtras = new OutlineExtras()
+  private extrasHandler: OutlineExtrasHandler | null = null
 
   /** 发布当前文稿的大纲（导图页打开前调用） */
   publish(snapshot: OutlineSnapshot): void {
@@ -55,6 +66,32 @@ class OutlineService {
     this.pendingReveal = offset
   }
 
+  /** 宿主在打开导图前发布附加信息（概要/关系线）；没有时发布空对象 */
+  publishExtras(extras: OutlineExtras): void {
+    this.extras = extras
+  }
+
+  /** 导图页读附加信息；宿主没发布过时返回空对象（不崩） */
+  currentExtras(): OutlineExtras {
+    return this.extras
+  }
+
+  setExtrasHandler(handler: OutlineExtrasHandler | null): void {
+    this.extrasHandler = handler
+  }
+
+  /** 导图发起的附加信息编辑：成功返回新副本，失败返回 null */
+  dispatchExtra(command: OutlineExtraCommand): OutlineExtras | null {
+    if (this.extrasHandler === null) {
+      return null
+    }
+    const next: OutlineExtras | null = this.extrasHandler(command)
+    if (next !== null) {
+      this.extras = next
+    }
+    return next
+  }
+
   /** 宿主取走待定位偏移（取完即清，避免下次打开误跳） */
   takeReveal(): number {
     const offset: number = this.pendingReveal
@@ -66,6 +103,8 @@ class OutlineService {
   clear(): void {
     this.snapshot = null
     this.pendingReveal = -1
+    this.extras = new OutlineExtras()
+    this.extrasHandler = null
   }
 }
 

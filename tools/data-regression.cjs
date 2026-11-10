@@ -31,7 +31,7 @@ class StoreDouble {
   constructor() {
     this.tables = new Map(['books', 'chapters', 'characters', 'world_settings', 'inspirations', 'relationships',
       'topics', 'topic_evidence', 'canvases', 'canvas_placements', 'canvas_links',
-      'doc_paragraphs', 'doc_runs', 'schema_meta']
+      'doc_paragraphs', 'doc_runs', 'doc_map_summary', 'doc_map_relation', 'schema_meta']
       .map(name => [name, new Map()]));
     this.routes = []; this.activeTx = null; this.nextRowId = 1;
   }
@@ -150,6 +150,16 @@ function load(file) {
     .replace(/\bexport\s+/g, '').replace(/@ObservedV2\s*/g, '').replace(/@Trace\s*/g, '');
   vm.runInContext(stripTypeScriptTypes(source, {mode: 'transform'}), context, {filename: file});
 }
+// 契约包的数据类型也要能用：导图附加信息的仓储直接用 OutlineExtras/OutlineSummary/OutlineRelation
+const contractRoot = path.resolve(__dirname, '../feature_contracts/src/main/ets/contracts');
+function loadContract(file) {
+  const source = fs.readFileSync(path.join(contractRoot, file), 'utf8')
+    .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
+    .replace(/\bexport\s+/g, '');
+  vm.runInContext(stripTypeScriptTypes(source, {mode: 'transform'}), context, {filename: file});
+}
+loadContract('OutlineLayout.ets');
+loadContract('OutlineExtras.ets');
 for (const file of [
   'model/Book', 'model/Chapter', 'model/Character', 'model/WorldSetting', 'model/Inspiration', 'model/Relationship',
   'model/CanvasTypes', 'model/CanvasStoreModels',
@@ -159,14 +169,16 @@ for (const file of [
   'database/WorldSettingDao', 'database/InspirationDao', 'database/RelationshipDao',
   'database/CanvasBoardDao', 'database/CanvasCardDao', 'database/CanvasEvidenceDao',
   'database/CanvasPlacementDao', 'database/CanvasLinkDao', 'database/ParagraphDao', 'database/MetaDao',
+  'database/MapExtraDao',
   'repository/ParagraphRepository', 'repository/DocumentSession',
   'repository/BookRepository', 'repository/ChapterRepository', 'repository/MaterialRepository', 'repository/RelationshipRepository',
-  'repository/CanvasRepository',
+  'repository/CanvasRepository', 'repository/MapExtraRepository',
   'store/Repos', 'store/StoreModels', 'store/EditorStore', 'store/ProjectStore', 'store/MaterialStore', 'store/RelationStore',
   'store/CanvasStore', 'store/AppStores'
 ]) load(file + '.ets');
 const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES,' +
-  ' runInTransaction, chapterRepo, canvasRepo, CanvasCardKind, CanvasBoardScope, CanvasEvidenceKind, CanvasLinkKind,' +
+  ' runInTransaction, chapterRepo, canvasRepo, mapExtraRepo, OutlineExtras, OutlineSummary, OutlineRelation,' +
+  ' CanvasCardKind, CanvasBoardScope, CanvasEvidenceKind, CanvasLinkKind,' +
   ' canvasFindPlacement, documentSession})', context);
 function chapter(id = 'a', bookId = 'book-a', content = 'previous saved text') {
   return {id, book_id: bookId, title: 'Chapter ' + id, content, format: 'txt', format_runs: '', sort_order: 0,
@@ -879,6 +891,74 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.equal(links[0].to_topic_id, child.id);
     assert.equal(links[0].canvas_id, boards[0].id);
     assert.equal(links[0].kind, 'cause');
+  });
+
+  await check('map extra: 概要与关系线整篇覆盖写、按章节读回', async () => {
+    fixture();
+    const extras = new api.OutlineExtras();
+    extras.docId = 'a';
+    extras.summaries.push(new api.OutlineSummary('s1', 'p2', 'p4', '这三节是一组'));
+    extras.relations.push(new api.OutlineRelation('r1', 'p2', 'p5', 'A 论证 B'));
+    await api.mapExtraRepo.replace('a', extras);
+    const loaded = await api.mapExtraRepo.load('a');
+    assert.equal(loaded.summaries.length, 1);
+    assert.equal(loaded.summaries[0].text, '这三节是一组');
+    assert.equal(loaded.summaries[0].startParaId, 'p2');
+    assert.equal(loaded.relations.length, 1);
+    assert.equal(loaded.relations[0].label, 'A 论证 B');
+    assert.equal(loaded.docId, 'a');
+
+    // 再写一次（删掉概要、只留关系线）：整篇覆盖，不留旧行
+    const next = new api.OutlineExtras();
+    next.docId = 'a';
+    next.relations.push(new api.OutlineRelation('r2', 'p1', 'p2', '相关'));
+    await api.mapExtraRepo.replace('a', next);
+    const after = await api.mapExtraRepo.load('a');
+    assert.equal(after.summaries.length, 0, '旧的概要必须被覆盖掉');
+    assert.equal(after.relations.length, 1);
+    assert.equal(after.relations[0].id, 'r2');
+  });
+
+  await check('map extra: 备份带 chapterId，恢复按新章节重映射并且重新发号', async () => {
+    fixture();
+    const extras = new api.OutlineExtras();
+    extras.docId = 'a';
+    extras.summaries.push(new api.OutlineSummary('s1', 'p2', 'p4', '一组'));
+    extras.relations.push(new api.OutlineRelation('r1', 'p2', 'p5', '论证'));
+    await api.mapExtraRepo.replace('a', extras);
+
+    const bundle = await api.mapExtraRepo.exportByChapterIds(['a', 'missing']);
+    assert.equal(bundle.summaries.length, 1);
+    assert.equal(bundle.summaries[0].chapterId, 'a', '导出必须带章节归属');
+    assert.equal(bundle.relations.length, 1);
+    assert.equal(bundle.relations[0].chapterId, 'a');
+
+    const chapterIdMap = new Map([['a', 'new-a']]);
+    await api.mapExtraRepo.restoreRows({summaries: bundle.summaries, relations: bundle.relations}, chapterIdMap);
+    const rows = [...store.tables.get('doc_map_summary').values()];
+    assert.equal(rows.length, 2, '原稿的行 + 恢复出来的行');
+    const restored = rows.find(row => row.chapter_id === 'new-a');
+    assert.ok(restored !== undefined, '恢复出来的行必须挂到新章节 id');
+    assert.notEqual(restored.summary_id, 's1', '附加信息自身 id 要重新发号');
+    assert.equal(restored.text, '一组');
+    // 找不到章节的行直接丢
+    await api.mapExtraRepo.restoreRows({summaries: [{chapterId: 'gone', id: 's9', startParaId: 'p1',
+      endParaId: 'p2', text: 'x'}], relations: []}, chapterIdMap);
+    assert.equal([...store.tables.get('doc_map_summary').values()].length, 2, '悬空章节的行不入库');
+  });
+
+  await check('map extra: 整本导出里带上概要与关系线', async () => {
+    const {app} = fixture();
+    const extras = new api.OutlineExtras();
+    extras.docId = 'a';
+    extras.summaries.push(new api.OutlineSummary('s1', 'p2', 'p4', '一组'));
+    extras.relations.push(new api.OutlineRelation('r1', 'p2', 'p5', '论证'));
+    await api.mapExtraRepo.replace('a', extras);
+    const payload = await app.exportBackupData();
+    assert.equal(payload.mapSummaries.length, 1);
+    assert.equal(payload.mapSummaries[0].chapterId, 'a');
+    assert.equal(payload.mapRelations.length, 1);
+    assert.equal(payload.mapRelations[0].label, '论证');
   });
 
   console.log('Data regression: ' + checks + ' checks passed');

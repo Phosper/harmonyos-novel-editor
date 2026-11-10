@@ -34,7 +34,9 @@ const T4 = ['model/CanvasTypes.ets', 'model/CanvasStoreModels.ets', 'constants/C
 // P5 正文底座：段落语义、侧车 DAO、迁移与仓储。新增文件一律先登记再跑守卫。
 const P5 = ['editor/model/DocumentModel.ets', 'database/MetaDao.ets', 'database/ParagraphDao.ets',
   'repository/ParagraphRepository.ets', 'repository/ParagraphMigration.ets', 'repository/DocumentSession.ets'];
-const FILES = T1.concat(T2, T3, T4, P5);
+// M5 导图附加信息（概要与关系线）：侧车表 + 仓储 + 宿主命令
+const M5 = ['database/MapExtraDao.ets', 'repository/MapExtraRepository.ets', 'editor/MapExtras.ets'];
+const FILES = T1.concat(T2, T3, T4, P5, M5);
 
 const violations = [];
 const warnings = [];
@@ -355,7 +357,8 @@ function resolveImport(fromFile, specifier) {
   return candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
 }
 function exportsSymbol(source, symbol) {
-  if (new RegExp('\\bexport\\s+(?:default\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(?:class|struct|function|const|let|var|enum|interface|type)\\s+' +
+  if (new RegExp('\\bexport\\s+(?:default\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(?:async\\s+)?' +
+    '(?:class|struct|function|const|let|var|enum|interface|type)\\s+' +
     symbol.replace(/\$/g, '\\$') + '\\b').test(source)) return true;
   if (new RegExp('\\bexport\\s*\\{[^}]*\\b' + symbol.replace(/\$/g, '\\$') + '\\b').test(source)) return true;
   if (/\bexport\s+default\b/.test(source)) return true;

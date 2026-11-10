@@ -20,9 +20,11 @@ import { buildOutlineSnapshotFromModel } from '../editor/OutlineExtract'
 import { reconcileDocument } from '../editor/model/DocumentModel'
 import type { DocModel } from '../editor/model/DocumentModel'
 import { documentSession } from '../repository/DocumentSession'
-import type { OutlineSnapshot } from 'feature_contracts'
+import type { OutlineSnapshot, OutlineExtras } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 import { applyOutlineCommand } from '../editor/OutlineCommands'
+import { loadMapExtras, applyMapExtraCommand } from '../editor/MapExtras'
+import { Logger } from '../utils/Logger'
 import { EditorTools } from './EditorTools'
 import { OutlinePanel } from './OutlinePanel'
 import { CardPicker } from './CardPicker'
@@ -501,8 +503,13 @@ export struct EditorPane {
             .borderRadius(WeaverRadii.XS)
             .backgroundColor(this.colors().bgSurface)
             .hoverEffect(HoverEffect.Highlight)
-            .accessibilityText('打开只读导图')
-            .onClick(() => this.openStructure())
+            .accessibilityText('打开导图')
+            .onClick(() => {
+              // 读侧车是异步的：吞掉拒绝，否则会作为未处理异常杀进程
+              this.openStructure().catch((e: Error) => {
+                Logger.warn('openStructure failed: ' + String(e))
+              })
+            })
         }
         .width('100%')
         .height(28)
@@ -615,10 +622,10 @@ export struct EditorPane {
   }
 
   /**
-   * 打开只读导图（结构包）。宿主在这里生成快照并发布，导图页只读；
+   * 打开导图（结构包）。宿主在这里生成快照并发布，导图页只读；
    * 用户在图上点主题时，偏移写回 core_runtime，关闭后由 AppShell 定位。
    */
-  private openStructure(): void {
+  private async openStructure(): Promise<void> {
     const stores: AppStores | null = this.app
     if (stores === null || !stores.editor.hasDoc) {
       this.toast('先打开一篇文稿')
@@ -633,6 +640,10 @@ export struct EditorPane {
     outlineService().publish(snapshot)
     // 导图的编辑命令交给宿主执行（结构包只发命令，不认识正文）
     outlineService().setCommandHandler(applyOutlineCommand)
+    // 附加信息（概要/关系线）在侧车表里：打开前读一次，供导图页渲染
+    const extras: OutlineExtras = await loadMapExtras(stores.editor.activeId)
+    outlineService().publishExtras(extras)
+    outlineService().setExtrasHandler(applyMapExtraCommand)
     stores.ui.enterStructure()
   }
 

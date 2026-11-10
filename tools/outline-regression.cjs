@@ -24,6 +24,7 @@ for (const source of [
   read('editor/flowtext/model/EditorTypes.ets'),
   read('editor/flowtext/model/FormatCodec.ets'),
   readContract('OutlineLayout.ets'),
+  readContract('OutlineExtras.ets'),
   read('editor/OutlineExtract.ets')
 ]) {
   vm.runInContext(strip(source), context);
@@ -32,6 +33,8 @@ const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutli
   ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot,'+
   ' outlineConnectors, outlineWires, OUTLINE_WIRE_PAD, OUTLINE_WIRE_STEPS,'+
   ' OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,'+
+  ' OutlineSummary, OutlineRelation, outlineSummaryBoxes, outlineRelationWires, summaryRangeOf,'+
+  ' OUTLINE_SUMMARY_GAP,'+
   ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED })', context);
 
 let pass = 0;
@@ -338,6 +341,115 @@ check('折线画法：四点折线，首尾贴合端点，全部落在包围盒�
   // 切回曲线：点数回到采样数 + 1
   assert.equal(api.outlineWires(links, api.OUTLINE_WIRE_STEPS, api.OUTLINE_WIRE_CURVE)[0].points.length,
     api.OUTLINE_WIRE_STEPS + 1);
+});
+
+check('概要：括号落在成员外侧、覆盖首末成员、端点缺失就整条不画', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 2, title: '一三', startOffset: 6, endOffset: 7 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const at = id => layout.nodes.find(n => n.id === id);
+  const box = api.outlineSummaryBoxes(layout.nodes,
+    [new api.OutlineSummary('s1', 'p2', 'p3', '这两节在讲同一件事')]);
+  assert.equal(box.length, 1, '端点都能找到就画一条');
+  const b = box[0];
+  const first = at('p2');
+  const last = at('p3');
+  // 括号要盖住两个成员，且比节点更靠外
+  assert.ok(b.originY <= first.y + 0.001, '上端不低于第一节的顶');
+  assert.ok(b.originY + b.height >= last.y + api.OUTLINE_NODE_H - 0.001, '下端不低于最后一节的底');
+  const bracketLeft = b.originX + b.points[1][0];
+  assert.ok(bracketLeft > at('p4').x - api.OUTLINE_SUMMARY_GAP, '括号在成员外侧（朝右时在右边）');
+  for (const p of b.points) {
+    assert.ok(p[0] >= 0 && p[0] <= b.width, 'x 落在包围盒内');
+    assert.ok(p[1] >= 0 && p[1] <= b.height, 'y 落在包围盒内');
+  }
+  assert.ok(b.textX > bracketLeft, '文字在括号更外侧');
+  assert.equal(b.alignEnd, false, '朝右的分支文字靠左排');
+
+  // 端点被折叠/删除 → 不画（绝不能画到别的分支上）
+  assert.equal(api.outlineSummaryBoxes(layout.nodes,
+    [new api.OutlineSummary('s2', 'p2', 'gone', '')]).length, 0);
+  // 跨分支（父不同）→ 不画
+  assert.equal(api.outlineSummaryBoxes(layout.nodes,
+    [new api.OutlineSummary('s3', 'p1', 'p2', '')]).length, 0);
+});
+
+check('概要：左侧分支的括号镜像，文字靠右对齐', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 1, title: '二', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '二一', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 2, title: '二二', startOffset: 6, endOffset: 7 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_BALANCED);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  assert.equal(byId('p1').side, 1, '第一节在右');
+  assert.equal(byId('p2').side, -1, '第二节在左');
+  const box = api.outlineSummaryBoxes(layout.nodes, [new api.OutlineSummary('s1', 'p3', 'p4', '左组')]);
+  assert.equal(box.length, 1);
+  assert.equal(box[0].alignEnd, true, '左侧括号的文字靠右对齐');
+  const bracketX = box[0].originX + box[0].points[1][0];
+  assert.ok(bracketX < byId('p3').x, '括号在左侧成员的外面（更靠左）');
+  assert.ok(box[0].textX + api.OUTLINE_NODE_W > bracketX, '文字在括号外侧');
+});
+
+check('关系线：两端落在朝向对方的那条边上，标签在中点附近', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 1, title: '二', startOffset: 4, endOffset: 5 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  const wires = api.outlineRelationWires(layout.nodes, [new api.OutlineRelation('r1', 'p1', 'p2', 'A 论证 B')]);
+  assert.equal(wires.length, 1);
+  const w = wires[0];
+  const a = byId('p1');
+  const b = byId('p2');
+  const first = w.points[0];
+  const last = w.points[w.points.length - 1];
+  assert.ok(Math.abs((first[0] + w.originX) - (a.x + api.OUTLINE_NODE_W)) < 0.001, '起点在 a 的右缘');
+  assert.ok(Math.abs((first[1] + w.originY) - (a.y + api.OUTLINE_NODE_H / 2)) < 0.001, '起点在 a 的垂直中点');
+  assert.ok(Math.abs((last[0] + w.originX) - b.x) < 0.001, '终点在 b 的左缘');
+  assert.equal(w.arrow.length, 3, '箭头三点');
+  for (const p of w.points) {
+    assert.ok(p[0] >= 0 && p[0] <= w.width, 'x 落在包围盒内');
+    assert.ok(p[1] >= 0 && p[1] <= w.height, 'y 落在包围盒内');
+  }
+  assert.ok(w.labelX > first[0] + w.originX - 1 && w.labelX < last[0] + w.originX + 1, '标签在中段');
+  // 同一列的两个人：走上下边，不能出现 0 长的水平线
+  const vertical = api.outlineRelationWires(layout.nodes, [new api.OutlineRelation('r4', 'p1', 'p3', '')]);
+  assert.equal(vertical.length, 1);
+  const v = vertical[0];
+  const va = byId('p1');
+  const vy = v.points[0][1] + v.originY;
+  assert.ok(Math.abs(vy - (va.y + api.OUTLINE_NODE_H)) < 0.001 || Math.abs(vy - va.y) < 0.001,
+    '同一列时从 a 的上/下边出发');
+  // 端点缺失或两端相同 → 不画
+  assert.equal(api.outlineRelationWires(layout.nodes, [new api.OutlineRelation('r2', 'p1', 'gone', '')]).length, 0);
+  assert.equal(api.outlineRelationWires(layout.nodes, [new api.OutlineRelation('r3', 'p1', 'p1', '')]).length, 0);
+});
+
+check('多选 → 概要端点：同父才算数，顺序取文档先后', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 1, title: '二', startOffset: 6, endOffset: 7 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  // 顺序反着选也要按文档顺序给端点
+  assert.deepEqual(JSON.parse(JSON.stringify(api.summaryRangeOf(layout.nodes, ['p3', 'p2']))), ['p2', 'p3']);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.summaryRangeOf(layout.nodes, ['p1', 'p2']))), [],
+    '不同父不能做概要');
+  assert.deepEqual(JSON.parse(JSON.stringify(api.summaryRangeOf(layout.nodes, ['p2']))), [],
+    '只选一个不够');
+  assert.deepEqual(JSON.parse(JSON.stringify(api.summaryRangeOf(layout.nodes, ['p2', 'gone']))), [],
+    '未知端点不算');
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

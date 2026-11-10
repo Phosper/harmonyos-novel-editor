@@ -122,11 +122,40 @@ ADR-003 期望"整页功能走系统路由"。本轮改为**宿主直接 import 
 | 主题模板、画布、演说 | M6 |
 | 样式持久化 | 需要宿主注入 prefs 读写（结构包不能直接读 entry），一次小改 |
 
+## 5.4 M5：附加信息（概要 / 关系线）（2026-11）
+
+方案稿 D5 的落地：**图上能写"这几章是一组""A 论证 B"，但不假装它是文章结构**。
+
+| 层 | 位置 | 说明 |
+| --- | --- | --- |
+| 表 | `doc_map_summary` / `doc_map_relation` | 主键 `(chapter_id, id)`，`FOREIGN KEY chapter_id → chapters ON DELETE CASCADE`；两表都不参与正文版本号 |
+| DAO | [MapExtraDao.ets](entry/src/main/ets/database/MapExtraDao.ets) | 两张表各一个 DAO，按 `chapter_id` 读写 |
+| 仓储 | [MapExtraRepository.ets](entry/src/main/ets/repository/MapExtraRepository.ets) | 整篇覆盖写（先删后插，一个事务）；备份导出/恢复（恢复时章节 id 重映射、附加信息自身 id 重新发号） |
+| 契约 | [OutlineExtras.ets](feature_contracts/src/main/ets/contracts/OutlineExtras.ets) | 数据类 + 纯几何：概要以"同父 + 两端点之间"判定成员，括号贴在成员外侧；关系线取朝向对方的边，贝塞尔 + 箭头 |
+| 通道 | `OutlineService.publishExtras / currentExtras / setExtrasHandler / dispatchExtra` | 与结构命令分开：**附加信息命令永远不触发正文写入** |
+| 宿主 | [MapExtras.ets](entry/src/main/ets/editor/MapExtras.ets) | 内存副本先改、UI 立刻可见，落库串行排队（整篇覆盖） |
+| UI | [StructurePage.ets](structure_feature/src/main/ets/pages/StructurePage.ets) | 「多选」开关 + Ctrl+单击加选；「概要」「关系」按钮 → 就地文字浮层；括号/虚线箭头 + 标签 + 每条的「×」删除 |
+
+判定规则（三条，都有回归）：
+
+1. 概要只认**同一个父节点**、落在两个端点之间的连续主题；端点被折叠或删掉就整条不画（不会画到别的分支上）。
+2. 编号与概览都不因折叠而变——它们按真实文档顺序算。
+3. 关系线两端取"朝向对方"的那条边，同一列的两个节点走上下边，不会退化成 0 长直线。
+
+备份：`BackupPayload` 增加 `mapSummaries / mapRelations`（可选，旧备份按空数组处理），整本导出带上、导入按 `chapterIdMap` 重建。
+
+**本轮没做**（明确留给后面）：
+
+- **拖边改范围**（XMind 的概要可以拖端点改覆盖范围）：需要命中判定与拖拽手势，和 M3 的拖拽重排一起做。
+- **段落删掉后的侧车清理**：现在靠"端点找不到就不画"兜底，行还留在表里；等 M6 的"清理未引用数据"一起做。
+- **概要文字与下一列的视觉冲突**：成员下面还有子节点时，概要文字会压到下一列上（已给文字加底色保证可读）。彻底解决要把概要宽度算进布局，属于 M4 的排版预算。
+
 ## 6. 下一步
 
-1. 设备可用后先跑一遍上面的 4 条未测项；
-2. 补 `router_map` 第二入口（A-802），确认"按名跳转"与"未安装降级"；
-3. 进 P5：段落稳定身份 → 导图才能从"只读"升级为"可编辑"（拖动节点带走整节正文）。
+1. 设备侧验收：折叠徽标、左右均衡、样式面板、概要/关系线、备份导入导出一整套；
+2. M4 剩下的：组织架构/时间轴布局、字号档、视口裁剪与连线增量重绘；
+3. M3 剩下的：拖拽重排（含概要拖边改范围）；
+4. M6：演示、md/opml/xmind 导入导出。
 
 ## 7. 已列入计划但未开工
 

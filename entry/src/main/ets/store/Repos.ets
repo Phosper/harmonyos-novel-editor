@@ -5,6 +5,7 @@ import { ChapterRepository } from '../repository/ChapterRepository'
 import { MaterialRepository } from '../repository/MaterialRepository'
 import { RelationshipRepository } from '../repository/RelationshipRepository'
 import { CanvasRepository } from '../repository/CanvasRepository'
+import { MapExtraRepository } from '../repository/MapExtraRepository'
 import { dbHelper } from '../database/DatabaseHelper'
 import { Logger } from '../utils/Logger'
 
@@ -13,6 +14,7 @@ export const chapterRepo: ChapterRepository = new ChapterRepository()
 export const materialRepo: MaterialRepository = new MaterialRepository()
 export const relationRepo: RelationshipRepository = new RelationshipRepository()
 export const canvasRepo: CanvasRepository = new CanvasRepository()
+export const mapExtraRepo: MapExtraRepository = new MapExtraRepository()
 
 /** 只在一次恢复回调内使用。读仍走 store，不能读取本事务未提交的数据。 */
 export class TransactionRepos {
@@ -21,6 +23,7 @@ export class TransactionRepos {
   readonly materialRepo: MaterialRepository
   readonly relationRepo: RelationshipRepository
   readonly canvasRepo: CanvasRepository
+  readonly mapExtraRepo: MapExtraRepository
 
   constructor(tx: relationalStore.Transaction) {
     this.bookRepo = new BookRepository(tx)
@@ -28,6 +31,7 @@ export class TransactionRepos {
     this.materialRepo = new MaterialRepository(tx)
     this.relationRepo = new RelationshipRepository(tx)
     this.canvasRepo = new CanvasRepository(tx)
+    this.mapExtraRepo = new MapExtraRepository(tx)
   }
 }
 

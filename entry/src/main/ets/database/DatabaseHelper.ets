@@ -246,6 +246,29 @@ export class DatabaseHelper {
         "meta_value TEXT NOT NULL DEFAULT ''," +
         'updated_at INTEGER NOT NULL' +
         ')',
+      // M5：导图的附加信息。概要与关系线不属于文章结构（不写正文、不进版本号），
+      // 所以单独成表，随 chapters 级联删除。
+      'CREATE TABLE IF NOT EXISTS doc_map_summary (' +
+        'chapter_id TEXT NOT NULL,' +
+        'summary_id TEXT NOT NULL,' +
+        'start_para_id TEXT NOT NULL,' +
+        'end_para_id TEXT NOT NULL,' +
+        "text TEXT NOT NULL DEFAULT ''," +
+        'created_at INTEGER NOT NULL,' +
+        'PRIMARY KEY (chapter_id, summary_id),' +
+        'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS doc_map_relation (' +
+        'chapter_id TEXT NOT NULL,' +
+        'relation_id TEXT NOT NULL,' +
+        'from_para_id TEXT NOT NULL,' +
+        'to_para_id TEXT NOT NULL,' +
+        "label TEXT NOT NULL DEFAULT ''," +
+        "kind TEXT NOT NULL DEFAULT 'relate'," +
+        'created_at INTEGER NOT NULL,' +
+        'PRIMARY KEY (chapter_id, relation_id),' +
+        'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +
+        ')',
       'CREATE INDEX IF NOT EXISTS idx_canvas_book ON canvases(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_topics_book ON topics(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_evidence_topic ON topic_evidence(topic_id)',
@@ -253,7 +276,9 @@ export class DatabaseHelper {
       'CREATE INDEX IF NOT EXISTS idx_placement_parent ON canvas_placements(parent_id)',
       'CREATE INDEX IF NOT EXISTS idx_link_canvas ON canvas_links(canvas_id)',
       'CREATE INDEX IF NOT EXISTS idx_doc_paragraphs_order ON doc_paragraphs(doc_id, ordinal)',
-      'CREATE INDEX IF NOT EXISTS idx_doc_runs_para ON doc_runs(doc_id, para_id)'
+      'CREATE INDEX IF NOT EXISTS idx_doc_runs_para ON doc_runs(doc_id, para_id)',
+      'CREATE INDEX IF NOT EXISTS idx_map_summary_doc ON doc_map_summary(chapter_id)',
+      'CREATE INDEX IF NOT EXISTS idx_map_relation_doc ON doc_map_relation(chapter_id)'
     ]
     for (const sql of sqls) {
       try {

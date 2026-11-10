@@ -7,7 +7,12 @@ import {
   MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind, OutlineWire,
   OUTLINE_NODE_H, OUTLINE_NODE_W, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_RIGHT,
   OUTLINE_WIRE_STEPS, OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,
-  layoutOutline, outlineConnectors, outlineWires
+  layoutOutline, outlineConnectors, outlineWires,
+  OutlineExtras, OutlineExtraCommand, OutlineSummaryBox, OutlineRelationWire,
+  OUTLINE_EXTRA_ADD_SUMMARY, OUTLINE_EXTRA_REMOVE_SUMMARY,
+  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION,
+  OUTLINE_SUMMARY_TEXT_W,
+  outlineSummaryBoxes, outlineRelationWires, summaryRangeOf
 } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 
@@ -37,6 +42,7 @@ const KEY_DPAD_UP: number = 2012
 const KEY_DPAD_DOWN: number = 2013
 const KEY_F2: number = 2092
 const RENAME_INPUT_ID: string = 'structure-rename-input'
+const EXTRA_INPUT_ID: string = 'structure-extra-input'
 
 @ComponentV2
 export struct StructurePage {
@@ -76,6 +82,27 @@ export struct StructurePage {
   @Local styleOpen: boolean = true
 
   /**
+   * 附加信息（M5）：概要的括号图元与关系线的曲线图元。
+   * 它们是**视图数据**，来自侧车（core_runtime 中转），渲染完就丢，不做持久化。
+   */
+  @Local summaryBoxes: OutlineSummaryBox[] = []
+  @Local relationWires: OutlineRelationWire[] = []
+  /** 多选：概要需要"一组兄弟主题"，所以选中不再是单值 */
+  @Local selectedIds: string[] = []
+  /**
+   * 多选模式：Ctrl+单击是快路，但触屏/部分设备拿不到修饰键状态，
+   * 这一个开关保证「概要」在任何输入方式下都用得了。
+   */
+  @Local multiSelect: boolean = false
+  /** 概要/关系线的文字输入浮层：'' = 关，'summary' / 'relation' = 开 */
+  @Local extraMode: string = ''
+  @Local extraText: string = ''
+  @Local extraX: number = 0
+  @Local extraY: number = 0
+  /** 浮层提交时用的两个端点（概要是首末成员，关系线是起止节点） */
+  private extraPending: string[] = []
+
+  /**
    * 连线图元（包围盒 + 采样点）：渲染层只摆一个 Polyline，不自己算坐标。
    *
    * 用 Polyline 而不是 Canvas / Path 的原因（两次真机偏移的教训）：
@@ -112,6 +139,9 @@ export struct StructurePage {
       this.topicCount = 0
       this.placed = []
       this.wires = []
+      this.summaryBoxes = []
+      this.relationWires = []
+      this.selectedIds = []
       this.mapW = 0
       this.mapH = 0
       this.selectedIndex = -1
@@ -132,6 +162,7 @@ export struct StructurePage {
     this.wires = outlineWires(outlineConnectors(this.placed), OUTLINE_WIRE_STEPS, this.wireStyle)
     this.layoutRev = this.layoutRev + 1
     this.empty = false
+    this.refreshExtras()
     // 命令后重建时尽量把选中保持在同一个节点上（段落身份不变，索引会变）
     if (selectedParaId !== '') {
       let kept: number = -1
@@ -146,6 +177,147 @@ export struct StructurePage {
     if (this.selectedIndex >= this.placed.length) {
       this.selectedIndex = -1
     }
+  }
+
+  // ===== 附加信息（概要 / 关系线）：只读侧车，改之前先确认端点还在 ——
+
+  /** 用当前布局重新算一遍概要括号与关系线（宿主每次回传新副本后都要走） */
+  private refreshExtras(): void {
+    const extras: OutlineExtras = outlineService().currentExtras()
+    this.summaryBoxes = outlineSummaryBoxes(this.placed, extras.summaries)
+    this.relationWires = outlineRelationWires(this.placed, extras.relations)
+  }
+
+  private isSelected(node: PlacedNode, index: number): boolean {
+    if (this.selectedIndex === index) {
+      return true
+    }
+    return node.paraId !== '' && this.selectedIds.indexOf(node.paraId) >= 0
+  }
+
+  /** Ctrl+单击：加选/减选（多选只服务概要，不改任何正文） */
+  private toggleSelect(index: number): void {
+    if (index < 0 || index >= this.placed.length) {
+      return
+    }
+    const paraId: string = this.placed[index].paraId
+    if (paraId === '') {
+      return
+    }
+    this.selectedIndex = index
+    const next: string[] = []
+    let found: boolean = false
+    for (let i: number = 0; i < this.selectedIds.length; i++) {
+      if (this.selectedIds[i] === paraId) {
+        found = true
+      } else {
+        next.push(this.selectedIds[i])
+      }
+    }
+    if (!found) {
+      next.push(paraId)
+    }
+    this.selectedIds = next
+    this.renaming = false
+  }
+
+  /** 多选开关（关掉时把选中收回到当前节点） */
+  private toggleMultiSelect(): void {
+    this.multiSelect = !this.multiSelect
+    if (!this.multiSelect) {
+      const paraId: string = this.selectedParaId()
+      this.selectedIds = paraId === '' ? [] : [paraId]
+    }
+  }
+
+  /** 概要多选是否已经够用（同父、至少两个、中间没有别的分支） */
+  private summaryReady(): boolean {
+    return summaryRangeOf(this.placed, this.selectedIds).length === 2
+  }
+
+  private relationReady(): boolean {
+    return this.selectedIds.length === 2 && this.selectedIds[0] !== this.selectedIds[1]
+  }
+
+  /** 打开"新建概要"浮层：文字在浮层里填，端点此时就定下来（首末成员） */
+  private openSummaryEditor(): void {
+    const range: string[] = summaryRangeOf(this.placed, this.selectedIds)
+    if (range.length !== 2) {
+      this.toast('概要要选同一层里的两节以上')
+      return
+    }
+    this.extraPending = range
+    this.extraMode = 'summary'
+    this.extraText = ''
+    const anchor: PlacedNode | undefined = this.selectedNode()
+    this.extraX = anchor === undefined ? 24 : anchor.x
+    this.extraY = anchor === undefined ? 24 : anchor.y + OUTLINE_NODE_H * this.zoom + 8
+    this.focusExtraInput()
+  }
+
+  private openRelationEditor(): void {
+    if (!this.relationReady()) {
+      this.toast('关系线要正好选两节')
+      return
+    }
+    this.extraPending = [this.selectedIds[0], this.selectedIds[1]]
+    this.extraMode = 'relation'
+    this.extraText = ''
+    const node: PlacedNode | undefined = this.selectedNode()
+    this.extraX = node === undefined ? 24 : node.x
+    this.extraY = node === undefined ? 24 : node.y + OUTLINE_NODE_H * this.zoom + 8
+    this.focusExtraInput()
+  }
+
+  /** 浮层刚挂载时拿不到焦点，稍后再请求一次；requestFocus 必须包 try/catch（150002 前科） */
+  private focusExtraInput(): void {
+    setTimeout(() => {
+      try {
+        this.getUIContext().getFocusController().requestFocus(EXTRA_INPUT_ID)
+      } catch (e) {
+        // 拿不到焦点不影响提交（回车仍可从输入框冒泡）
+      }
+    }, 40)
+  }
+
+  private cancelExtra(): void {
+    this.extraMode = ''
+    this.extraText = ''
+    this.extraPending = []
+  }
+
+  /** 提交浮层：发一条附加信息命令（不走正文写入，也不进撤销栈） */
+  private commitExtra(): void {
+    if (this.extraMode === '') {
+      return
+    }
+    const mode: string = this.extraMode
+    const text: string = this.extraText
+    const pending: string[] = this.extraPending
+    this.cancelExtra()
+    if (pending.length < 2) {
+      return
+    }
+    const kind: string = mode === 'summary' ? OUTLINE_EXTRA_ADD_SUMMARY : OUTLINE_EXTRA_ADD_RELATION
+    const command: OutlineExtraCommand = new OutlineExtraCommand(kind, '', pending[0], pending[1], text)
+    const next: OutlineExtras | null = outlineService().dispatchExtra(command)
+    if (next === null) {
+      this.toast('这次没建成（先在正文里保存一下再试）')
+      return
+    }
+    this.selectedIds = []
+    this.layoutRev = this.layoutRev + 1
+    this.refreshExtras()
+  }
+
+  private removeExtra(kind: string, id: string): void {
+    const command: OutlineExtraCommand = new OutlineExtraCommand(kind, id, '', '', '')
+    const next: OutlineExtras | null = outlineService().dispatchExtra(command)
+    if (next === null) {
+      return
+    }
+    this.layoutRev = this.layoutRev + 1
+    this.refreshExtras()
   }
 
   /** 改缩放：按档位重排一次（不缩放容器，避免文字发糊） */
@@ -247,7 +419,7 @@ export struct StructurePage {
   }
 
   private chipBorderWidth(n: PlacedNode, index: number): number {
-    if (this.selectedIndex === index) {
+    if (this.isSelected(n, index)) {
       return 2
     }
     if (n.depth === 0 || this.nodeStyle === 'plain') {
@@ -259,6 +431,10 @@ export struct StructurePage {
   private chipBorderColor(n: PlacedNode, index: number): string {
     if (this.selectedIndex === index) {
       return this.theme.brand
+    }
+    if (this.isSelected(n, index)) {
+      // 多选里的次级选中：用分支色描边，和"当前节点"区分开
+      return this.branchColor(n.branchIndex)
     }
     if (this.nodeStyle === 'line') {
       return this.branchColor(n.branchIndex)
@@ -313,7 +489,21 @@ export struct StructurePage {
       return
     }
     this.selectedIndex = index
+    const paraId: string = this.placed[index].paraId
+    this.selectedIds = paraId === '' ? [] : [paraId]
     this.renaming = false
+  }
+
+  /** 单击时读 Ctrl：部分设备不给修饰键信息，异常按"没按"处理 */
+  private clickHasCtrl(event: ClickEvent): boolean {
+    try {
+      if (event.getModifierKeyState === undefined) {
+        return false
+      }
+      return event.getModifierKeyState(['Ctrl'])
+    } catch (e) {
+      return false
+    }
   }
 
   /** 发一条命令；成功后用宿主回传的快照重排 */
@@ -410,6 +600,14 @@ export struct StructurePage {
       return false
     }
     if (this.renaming) {
+      return false
+    }
+    if (this.extraMode !== '') {
+      // 浮层里正在打字：只有 Esc 归页面处理，其余按键交给输入框
+      if (event.keyCode === KEY_ESCAPE) {
+        this.cancelExtra()
+        return true
+      }
       return false
     }
     const code: number = event.keyCode
@@ -529,6 +727,29 @@ export struct StructurePage {
           .onClick(() => { this.expandAll() })
       }
 
+      // 附加信息：概要在"同层多选"可用，关系线在"正好两节"可用
+      Text('多选')
+        .fontSize(12).fontColor(this.multiSelect ? this.theme.text : this.theme.sub)
+        .backgroundColor(this.multiSelect ? this.theme.divider : '#00000000')
+        .borderRadius(6)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .accessibilityText(this.multiSelect ? '退出多选' : '进入多选（点节点逐个加选）')
+        .onClick(() => { this.toggleMultiSelect() })
+      Text('概要')
+        .fontSize(12)
+        .fontColor(this.summaryReady() ? this.theme.text : this.theme.sub)
+        .opacity(this.summaryReady() ? 1 : 0.4)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .accessibilityText('给选中的几节加一条概要')
+        .onClick(() => { this.openSummaryEditor() })
+      Text('关系')
+        .fontSize(12)
+        .fontColor(this.relationReady() ? this.theme.text : this.theme.sub)
+        .opacity(this.relationReady() ? 1 : 0.4)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .accessibilityText('给选中的两节连一条关系线')
+        .onClick(() => { this.openRelationEditor() })
+
       // 样式面板开合
       Text('样式')
         .fontSize(12).fontColor(this.styleOpen ? this.theme.text : this.theme.sub)
@@ -619,6 +840,142 @@ export struct StructurePage {
       .onClick(() => { this.toggleFold(n.paraId) })
   }
 
+  /** 概要：括号折线 + 文字 + 删除（文字挂在括号外侧中央，照 XMind 的样子） */
+  @Builder
+  summaryMark(box: OutlineSummaryBox) {
+    Polyline()
+      .width(box.width)
+      .height(box.height)
+      .position({ x: box.originX, y: box.originY })
+      .points(box.points)
+      .fillOpacity(0)
+      .stroke(this.theme.sub)
+      .strokeWidth(1.2)
+      .strokeLineCap(LineCapStyle.Round)
+      .strokeLineJoin(LineJoinStyle.Round)
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+    Text(box.text)
+      .fontSize(11)
+      .fontColor(this.theme.sub)
+      .maxLines(2)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .textAlign(box.alignEnd ? TextAlign.End : TextAlign.Start)
+      .width(OUTLINE_SUMMARY_TEXT_W)
+      .backgroundColor(this.theme.bg)
+      .borderRadius(4)
+      .padding({ left: 3, right: 3, top: 1, bottom: 1 })
+      .position({ x: box.textX, y: box.textY })
+      .accessibilityText('概要：' + box.text)
+    Text('×')
+      .fontSize(11)
+      .fontColor(this.theme.sub)
+      .width(16)
+      .height(16)
+      .textAlign(TextAlign.Center)
+      .borderRadius(8)
+      .backgroundColor(this.theme.card)
+      .border({ width: 1, color: this.theme.divider })
+      .position({ x: box.closeX, y: box.closeY })
+      .accessibilityText('删除这条概要')
+      .onClick(() => { this.removeExtra(OUTLINE_EXTRA_REMOVE_SUMMARY, box.summaryId) })
+  }
+
+  /** 关系线：虚线曲线 + 箭头 + 标签 + 删除（用虚线区别于父子连线） */
+  @Builder
+  relationMark(wire: OutlineRelationWire) {
+    Polyline()
+      .width(wire.width)
+      .height(wire.height)
+      .position({ x: wire.originX, y: wire.originY })
+      .points(wire.points)
+      .fillOpacity(0)
+      .stroke(this.theme.sub)
+      .strokeWidth(1.2)
+      .strokeDashArray([4, 3])
+      .strokeLineCap(LineCapStyle.Round)
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+    Polyline()
+      .width(wire.width)
+      .height(wire.height)
+      .position({ x: wire.originX, y: wire.originY })
+      .points(wire.arrow)
+      .fillOpacity(0)
+      .stroke(this.theme.sub)
+      .strokeWidth(1.2)
+      .strokeLineCap(LineCapStyle.Round)
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+    Text(wire.label)
+      .fontSize(10)
+      .fontColor(this.theme.sub)
+      .backgroundColor(this.theme.bg)
+      .borderRadius(4)
+      .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+      .maxLines(1)
+      .position({ x: wire.labelX - 40, y: wire.labelY - 9 })
+      .accessibilityText('关系：' + wire.label)
+    Text('×')
+      .fontSize(11)
+      .fontColor(this.theme.sub)
+      .width(16)
+      .height(16)
+      .textAlign(TextAlign.Center)
+      .borderRadius(8)
+      .backgroundColor(this.theme.card)
+      .border({ width: 1, color: this.theme.divider })
+      .position({ x: wire.closeX, y: wire.closeY })
+      .accessibilityText('删除这条关系线')
+      .onClick(() => { this.removeExtra(OUTLINE_EXTRA_REMOVE_RELATION, wire.relationId) })
+  }
+
+  /** 概要/关系线的文字浮层：就地出现在选中的位置，回车提交、Esc 取消 */
+  @Builder
+  extraEditor() {
+    Column() {
+      Text(this.extraMode === 'summary' ? '概要' : '关系标签')
+        .fontSize(11)
+        .fontColor(this.theme.sub)
+      TextInput({ text: this.extraText })
+        .id(EXTRA_INPUT_ID)
+        .width(196)
+        .height(30)
+        .fontSize(12)
+        .margin({ top: 6 })
+        .backgroundColor(this.theme.card)
+        .borderRadius(6)
+        .border({ width: 1, color: this.theme.divider })
+        .onChange((value: string) => { this.extraText = value })
+        .onSubmit(() => { this.commitExtra() })
+      Row() {
+        Text('取消')
+          .fontSize(11)
+          .fontColor(this.theme.sub)
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .onClick(() => { this.cancelExtra() })
+        Text('确定')
+          .fontSize(11)
+          .fontColor(this.theme.onBrand)
+          .backgroundColor(this.theme.brand)
+          .borderRadius(4)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .margin({ left: 6 })
+          .onClick(() => { this.commitExtra() })
+      }
+      .margin({ top: 8 })
+      .justifyContent(FlexAlign.End)
+      .width(196)
+    }
+    .width(220)
+    .padding(12)
+    .backgroundColor(this.theme.bg)
+    .borderRadius(10)
+    .border({ width: 1, color: this.theme.divider })
+    .alignItems(HorizontalAlign.Start)
+    .position({ x: this.extraX, y: this.extraY })
+  }
+
   @Builder
   nodeChip(n: PlacedNode, index: number) {
     Row() {
@@ -647,7 +1004,14 @@ export struct StructurePage {
     .position({ x: n.x, y: n.y })
     .hoverEffect(HoverEffect.Highlight)
     .accessibilityText('主题：' + n.title + '，回车新建同级，Tab 新建子级，双击回到正文')
-    .onClick(() => { this.selectAt(index) })
+    .onClick((event: ClickEvent) => {
+      // 多选：Ctrl+单击是快路，多选开关兜底（触屏没有修饰键）
+      if (this.multiSelect || this.clickHasCtrl(event)) {
+        this.toggleSelect(index)
+      } else {
+        this.selectAt(index)
+      }
+    })
     .gesture(TapGesture({ count: 2 }).onAction(() => { this.jumpTo(n.startOffset) }))
   }
 
@@ -701,6 +1065,15 @@ export struct StructurePage {
           ForEach(this.wires, (wire: OutlineWire, index: number) => {
             this.wireLine(wire)
           }, (wire: OutlineWire, index: number) => this.wireKey(wire, index))
+          // 附加信息（概要括号 / 关系线）：和连线同一层，压在节点下面
+          ForEach(this.summaryBoxes, (box: OutlineSummaryBox, index: number) => {
+            this.summaryMark(box)
+          }, (box: OutlineSummaryBox, index: number) => 'sm' + index.toString() + '|' + box.summaryId + '|' +
+            box.originX.toFixed(1) + '|' + box.originY.toFixed(1) + '|' + box.width.toFixed(1) + '|' + box.height.toFixed(1))
+          ForEach(this.relationWires, (wire: OutlineRelationWire, index: number) => {
+            this.relationMark(wire)
+          }, (wire: OutlineRelationWire, index: number) => 'rl' + index.toString() + '|' + wire.relationId + '|' +
+            wire.originX.toFixed(1) + '|' + wire.originY.toFixed(1) + '|' + wire.width.toFixed(1) + '|' + wire.height.toFixed(1))
           ForEach(this.placed, (node: PlacedNode, index: number) => {
             this.nodeChip(node, index)
           }, (node: PlacedNode) => this.nodeKey(node))
@@ -711,6 +1084,9 @@ export struct StructurePage {
           }, (node: PlacedNode) => 'fold' + this.nodeKey(node) + (node.collapsed ? 'c' : 'e'))
           if (this.renaming && this.selectedIndex >= 0) {
             this.renameOverlay()
+          }
+          if (this.extraMode !== '') {
+            this.extraEditor()
           }
         }
         .width(this.mapW)
