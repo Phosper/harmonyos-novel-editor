@@ -71,6 +71,8 @@ export class PlacedNode {
   parentIndex: number = -1
   hasChildren: boolean = false
   collapsed: boolean = false
+  /** 本次布局的缩放（渲染层据此算节点框与字号） */
+  scale: number = 1
 }
 
 export class MindMapLayout {
@@ -160,11 +162,20 @@ export function buildOutlineFromParagraphs(docTitle: string, paragraphs: Outline
  * 树布局：先按"叶子顺序"排 y，内部节点取首末子节点的中点；x = 深度 × 列距。
  * 纯函数，同样的输入永远得到同样的输出（便于回归与快照对比）。
  */
-export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | null = null): MindMapLayout {
+export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | null = null,
+  scale: number = 1): MindMapLayout {
   const layout: MindMapLayout = new MindMapLayout()
   if (nodes.length === 0) {
     return layout
   }
+  // 缩放按"尺寸一起缩"处理：节点宽高、行/列间距、内边距同比例，
+  // 这样字号随档位变、文字不会挤在固定框里（与思路板"不缩放容器"的结论一致）。
+  const z: number = Math.max(0.5, Math.min(2, scale))
+  const pad: number = OUTLINE_PAD * z
+  const colGap: number = OUTLINE_COL_GAP * z
+  const rowGap: number = OUTLINE_ROW_GAP * z
+  const nodeW: number = OUTLINE_NODE_W * z
+  const nodeH: number = OUTLINE_NODE_H * z
   const parents: number[] = outlineParents(nodes)
   const collapsed: Set<string> = collapsedIds === null ? new Set<string>() : collapsedIds
   // 折叠：自己或任一祖先被折叠 → 本次不参与布局
@@ -207,7 +218,7 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
   const place = (index: number): number => {
     const kids: number[] = children[index]
     if (kids.length === 0) {
-      ys[index] = OUTLINE_PAD + rows * OUTLINE_ROW_GAP
+      ys[index] = pad + rows * rowGap
       rows++
       return ys[index]
     }
@@ -238,17 +249,18 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
     placed.title = nodes[i].title
     placed.level = nodes[i].level
     placed.depth = depth
-    placed.x = OUTLINE_PAD + depth * OUTLINE_COL_GAP
+    placed.x = pad + depth * colGap
     placed.y = ys[i]
     placed.startOffset = nodes[i].startOffset
     placed.paraId = nodes[i].paraId
     placed.parentIndex = parents[i]
     placed.hasChildren = hasChildren[i]
     placed.collapsed = collapsed.has(nodes[i].id)
+    placed.scale = z
     layout.nodes.push(placed)
   }
-  layout.width = OUTLINE_PAD * 2 + maxDepth * OUTLINE_COL_GAP + OUTLINE_NODE_W
-  layout.height = OUTLINE_PAD * 2 + Math.max(0, rows - 1) * OUTLINE_ROW_GAP + OUTLINE_NODE_H
+  layout.width = pad * 2 + maxDepth * colGap + nodeW
+  layout.height = pad * 2 + Math.max(0, rows - 1) * rowGap + nodeH
   return layout
 }
 

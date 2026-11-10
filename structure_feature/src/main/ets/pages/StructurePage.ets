@@ -35,6 +35,12 @@ export struct StructurePage {
   @Local mapH: number = 0
   @Local empty: boolean = true
   @Local topicCount: number = 0
+  /** 缩放档位（0.55–1.8）：节点尺寸、间距、字号同比例 */
+  @Local zoom: number = 1
+  /** 键盘选中的节点下标（-1 = 无） */
+  @Local selectedIndex: number = -1
+  @Local viewW: number = 0
+  @Local viewH: number = 0
   /** 每个节点在 placed 里的父索引（-1 = 根） */
   private parents: number[] = []
   /**
@@ -56,13 +62,16 @@ export struct StructurePage {
       this.topicCount = 0
       return
     }
-    const layout: MindMapLayout = layoutOutline(snapshot.nodes)
+    const layout: MindMapLayout = layoutOutline(snapshot.nodes, null, this.zoom)
     this.placed = layout.nodes
     this.mapW = layout.width
     this.mapH = layout.height
     this.topicCount = layout.nodes.length - 1
     this.parents = outlineParents(snapshot.nodes)
     this.empty = false
+    if (this.selectedIndex >= this.placed.length) {
+      this.selectedIndex = -1
+    }
     // 诊断：真机上一眼确认"节点/画布/连线"三组数字，排查渲染问题比看截图快
     console.info('[StructureMap] nodes=' + this.placed.length.toString() +
       ' topics=' + this.topicCount.toString() +
@@ -70,6 +79,53 @@ export struct StructurePage {
       ' links=' + Math.max(0, this.placed.length - 1).toString())
     // Canvas 可能还没 ready（此时绘制会被忽略），onReady 里会再画一次
     this.drawConnections()
+  }
+
+  /** 改缩放：按档位重排一次（不缩放容器，避免文字发糊） */
+  private setZoom(next: number): void {
+    const clamped: number = Math.max(0.55, Math.min(1.8, next))
+    if (Math.abs(clamped - this.zoom) < 0.001) {
+      return
+    }
+    this.zoom = clamped
+    this.load()
+  }
+
+  /** 适应窗口：按当前视口把整棵树缩到看得全 */
+  private fitToWindow(): void {
+    if (this.viewW <= 0 || this.viewH <= 0 || this.mapW <= 0 || this.mapH <= 0) {
+      return
+    }
+    const baseW: number = this.mapW / this.zoom
+    const baseH: number = this.mapH / this.zoom
+    const z: number = Math.min((this.viewW - 32) / baseW, (this.viewH - 96) / baseH)
+    this.setZoom(z)
+  }
+
+  /** 键盘：方向键选节点、Enter 回正文、Esc 关闭 */
+  private handleKey(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down || this.placed.length === 0) {
+      return false
+    }
+    const code: number = event.keyCode
+    if (code === 2070) {
+      this.onClose()
+      return true
+    }
+    if (code === 2012 || code === 2013) {
+      const step: number = code === 2012 ? -1 : 1
+      const base: number = this.selectedIndex < 0 ? (step > 0 ? -1 : this.placed.length) : this.selectedIndex
+      const next: number = Math.max(0, Math.min(this.placed.length - 1, base + step))
+      this.selectedIndex = next
+      return true
+    }
+    if (code === 2054 || code === 2116) {
+      if (this.selectedIndex >= 0 && this.selectedIndex < this.placed.length) {
+        this.jumpTo(this.placed[this.selectedIndex].startOffset)
+      }
+      return true
+    }
+    return false
   }
 
   /** 画父子连线：三次贝塞尔，端点取父节点右缘中点与子节点左缘中点 */
@@ -88,10 +144,13 @@ export struct StructurePage {
       }
       const from: PlacedNode = this.placed[parent]
       const to: PlacedNode = this.placed[i]
-      const x1: number = from.x + OUTLINE_NODE_W
-      const y1: number = from.y + OUTLINE_NODE_H / 2
+      const fromW: number = OUTLINE_NODE_W * from.scale
+      const fromH: number = OUTLINE_NODE_H * from.scale
+      const toH: number = OUTLINE_NODE_H * to.scale
+      const x1: number = from.x + fromW
+      const y1: number = from.y + fromH / 2
       const x2: number = to.x
-      const y2: number = to.y + OUTLINE_NODE_H / 2
+      const y2: number = to.y + toH / 2
       const mid: number = (x1 + x2) / 2
       ctx.beginPath()
       ctx.moveTo(x1, y1)
@@ -129,7 +188,30 @@ export struct StructurePage {
 
       Text(this.topicCount.toString() + ' 个主题')
         .fontSize(12).fontColor(this.theme.sub)
-        .margin({ right: 16 })
+        .margin({ right: 12 })
+
+      // 缩放：按档位重排（文字不糊）；「适应」把整棵树缩进视口
+      Row() {
+        Text('−')
+          .fontSize(15).fontColor(this.theme.text)
+          .width(28).height(28).textAlign(TextAlign.Center)
+          .accessibilityText('缩小')
+          .onClick(() => { this.setZoom(this.zoom / 1.15) })
+        Text(Math.round(this.zoom * 100).toString() + '%')
+          .fontSize(12).fontColor(this.theme.sub)
+          .width(48).textAlign(TextAlign.Center)
+        Text('＋')
+          .fontSize(14).fontColor(this.theme.text)
+          .width(28).height(28).textAlign(TextAlign.Center)
+          .accessibilityText('放大')
+          .onClick(() => { this.setZoom(this.zoom * 1.15) })
+        Text('适应')
+          .fontSize(12).fontColor(this.theme.sub)
+          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+          .accessibilityText('适应窗口')
+          .onClick(() => { this.fitToWindow() })
+      }
+      .margin({ right: 12 })
 
       Text('关闭')
         .fontSize(13).fontColor(this.theme.text)
@@ -148,23 +230,26 @@ export struct StructurePage {
   }
 
   @Builder
-  nodeChip(n: PlacedNode) {
+  nodeChip(n: PlacedNode, index: number) {
     Row() {
       Text(n.title)
-        .fontSize(n.depth === 0 ? 13 : 12)
+        .fontSize(Math.max(9, (n.depth === 0 ? 13 : 12) * n.scale))
         .fontWeight(n.depth === 0 ? FontWeight.Medium : FontWeight.Normal)
         .fontColor(n.depth === 0 ? this.theme.onBrand : this.theme.text)
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
     }
-    .width(OUTLINE_NODE_W)
-    .height(OUTLINE_NODE_H)
+    .width(OUTLINE_NODE_W * n.scale)
+    .height(OUTLINE_NODE_H * n.scale)
     .padding({ left: 10, right: 8 })
     .alignItems(VerticalAlign.Center)
     .backgroundColor(n.depth === 0 ? this.theme.brand : this.theme.card)
     .borderRadius(10)
-    .border({ width: n.depth === 0 ? 0 : 1, color: this.theme.divider })
+    .border({
+      width: this.selectedIndex === index ? 2 : (n.depth === 0 ? 0 : 1),
+      color: this.selectedIndex === index ? this.theme.brand : this.theme.divider
+    })
     .position({ x: n.x, y: n.y })
     .hoverEffect(HoverEffect.Highlight)
     .accessibilityText('主题：' + n.title + '，点击回到正文')
@@ -210,8 +295,8 @@ export struct StructurePage {
                 .hitTestBehavior(HitTestMode.None)
                 .accessibilityLevel('no')
                 .onReady(() => { this.drawConnections() })
-              ForEach(this.placed, (node: PlacedNode) => {
-                this.nodeChip(node)
+              ForEach(this.placed, (node: PlacedNode, index: number) => {
+                this.nodeChip(node, index)
               }, (node: PlacedNode) => node.id)
             }
             .width(this.mapW)
@@ -232,5 +317,12 @@ export struct StructurePage {
     }
     .width('100%').height('100%')
     .backgroundColor(this.theme.bg)
+    .focusable(true)
+    .defaultFocus(true)
+    .onKeyEvent((event: KeyEvent) => this.handleKey(event))
+    .onAreaChange((_old: Area, now: Area) => {
+      this.viewW = Number(now.width)
+      this.viewH = Number(now.height)
+    })
   }
 }
