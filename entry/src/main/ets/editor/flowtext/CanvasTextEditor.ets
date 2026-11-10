@@ -43,8 +43,6 @@ import { ImeEchoGuard, shouldConsumePreIme } from '../interaction/InputArbiter';
 import { deviceProfile } from '../../utils/DeviceProfile';
 import { PasteboardAccess } from '../../utils/Pasteboard';
 
-/** 性能探针开关：排查大文档滚动卡顿时置 true，只在每 60 帧打一行；平时保持 false */
-const PERF_PROBE: boolean = true;
 /** 运行时诊断开关：真机排查"动画/交互错乱"时置 true，便于比对 触摸坐标/命中/caret/scrollY/progress。 */
 const DIAG_ENABLED: boolean = false;
 /** 本特性预留的量化诊断标签（经 diag() 输出，供 Phase 5 真机核验）：
@@ -476,8 +474,6 @@ export struct CanvasTextEditor {
   /** 撤销/重做交给宿主（历史栈在 EditorStore 里，不在文档模型内） */
   onUndo: (() => void) | null = null;
   onRedo: (() => void) | null = null;
-  /** 性能采样回调（60 帧一次）：宿主把数字显示在界面上，抓不到 hilog 时也能看 */
-  onPerfSample: ((summary: string) => void) | null = null;
 
   private ctx: DrawingRenderingContext = new DrawingRenderingContext(LengthMetricsUnit.PX);
   private theme: EditorTheme = new EditorTheme();
@@ -514,14 +510,6 @@ export struct CanvasTextEditor {
    * 原因就在这里）。事件里只改 scrollY 并置这个标记，真正的排版与夹取放到绘制那一帧。
    */
   private scrollClampPending: boolean = false;
-  /** 性能探针累计（60 帧一报） */
-  private perfFrames: number = 0;
-  private perfLayoutMs: number = 0;
-  private perfDrawMs: number = 0;
-  private perfMaxMs: number = 0;
-  /** 上次采样时的排版计数（算 60 帧增量：新排多少行、窗口重建几次） */
-  private perfAppendedSeen: number = 0;
-  private perfWindowsSeen: number = 0;
   /** 帧间预排版（-1 = 没有排队） */
   private prefetchTimer: number = -1;
   /** 桌面双击选词：鼠标 Press 不走触摸的连击判定，这里单独记时间与位置 */
@@ -2895,7 +2883,6 @@ export struct CanvasTextEditor {
       this.diag('drawNow renderer=null (skip)');
       return;
     }
-    const layoutStart: number = Date.now();
     // 排版宽度与打字机状态必须一致：某些输入路径可能只更新了 prop 而未触发重建，
     // 导致"文字按 1.08 缩放、排版仍按全宽换行"→ 高亮段越界。这里在绘制前兜底校正一次。
     const typewriterMode: boolean = this.effectivePolicy() === ScrollPolicy.CENTER;
@@ -2938,7 +2925,6 @@ export struct CanvasTextEditor {
     }
     const viewport = new ViewportInfo(this.scrollY, this.viewHeightVp);
     const preview: PreviewInfo | null = this.previewMgr.isComposing ? this.previewMgr.previewInfo : null;
-    const layoutCost: number = Date.now() - layoutStart;
     // 打字机：当前段落之外的行淡化；段落区间按需重算（dirty 标记，热路径无额外分配）
     const typewriterOn: boolean = this.effectivePolicy() === ScrollPolicy.CENTER;
     if (typewriterOn) {
@@ -2952,12 +2938,10 @@ export struct CanvasTextEditor {
     // 长文（十几万字、几千行）时就是纯粹的滚动开销。
     const caretLine: number = typewriterOn && this.lines.length > 0
       ? HitTester.lineIndexOf(this.doc.caretOffset, this.lines) : -1;
-    const renderStart: number = Date.now();
     renderer.draw(this.ctx, this.lines, this.caret,
       preview === null ? this.selMgr.selection : null, preview, viewport, this.anims, this.handlePositions(),
       dimEnabled, focusFirst, focusLast, typewriterOn, caretLine,
       (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', this.placeholderColorFor());
-    this.notePerf(layoutCost, Date.now() - renderStart);
     // 帧间空闲时把下一屏半预排好：滚动帧里就不用再做排版（实测排版耗时是绘制的近十倍）
     this.schedulePrefetch();
   }
@@ -2985,52 +2969,6 @@ export struct CanvasTextEditor {
         this.schedulePrefetch();
       }
     }, 16);
-  }
-
-  /**
-   * 性能探针：每 60 帧打一行，用来定位"大文档滚动卡顿"到底花在排版还是绘制。
-   * 排查完把 PERF_PROBE 置 false 即可完全静默。
-   */
-  private notePerf(layoutMs: number, drawMs: number): void {
-    if (!PERF_PROBE) {
-      return;
-    }
-    this.perfFrames++;
-    this.perfLayoutMs += layoutMs;
-    this.perfDrawMs += drawMs;
-    if (layoutMs + drawMs > this.perfMaxMs) {
-      this.perfMaxMs = layoutMs + drawMs;
-    }
-    if (this.perfFrames < 60) {
-      return;
-    }
-    const appended: number = this.cache !== null ? this.cache.appendedRows : 0;
-    const windows: number = this.cache !== null ? this.cache.windowRebuilds : 0;
-    const newRows: number = appended - this.perfAppendedSeen;
-    const newWindows: number = windows - this.perfWindowsSeen;
-    this.perfAppendedSeen = appended;
-    this.perfWindowsSeen = windows;
-    const summary: string = '排版 ' + (this.perfLayoutMs / 60).toFixed(1) +
-      'ms · 绘制 ' + (this.perfDrawMs / 60).toFixed(1) +
-      'ms · 峰值 ' + this.perfMaxMs.toString() +
-      'ms · ' + this.lines.length.toString() + ' 行 · 新排 ' + newRows.toString() +
-      ' 行 · 窗重建 ' + newWindows.toString();
-    console.info('[FlowTextPerf] frames=60 layoutAvg=' + (this.perfLayoutMs / 60).toFixed(2) +
-      'ms drawAvg=' + (this.perfDrawMs / 60).toFixed(2) +
-      'ms maxFrame=' + this.perfMaxMs.toString() +
-      'ms lines=' + this.lines.length.toString() +
-      ' newRows=' + newRows.toString() +
-      ' windowRebuilds=' + newWindows.toString() +
-      ' scrollY=' + Math.round(this.scrollY).toString() +
-      ' docLen=' + this.doc.length.toString());
-    // 同时回给宿主显示在界面上：抓不到 hilog 时截一张图就能看到同样的数字
-    if (this.onPerfSample !== null) {
-      this.onPerfSample(summary);
-    }
-    this.perfFrames = 0;
-    this.perfLayoutMs = 0;
-    this.perfDrawMs = 0;
-    this.perfMaxMs = 0;
   }
 
   /**

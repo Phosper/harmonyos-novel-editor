@@ -1636,7 +1636,6 @@ check('desktop keeps the selection quiet, touch still pops the bar',()=>{
     const cache=read('editor/flowtext/render/LayoutCache.ets');
     assert.ok(/ensureLayoutBudgeted\(content: string, version: number, formatVersion: number,\s*\n?\s*untilYVp: number, maxLines: number\): number/.test(cache),
       'budgeted layout exists in LayoutCache');
-    assert.ok(/this\.windowBuildCount\+\+/.test(cache), 'window rebuilds are counted for diagnosis');
   });
   console.log(`FlowText regression: ${count} checks passed`);
 })().catch(error=>{console.error(error);process.exitCode=1;});

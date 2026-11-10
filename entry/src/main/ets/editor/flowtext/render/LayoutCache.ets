@@ -42,9 +42,6 @@ export class LayoutCache {
   private nextStart: number = 0;
   private nextY: number = 0;
   private complete: boolean = false;
-  /** 诊断计数：累计追加行数 / 窗口重建次数 */
-  private appendedTotal: number = 0;
-  private windowBuildCount: number = 0;
 
   constructor(engine: TextLayoutEngine) { this.engine = engine; }
   get version(): number { return this.versionValue; }
@@ -94,16 +91,6 @@ export class LayoutCache {
       added++;
     }
     return added;
-  }
-
-  /** 预排版累计追加行数（诊断用） */
-  get appendedRows(): number {
-    return this.appendedTotal;
-  }
-
-  /** typeset 窗口重建次数（诊断用）：频繁重建就是卡顿的来源 */
-  get windowRebuilds(): number {
-    return this.windowBuildCount;
   }
 
   /** Accept content and shifted format runs atomically; retain unaffected paragraphs. */
@@ -172,7 +159,6 @@ export class LayoutCache {
       end = len;
     }
     this.typeset = this.engine.buildTypesetWindow(this.textValue, base, end);
-    this.windowBuildCount++;
     this.windowBase = base;
     this.windowEnd = end;
   }
@@ -187,7 +173,6 @@ export class LayoutCache {
   }
 
   private appendLine(): void {
-    this.appendedTotal++;
     const start: number = this.nextStart;
     // 段落属性按**段落起点**取：软折行的续行与首行必须同种类同层级，
     // 否则一条长列表项的第二行会退回正文样式。

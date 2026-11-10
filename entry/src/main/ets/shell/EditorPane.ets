@@ -63,8 +63,6 @@ export struct EditorPane {
   @Local capFingerprint: string = ''
   @Local capDocId: string = ''
   @Local capSource: string = ''
-  /** 性能采样文案（60 帧更新一次）：抓不到 hilog 时直接看界面 */
-  @Local perfText: string = ''
   /** 大纲面板（桌面优先）：列标题、点回正文、整节上移/下移 */
   @Local showOutline: boolean = false
   /**
@@ -270,10 +268,6 @@ export struct EditorPane {
               if (this.app !== null) {
                 toggleFocusAnimated(this.getUIContext())
               }
-            },
-            onPerfSample: (summary: string) => {
-              // 每秒最多一次重渲染，只用于诊断；关掉探针后不再有调用
-              this.perfText = summary
             }
           })
             .width('100%').height('100%')
@@ -373,14 +367,6 @@ export struct EditorPane {
   editorHeader() {
     if (this.canShowEditorTools()) {
       Row() {
-        // 诊断：滚动时把排版/绘制耗时显示出来（抓不到 hilog 时截图即可）
-        if (this.perfText !== '') {
-          Text(this.perfText)
-            .fontSize(10)
-            .fontColor(this.colors().textTertiary)
-            .maxLines(1)
-            .padding({ left: 4, right: 8 })
-        }
         // 左侧空白 = 窗口拖动/双击最大化热区；右侧是工具，避免按到按钮时拖窗
         Row() {
         }
@@ -423,8 +409,8 @@ export struct EditorPane {
     if (this.app === null) {
       return ''
     }
-    const state: string = this.app.editor.dirtyCount > 0 ? '编辑中' : '已保存'
-    return this.app.editor.wordCount.toString() + ' 字 · ' + state
+    // 文章页只保留保存状态：字数与绘制统计已移除（需要时看工具条或导出信息）
+    return this.app.editor.dirtyCount > 0 ? '编辑中' : '已保存'
   }
 
   /** 当前项目名（用于标题下的归属 chip；没有项目时不显示） */
