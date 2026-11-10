@@ -8,6 +8,7 @@ import { common } from '@kit.AbilityKit'
 import { app } from '../store/AppStores'
 import { tokensFor, WeaverColorSet, WeaverRadii, THEMES, WeaverTheme, DEFAULT_THEME_ID } from '../constants/DesignTokens'
 import { AvatarService } from '../utils/AvatarService'
+import { FeatureStatus, featureStatuses, featureStateLabel } from 'core_runtime'
 import { UserAvatar } from './UserAvatar'
 
 @ComponentV2
@@ -37,6 +38,21 @@ export struct SettingsPanel {
 
   private cardRadius(): number {
     return this.tablet() ? 18 : 14
+  }
+
+  /** 扩展功能一行：名字 + 说明 + 本机状态 */
+  private featureRows(): FeatureRow[] {
+    const list: FeatureStatus[] = featureStatuses()
+    const rows: FeatureRow[] = []
+    for (let i: number = 0; i < list.length; i++) {
+      const row: FeatureRow = new FeatureRow()
+      row.label = list[i].descriptor.label
+      row.hint = list[i].descriptor.moduleName
+      row.state = featureStateLabel(list[i].state)
+      row.installed = row.state === '已安装'
+      rows.push(row)
+    }
+    return rows
   }
 
   private themeSubtitle(theme: WeaverTheme): string {
@@ -381,6 +397,38 @@ export struct SettingsPanel {
       .borderRadius(this.cardRadius())
       .clip(true)
 
+      this.sectionTitle('扩展功能')
+      Column() {
+        ForEach(this.featureRows(), (item: FeatureRow, index: number) => {
+          if (index > 0) {
+            this.rowDivider()
+          }
+          Row() {
+            Column() {
+              Text(item.label).fontSize(this.titleFont()).fontColor(this.colors().textPrimary).maxLines(1)
+              Text(item.hint).fontSize(this.subFont()).fontColor(this.colors().textTertiary).margin({ top: 2 })
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+            Text(item.state)
+              .fontSize(this.subFont())
+              .fontColor(item.installed ? this.colors().success : this.colors().textTertiary)
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+          .alignItems(VerticalAlign.Center)
+        }, (item: FeatureRow, index: number) => item.label + index.toString())
+        this.rowDivider()
+        Text('扩展是独立的功能包：装应用时一起带上；将来支持按需下载后，这里会显示获取进度。')
+          .fontSize(this.subFont())
+          .fontColor(this.colors().textTertiary)
+          .padding({ left: 16, right: 16, top: 8, bottom: 12 })
+      }
+      .width('100%')
+      .backgroundColor(this.colors().bgCard)
+      .borderRadius(this.cardRadius())
+      .clip(true)
+
       this.sectionTitle('关于')
       Column() {
         this.valueRow('版本', '1.0.0')
@@ -404,4 +452,12 @@ export struct SettingsPanel {
     .width('100%')
     .padding({ left: 16, right: 16 })
   }
+}
+
+/** 设置页「扩展功能」的一行 */
+class FeatureRow {
+  label: string = ''
+  hint: string = ''
+  state: string = ''
+  installed: boolean = false
 }

@@ -110,4 +110,24 @@ check('the host publishes the outline before opening the map', () => {
   assert.match(shell, /takeReveal\(\)/, 'closing the map applies the requested jump');
 });
 
+check('right-side surfaces keep clear of the native caption buttons', () => {
+  // 桌面自由窗口下三键由系统画在右上角、压在页面之上：所有贴右的全高面板都得让位
+  const map = read('structure_feature/src/main/ets/pages/StructurePage.ets');
+  assert.match(map, /@Param captionInset: number = 0/);
+  assert.match(map, /right: 16 \+ this\.captionInset/);
+  const library = read('entry/src/main/ets/shell/CardLibrary.ets');
+  assert.match(library, /@Param captionInset: number = 0/);
+  assert.match(library, /WeaverSpacing\.LG \+ this\.captionInset/);
+  const outline = read('entry/src/main/ets/shell/OutlinePanel.ets');
+  assert.match(outline, /8 \+ this\.captionInset/);
+});
+
+check('feature catalog surfaces the package state', () => {
+  assert.match(read('core_runtime/Index.ets'), /featureStatuses/);
+  const settings = read('entry/src/main/ets/shell/SettingsPanel.ets');
+  assert.match(settings, /from 'core_runtime'/);
+  assert.match(settings, /featureStatuses\(\)/);
+  assert.match(settings, /扩展功能/);
+});
+
 console.log('Modules regression: ' + pass + ' checks passed');

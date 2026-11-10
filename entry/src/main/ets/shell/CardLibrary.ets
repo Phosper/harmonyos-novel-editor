@@ -35,6 +35,8 @@ export struct CardLibrary {
   @Event onLocate: (cardId: string) => void = (cardId: string) => {}
   /** 关闭抽屉 */
   @Event onClose: () => void = () => {}
+  /** 原生窗口三键区宽度：右抽屉的头部 ✕ 要避开，否则被三键压住 */
+  @Param captionInset: number = 0
 
   @Local keyword: string = ''
   /** 新建卡片表单（首版只收标题 + 类型；别名/标签在卡片抽屉里再补） */
@@ -348,7 +350,8 @@ export struct CardLibrary {
           .onClick(() => this.onClose())
       }
       .width('100%')
-      .padding({ left: WeaverSpacing.LG, right: WeaverSpacing.LG, top: WeaverSpacing.MD, bottom: WeaverSpacing.SM })
+      .padding({ left: WeaverSpacing.LG, right: WeaverSpacing.LG + this.captionInset,
+        top: WeaverSpacing.MD, bottom: WeaverSpacing.SM })
 
       Row() {
         this.filterChip('全部', 0)

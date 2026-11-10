@@ -26,6 +26,8 @@ export class StructureTheme {
 export struct StructurePage {
   @Param theme: StructureTheme = new StructureTheme()
   @Param docTitle: string = ''
+  /** 原生窗口三键区宽度：整页头部的「关闭」要避开，否则被三键压住 */
+  @Param captionInset: number = 0
   @Event onClose: () => void = () => {}
 
   @Local placed: PlacedNode[] = []
@@ -140,7 +142,7 @@ export struct StructurePage {
     }
     .width('100%')
     .height(64)
-    .padding({ left: 20, right: 16 })
+    .padding({ left: 20, right: 16 + this.captionInset })
     .alignItems(VerticalAlign.Center)
     .border({ width: { bottom: 1 }, color: this.theme.divider })
   }

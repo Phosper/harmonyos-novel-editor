@@ -265,7 +265,8 @@ export struct CanvasDest {
         onAddMany: (cardIds: string[]) => this.placeCards(cardIds),
         onOpen: (cardId: string) => this.openFromLibrary(cardId),
         onLocate: (cardId: string) => this.locateFromLibrary(cardId),
-        onClose: () => { this.cardLibOpen = false }
+        onClose: () => { this.cardLibOpen = false },
+        captionInset: app.ui.captionInset
       })
     }
     .width('100%')

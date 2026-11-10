@@ -416,6 +416,7 @@ export struct AppShell {
         StructurePage({
           theme: this.structureTheme(),
           docTitle: app.editor.title,
+          captionInset: app.ui.captionInset,
           onClose: () => this.closeStructure()
         })
       } else if (app.ui.immersiveEditing) {
