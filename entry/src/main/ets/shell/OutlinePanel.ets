@@ -28,6 +28,8 @@ class OutlineRow {
 @ComponentV2
 export struct OutlinePanel {
   @Param app: AppStores | null = null
+  /** 原生窗口三键区宽度：头部右侧要避开，否则「关闭」会被压住 */
+  @Param captionInset: number = 0
   @Event onClose: () => void = () => {}
 
   @Local rows: OutlineRow[] = []
@@ -180,7 +182,7 @@ export struct OutlinePanel {
       }
       .width('100%')
       .height(44)
-      .padding({ left: 12, right: 8 })
+      .padding({ left: 12, right: 8 + this.captionInset })
       .alignItems(VerticalAlign.Center)
       .border({ width: { bottom: 1 }, color: this.colors().divider })
 

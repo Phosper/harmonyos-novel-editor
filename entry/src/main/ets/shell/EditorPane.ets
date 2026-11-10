@@ -144,6 +144,9 @@ export struct EditorPane {
 
   build() {
     Stack({ alignContent: Alignment.TopEnd }) {
+      // 大纲面板**占布局**而不是浮在上面：作为右侧一栏，正文与工具条自动让位，
+      // 否则它会盖住标题行的「大纲/导图」按钮和窗口右上角的三键区。
+      Row() {
       Column() {
       if (this.app === null || !this.app.editor.hasDoc) {
         this.emptyState()
@@ -285,6 +288,16 @@ export struct EditorPane {
       }
       .width('100%').height('100%')
       .alignItems(HorizontalAlign.Center)
+      .layoutWeight(1)
+      if (this.showOutline) {
+        OutlinePanel({
+          app: this.app,
+          captionInset: this.captionInsetValue(),
+          onClose: () => { this.showOutline = false }
+        })
+      }
+      }
+      .width('100%').height('100%')
       .backgroundColor(this.app !== null ? this.colors().editorBg : this.colors().bgPrimary)
 
       if (this.selectionLength() > 0) {
@@ -297,12 +310,6 @@ export struct EditorPane {
           onClose: () => {
             this.captureOpen = false
           }
-        })
-      }
-      if (this.showOutline) {
-        OutlinePanel({
-          app: this.app,
-          onClose: () => { this.showOutline = false }
         })
       }
 
@@ -355,6 +362,11 @@ export struct EditorPane {
 
   private placeholderSize(): number {
     return this.app === null ? 16 : this.app.ui.paperTheme.fontSize
+  }
+
+  /** 原生三键区宽度（vp）：全高右栏的头部必须让开，否则「关闭」会被三键压住 */
+  private captionInsetValue(): number {
+    return this.app === null ? 0 : this.app.ui.captionInset
   }
 
   @Builder
