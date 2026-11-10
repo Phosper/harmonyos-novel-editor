@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语流 · 文稿绑定思维导图：调研与实施方案（2026-11）</title>
+<style>
+  :root{
+    --ink:#1c1c1e; --ink2:#3a3a3c; --sub:#6e6e73; --line:#e6e6e8; --bg:#fbfbfa;
+    --card:#fff; --accent:#0a59f7; --good:#248a3d; --warn:#b25000; --bad:#c0392b;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.9 -apple-system,BlinkMacSystemFont,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1000px;margin:0 auto;padding:56px 28px 96px}
+  header.hero{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:8px}
+  .kicker{font-size:13px;letter-spacing:.18em;color:var(--sub);text-transform:uppercase}
+  h1{font-size:34px;line-height:1.35;margin:10px 0 8px;letter-spacing:-.01em}
+  .lede{font-size:17px;color:var(--ink2);margin:0}
+  .meta{font-size:13px;color:var(--sub);margin-top:14px}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin:28px 0 40px}
+  nav.toc h2{font-size:14px;margin:0 0 10px;color:var(--sub);font-weight:600;letter-spacing:.06em}
+  nav.toc ol{margin:0;padding-left:20px;columns:2;column-gap:36px}
+  nav.toc li{margin:4px 0;font-size:14.5px}
+  nav.toc a{color:var(--ink2);text-decoration:none;border-bottom:1px solid transparent}
+  nav.toc a:hover{border-bottom-color:var(--accent);color:var(--accent)}
+  section{margin:44px 0 0}
+  h2{font-size:24px;line-height:1.4;margin:0 0 6px;padding-top:8px}
+  h2 .no{color:var(--sub);font-weight:600;font-size:15px;margin-right:10px;letter-spacing:.08em}
+  h3{font-size:18px;margin:26px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  small{color:var(--sub)}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14.5px;background:var(--card)}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top;line-height:1.7}
+  th{background:#f4f4f2;font-weight:600}
+  code{background:#f0f0ee;border-radius:4px;padding:1px 5px;font-size:13.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin:18px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}nav.toc ol{columns:1}}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--sub);background:#fff;margin-right:6px}
+  .tag.fact{border-color:#cfe6d4;color:var(--good);background:#f4fbf6}
+  .tag.guess{border-color:#f0dcc4;color:var(--warn);background:#fdf8f1}
+  .tag.risk{border-color:#f0cdc7;color:var(--bad);background:#fdf4f3}
+  .callout{border-left:3px solid var(--accent);background:#f5f8ff;padding:12px 16px;border-radius:0 10px 10px 0;margin:16px 0}
+  .callout.warn{border-left-color:var(--warn);background:#fdf8f1}
+  .kv{font-size:14px}
+  .kv b{display:inline-block;min-width:92px;color:var(--ink2)}
+  footer{margin-top:64px;border-top:1px solid var(--line);padding-top:18px;color:var(--sub);font-size:13px}
+  @media print{
+    body{background:#fff}
+    nav.toc{page-break-after:always}
+    section{page-break-inside:avoid}
+    a{color:inherit;text-decoration:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">Weaver / 语流 · 设计评审稿</div>
+  <h1>文稿绑定思维导图：调研与实施方案</h1>
+  <p class="lede">把现在的“只读导图”升级为可编辑：节点就是正文标题，改结构就是把正文搬走。<br>
+  本文件是给你审核的方案稿——竞品怎么做、开源有什么可抄、我们分期怎么做、哪些必须你拍板。</p>
+  <div class="meta">2026-11 · 基于 code 基线 <code>c33d3eb</code> · 三个调研 Agent（竞品 / 开源 / 代码现状）并行产出后汇总</div>
+</header>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1">一页看懂（结论）</a></li>
+    <li><a href="#s2">现状：我们有什么、缺什么</a></li>
+    <li><a href="#s3">竞品怎么做（XMind / 幕布 / MindNode）</a></li>
+    <li><a href="#s4">开源可借鉴（含许可证红线）</a></li>
+    <li><a href="#s5">我们的方案与七个决策</a></li>
+    <li><a href="#s6">架构与数据模型</a></li>
+    <li><a href="#s7">交互与快捷键</a></li>
+    <li><a href="#s8">分期计划与验收</a></li>
+    <li><a href="#s9">风险与未验证项</a></li>
+    <li><a href="#s10">需要你拍板的 5 个问题</a></li>
+  </ol>
+</nav>
+
+<section id="s1">
+  <h2><span class="no">01</span>一句话结论</h2>
+  <div class="callout">
+    <b>竞品没有一个做“长文段落 ↔ 导图节点”的双向绑定。</b>它们的模型都是「一棵主题树是唯一真源，节点挂备注/描述」；
+    Obsidian 系是“图引用笔记”。<br>
+    我们要做的这件事（导图与正文严格对应，改图就是改文章结构）在竞品里没有现成答案，
+    <b>但技术上完全可以落地</b>——因为我们已经有段落身份（<code>paraId</code>）和整节移动命令，缺的只是“导图上的编辑 → 一次正文命令”的通道。
+  </div>
+  <div class="grid">
+    <div class="card">
+      <b>建议的形态</b>
+      <ul>
+        <li>正文标题是唯一真源，导图是它的投影；</li>
+        <li>导图里改名/增删/移动 = 对正文发一次命令（可撤销、可保存）；</li>
+        <li>折叠、缩放、选中是“看图状态”，不写进正文；</li>
+        <li>概要与关系线如果要做，另存侧车，不塞进文章。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <b>建议的路线</b>
+      <ul>
+        <li>渲染：<b>节点用 ArkUI 组件</b>（白拿排版/无障碍）+ <b>连线用 Canvas</b> + 相机与视口裁剪；</li>
+        <li>分期：先“读得准”（M1），再“改得动”（M2/M3），最后“画得好看/能演示”（M4–M6）；</li>
+        <li>手机端本期不做，桌面 / MatePad 电脑模式优先。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="no">02</span>现状：我们有什么、缺什么</h2>
+  <p>现有导图在 <code>structure_feature</code>（HSP 包）里，236 行，只读。</p>
+  <table>
+    <tr><th style="width:22%">维度</th><th>现在</th><th style="width:34%">缺口</th></tr>
+    <tr><td>数据来源</td><td>正文按行扫标题（行内加粗切碎也能认），生成快照发布给导图页</td><td>快照带 <code>version</code> 但从不比较，打开期间正文改了图不刷新</td></tr>
+    <tr><td>节点身份</td><td>节点 id = <code>'h'+起始偏移</code></td><td>正文一改偏移全变；P5 的 <code>paraId</code> 还没进契约</td></tr>
+    <tr><td>布局</td><td>叶子排 y、父取中点、x 按深度 ×300</td><td>只有“向右树”；无折叠感知、无变高、无左右均衡</td></tr>
+    <tr><td>渲染</td><td>节点是 <code>Row</code> 绝对定位；连线是独立 Canvas 贝塞尔</td><td>所有节点都实例化，无裁剪无虚拟化；连线每帧全图重画</td></tr>
+    <tr><td>交互</td><td>只有“点主题 → 回正文”</td><td>不能改、不能拖、不能折叠、没有快捷键、没有缩放</td></tr>
+    <tr><td>写回</td><td><code>outlineService</code> 只能 publish 快照、请求回跳</td><td>没有“命令下行 + 变更通知”，导图无法让正文改一个字</td></tr>
+  </table>
+  <h3>已被证明可复用的资产</h3>
+  <table>
+    <tr><th style="width:30%">资产</th><th>能承担什么</th></tr>
+    <tr><td><code>OutlineLayout.ets</code>（契约包，纯函数）</td><td>建树 + 布局。零 import、可 Node 回归，最适合原地扩展成“折叠感知 + 可变高 + 多布局策略”</td></tr>
+    <tr><td><code>DocumentModel</code> 的 <code>sectionRange / moveSection</code></td><td>“一节 = 标题 + 到下一个同级/更高级标题之前”。拖节点就是搬这一节，<b>段落 id 不变</b></td></tr>
+    <tr><td>大纲面板的命令链</td><td><code>createDocument → moveSection → project → applyGeneratedContent → flushDoc</code>，已经在用，可直接照抄</td></tr>
+    <tr><td><code>CanvasPane</code> 的相机/手势</td><td><code>screen = world×zoom + pan</code>；捏合以手指为锚；命中外扩按 <code>inflate/zoom</code>；“缩不放容器 scale（会糊字）”</td></tr>
+    <tr><td><code>TopicCard</code> 的 <code>onAreaChange</code></td><td>节点实测高度回传给父级算连线端点——可变高节点的现成做法</td></tr>
+    <tr><td><code>OutlineService</code>（核心包）</td><td>宿主导图之间唯一合法通道；改造点就是在这里加“命令 + 版本通知”</td></tr>
+  </table>
+  <div class="callout warn">
+    <b>包边界不能破：</b>结构包只允许依赖 <code>feature_contracts + core_runtime</code>。
+    它拿不到 entry 的 <code>DesignTokens / DocumentModel / GlyphRenderer</code>。
+    所以“改正文”必须走宿主命令，不能把编辑逻辑塞进 HSP。
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="no">03</span>竞品怎么做</h2>
+  <p class="kv"><span class="tag fact">事实</span>来源为官方帮助中心；标“推测”的是工程判断。</p>
+  <table>
+    <tr><th>产品</th><th>谁是主数据</th><th>大纲 ↔ 导图</th><th>关键细节</th></tr>
+    <tr><td><b>XMind</b></td><td>主题树（.xmind 里的 topic）</td><td>视图切换；桌面端大纲<b>只支持本地文件</b></td><td>Enter 同级、Tab 子级、Ctrl+Enter 父主题；空格进入编辑；多选加概要、拖蓝框改范围；演说模式可按主题隐藏</td></tr>
+    <tr><td><b>幕布</b></td><td>大纲（纯文本层级）</td><td>一个按钮来回切（桌面 Ctrl+Alt+Shift+M）</td><td>节点有“描述区”（Shift+Enter）；折叠显示子节点数量；<b>不支持自由主题</b>；连接线只能调端点角度</td></tr>
+    <tr><td><b>MindNode</b></td><td>主题树</td><td>官方承诺“两视图始终同步、瞬间切换”（⌘1/⌘2）</td><td>唯一把“顺序语义”写清楚的：主节点按创建顺序、一级子节点顺时针、更深层自上而下</td></tr>
+    <tr><td>亿图 / ProcessOn</td><td>主题树</td><td>F11 / 视图菜单开大纲窗格</td><td>布局类型最多（单/双向、组织架构、树形表、鱼骨、时间轴…）</td></tr>
+    <tr><td>Obsidian Canvas</td><td>画布 JSON（绝对坐标）</td><td>没有大纲；卡片可“窄化到某个标题”</td><td>图与文是<b>引用</b>关系，位置独立，改标题不影响卡片位置</td></tr>
+    <tr><td>Markmind 插件</td><td><b>markdown 列表就是数据</b></td><td>文件头声明 outline / mindmap / table 三种渲染</td><td>切换=重解析一次，天然没有同步 bug；rich 模式不支持大纲</td></tr>
+  </table>
+  <h3>布局类型与实现难度 <span class="tag guess">推测</span></h3>
+  <table>
+    <tr><th>布局</th><th>适合</th><th>难度</th></tr>
+    <tr><td>逻辑图（向右树）</td><td>写作提纲、读书笔记、分析拆解</td><td>低（我们现在就是）</td></tr>
+    <tr><td>思维导图（左右发散）</td><td>头脑风暴、知识框架</td><td>中（按叶子数左右分配）</td></tr>
+    <tr><td>组织架构图</td><td>层级/职级</td><td>中（自上而下 + 兄弟居中）</td></tr>
+    <tr><td>树形表格 / 鱼骨 / 时间轴</td><td>清单、根因分析、里程碑</td><td>中-高（收益低，后置）</td></tr>
+  </table>
+  <h3>最值得抄的 5 个交互 <span class="tag fact">事实整理</span></h3>
+  <ol>
+    <li><b>Enter / Tab / Ctrl+Enter 三键成树</b>：覆盖 90% 的结构编辑，不用菜单。</li>
+    <li><b>多选加概要 + 拖边框改范围</b>：把“一组的结论”挂到节点上，贴合写作。</li>
+    <li><b>折叠即显示数量、点数量展开</b>：写作时不丢内容。</li>
+    <li><b>同一份数据多视图、由声明决定渲染</b>：切换只是换渲染器，没有同步 bug。</li>
+    <li><b>演示按主题设可见/隐藏</b>：用结构本身生成放步骤，不必另做幻灯片。</li>
+  </ol>
+  <div class="callout">
+    <b>对我们最重要的结论：</b>竞品都是“树是源、文是注”。我们要反过来——<b>文是源、树是投影</b>。
+    这决定了后面所有设计：不能存第二棵树，编辑必须回写正文。
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="no">04</span>开源可借鉴（含许可证红线）</h2>
+  <p class="kv"><span class="tag fact">事实</span>仓库、许可证、维护状态来自调研 Agent 的检索。</p>
+  <table>
+    <tr><th>项目</th><th>许可证</th><th>渲染</th><th>可借鉴什么</th></tr>
+    <tr><td>simple-mind-map</td><td>MIT</td><td>DOM + SVG</td><td>布局三段式（先算子区高、再父居中）；思维导图/逻辑图/组织架构/时间轴/鱼骨全套；markdown ↔ 树、xmind 读写</td></tr>
+    <tr><td>mapjs（Mindmup）</td><td>MIT</td><td>SVG</td><td><b>多根</b> + 关系线与节点树分离 + 锥形区域重叠探测，纯函数链最好抽</td></tr>
+    <tr><td>markmap</td><td>MIT</td><td><b>SVG + Canvas2D 双后端</b></td><td>架构最值得抄：布局输出“图元数组”，Canvas 只是一个消费者；左右均衡的 <code>splitBranches</code>；折叠集合独立于树</td></tr>
+    <tr><td>jsMind</td><td>BSD-3</td><td><b>canvas 或 svg 可切</b></td><td>布局与渲染彻底分层；viewport（缩放/边距/设备像素比）语义清楚</td></tr>
+    <tr><td>mind-elixir</td><td>MIT</td><td>DOM + SVG</td><td>数据结构（topic/children/expanded/direction/summaries/arrows）可直接对齐我们的节点模型</td></tr>
+    <tr><td>@ohos/mind-elixir（Gitee 孵化）</td><td>Apache-2.0</td><td><b>ArkTS + Canvas 画线</b></td><td>唯一的鸿蒙现成实现，可 ohpm 安装做对照或兜底（API≥15）</td></tr>
+    <tr><td>KityMinder core</td><td>BSD-3</td><td>SVG</td><td>布局思想（左右分配、鱼骨、天盘）与模块划分（expand/drag/keynav）</td></tr>
+    <tr><td>Freeplane / drichard-mindmaps</td><td>GPL-2.0 / AGPL-3.0</td><td>Java2D / Canvas</td><td><b>只能读思路，不能抄代码</b></td></tr>
+    <tr><td>kityminder-editor</td><td><b>GPL-2.0</b></td><td>SVG</td><td>大纲+导图并排面板可看交互，<b>代码不可用</b>（与 BSD 的 core 是不同仓库，极易混淆）</td></tr>
+  </table>
+  <div class="callout warn">
+    <b>许可证规则（我建议写进仓库约定）：</b>MIT / BSD-3 / Apache-2.0 可以借鉴并保留声明；
+    GPL-2.0 与 AGPL-3.0 只看思路、不复制代码；算法思想与数据结构形态不受版权保护，可以自己重写。
+  </div>
+  <h3>拟采用的“组合拳”</h3>
+  <ul>
+    <li><b>架构</b>照 markmap：布局输出纯数据（节点矩形 + 连线端点），渲染层只是消费者；</li>
+    <li><b>左右均衡</b>照 markmap 的“按叶子数分左右”，<b>父节点居中</b>照 simple-mind-map 的三段式；</li>
+    <li><b>数据结构</b>照 mind-elixir：<code>topic / children / expanded / direction</code> + 顶层 <code>summaries / arrows</code>；</li>
+    <li><b>导入导出</b>照 simple-mind-map 的 md/xmind 读写（后置阶段）。</li>
+  </ul>
+</section>
+
+<section id="s5">
+  <h2><span class="no">05</span>我们的方案与七个决策</h2>
+  <table>
+    <tr><th style="width:8%">#</th><th style="width:26%">决策</th><th>内容与理由</th></tr>
+    <tr><td>D1</td><td><b>正文是唯一真源</b></td><td>导图节点 = 正文里的 H1–H3 段落（<code>paraId</code>）。不存第二棵树。理由：任何“两棵树”都会漂移，ADR-002 已经定过这条。</td></tr>
+    <tr><td>D2</td><td><b>编辑回写正文</b></td><td>改名 = 改段落文本；新建 = 在节末插标题段；删除 = 删整节（二次确认）；移动 = <code>moveSection</code>。全部走已有命令链，免费获得撤销与保存。</td></tr>
+    <tr><td>D3</td><td><b>折叠是视图态</b></td><td>折叠集合按 <code>paraId</code> 存在本地视图状态，不进正文、不进版本号；打开时恢复。</td></tr>
+    <tr><td>D4</td><td><b>布局可切换</b></td><td>首期做“逻辑图（向右树）+ 左右均衡”两种；组织架构/鱼骨/时间轴后置。布局是纯函数，切换只是换策略。</td></tr>
+    <tr><td>D5</td><td><b>概要/关系线另存</b></td><td>它们表达的是“图上的附加信息”，不属于文章结构，落独立侧车表；不进正文，导出 md 时才决定怎么降级。</td></tr>
+    <tr><td>D6</td><td><b>混合渲染</b></td><td>节点用 ArkUI 组件（排版/无障碍/hover 全免），连线用 Canvas（vp 坐标，已验证），相机自算，<b>只渲染视口内节点</b>。</td></tr>
+    <tr><td>D7</td><td><b>包边界不变</b></td><td>导图 UI 在 <code>structure_feature</code>；命令与落库在宿主（entry + core_runtime）。结构包永远不 import entry。</td></tr>
+  </table>
+  <h3>为什么不做“图里能放正文没有的节点”</h3>
+  <p>那是 XMind/幕布的模型（树是源）。如果允许，就要回答“这些节点存在哪、怎么进文章、删了正文怎么办”。
+  首期不做：先把“文章结构可视化并可编辑”做扎实；自由主题可以放到后续“思路板”里，而不是文稿导图。</p>
+</section>
+
+<section id="s6">
+  <h2><span class="no">06</span>架构与数据模型</h2>
+  <h3>数据流</h3>
+  <pre style="background:#f4f4f2;border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow:auto;font-size:13.5px;line-height:1.7">正文（文本 + 格式边车）
+   │ OutlineExtract：按段落取标题，带 paraId / 版本
+   ▼
+OutlineSnapshot（可序列化，带 version）
+   │  core_runtime.OutlineService.publish
+   ▼
+structure_feature：布局（纯函数）→ 渲染（组件 + Canvas）
+   │ 用户操作：改名 / 新建 / 删除 / 移动 / 折叠
+   ▼
+OutlineCommand（只传基本类型 + paraId + 目标位置）
+   │  core_runtime.OutlineService.dispatch → 宿主订阅
+   ▼
+entry：DocumentModel 命令 → project() → applyGeneratedContent → flushDoc
+   │  保存时 reconcile 保住 paraId
+   ▼
+新的快照（version++）→ 导图刷新（结构变化后重新布局）
+</pre>
+  <h3>节点模型（在现有契约上扩展）</h3>
+  <table>
+    <tr><th>字段</th><th>用途</th><th>状态</th></tr>
+    <tr><td><code>paraId</code></td><td>稳定身份（取代现在的 <code>'h'+offset</code>）</td><td>新增</td></tr>
+    <tr><td><code>parentIndex</code></td><td>折叠/布局只认父子，不再靠层级栈反复推</td><td>新增</td></tr>
+    <tr><td><code>collapsed</code></td><td>视图态，布局时跳过子树</td><td>新增（不入正文）</td></tr>
+    <tr><td><code>sectionEndIndex</code></td><td>“这一节到哪结束”，拖动搬运用</td><td>新增</td></tr>
+    <tr><td><code>width / height</code></td><td>节点实测尺寸（<code>onAreaChange</code> 回填），支持变高与换行</td><td>新增</td></tr>
+    <tr><td><code>version</code></td><td>与 <code>contentVersion</code> 比对，决定是否重排/重绘</td><td>已有，需真正使用</td></tr>
+  </table>
+  <h3>侧车表（仅当做概要/关系线时）</h3>
+  <div class="card">
+    <p class="kv"><b>doc_map_summary</b>：<code>chapter_id, summary_id, start_para_id, end_para_id, text, created_at</code></p>
+    <p class="kv"><b>doc_map_relation</b>：<code>chapter_id, relation_id, from_para_id, to_para_id, label, kind, created_at</code></p>
+    <p><small>两表都不参与正文版本；删文稿时级联清理；备份时随文稿一起导出。</small></p>
+  </div>
+</section>
+
+<section id="s7">
+  <h2><span class="no">07</span>交互与快捷键</h2>
+  <table>
+    <tr><th>操作</th><th>键</th><th>行为（与正文的关系）</th></tr>
+    <tr><td>新建同级</td><td>Enter</td><td>在当前节之后插入一个同级标题段</td></tr>
+    <tr><td>新建子级</td><td>Tab</td><td>在当前节末尾插入一个更低一级的标题段</td></tr>
+    <tr><td>升级 / 降级</td><td>Shift+Tab / Tab（选中态）</td><td>改该段落的 <code>kind</code>（H2→H1）</td></tr>
+    <tr><td>改名</td><td>F2 / 双击 / 空格</td><td>浮层输入，回车提交 → 改段落文本</td></tr>
+    <tr><td>删除</td><td>Delete</td><td>删整节（含下属正文），二次确认，可撤销</td></tr>
+    <tr><td>同级上/下移</td><td>Alt+↑ / Alt+↓</td><td><code>moveSectionUp/Down</code>，整节搬</td></tr>
+    <tr><td>折叠 / 展开</td><td>Space 或点击圆点</td><td>只改视图集合，不动正文</td></tr>
+    <tr><td>导航</td><td>方向键</td><td>在树里移动选中；Enter 回到正文该节</td></tr>
+    <tr><td>缩放 / 适配</td><td>Ctrl+滚轮 / Ctrl+0</td><td>改 zoom 与字号（不缩放容器，避免糊字）</td></tr>
+    <tr><td>切换到正文</td><td>Esc / 点击标题左侧箭头</td><td>关闭导图并把光标放到当前节点</td></tr>
+  </table>
+  <div class="callout">
+    <b>一条硬规则：</b>任何改变结构的操作，都必须能在正文里看到同样的结果，并且能一次撤销。
+    如果做不到（例如概要不属于正文），就把它明确标成“图的附加信息”，不假装它是文章结构。
+  </div>
+</section>
+
+<section id="s8">
+  <h2><span class="no">08</span>分期计划与验收</h2>
+  <p>按“先读得准 → 再改得动 → 再画得好 → 最后能演示”排。每期都能单独交付、单独验收。</p>
+  <table>
+    <tr><th style="width:8%">期</th><th style="width:30%">做什么</th><th>验收（用户可感知）</th></tr>
+    <tr>
+      <td><b>M1</b><br><small>读得准</small></td>
+      <td>契约升级（paraId/parent/collapsed/实测尺寸）；快照带版本并在打开期间自动刷新；缩放 + 适配窗口；方向键选中 + Enter 回正文；空态与错误态</td>
+      <td>开着导图改正文标题，图上立刻跟着变；200 个标题也能顺畅缩放</td>
+    </tr>
+    <tr>
+      <td><b>M2</b><br><small>改得动</small></td>
+      <td>就地改名；Enter/Tab 新建同级/子级；Shift+Tab 升降级；Delete 删节（二次确认）；全部可撤销</td>
+      <td>只动导图，不动正文，就能把结构改对；Ctrl+Z 一次回到改之前</td>
+    </tr>
+    <tr>
+      <td><b>M3</b><br><small>组织</small></td>
+      <td>折叠/展开（含“N 项”徽标）；拖拽重排（上/中/下三区判定，整节搬）；视口裁剪与连线增量重绘</td>
+      <td>拖一个节点到别处，正文整节跟着走；折叠后图变小但正文不动</td>
+    </tr>
+    <tr>
+      <td><b>M4</b><br><small>好看</small></td>
+      <td>布局切换（逻辑图 / 左右均衡）；主题与字号档；连线样式；fit-to-screen</td>
+      <td>同一篇文章可以用两种结构视角看</td>
+    </tr>
+    <tr>
+      <td><b>M5</b><br><small>附加信息</small></td>
+      <td>概要（多选生成、拖边改范围）；关系线（两点连线 + 标签）；独立侧车表 + 备份</td>
+      <td>图上能写“这三章其实是一组”“A 论证 B”，且不影响正文</td>
+    </tr>
+    <tr>
+      <td><b>M6</b><br><small>演示与互通</small></td>
+      <td>单屏演示（按主题隐藏）；md / opml / xmind 导入导出</td>
+      <td>从文章结构直接讲一遍；结构能带出去</td>
+    </tr>
+  </table>
+  <p><small>工作量感受：M1 小、M2 中、M3 中偏大、M4 中、M5 大、M6 中。M1–M3 是“可用”的门槛。</small></p>
+</section>
+
+<section id="s9">
+  <h2><span class="no">09</span>风险与未验证项</h2>
+  <table>
+    <tr><th style="width:26%">风险</th><th>现状 / 触发</th><th style="width:34%">对策</th></tr>
+    <tr><td><span class="tag risk">高</span>HSP 内没有自绘先例</td><td>现有的 Canvas 绘制经验都在 entry 里，结构包里没有 drawing/text 的用法</td><td>M1 先只画连线（已验证能工作），节点仍用系统 Text；若要自绘，先在包里做一次最小验证</td></tr>
+    <tr><td><span class="tag risk">高</span>手势竞争</td><td>外层滚动 vs 节点拖拽 vs 画布平移；2in1 上还有触控板</td><td>照 CanvasPane 的做法分层挂兄弟节点；拖动阈值 + 长按再拖；先在桌面验证</td></tr>
+    <tr><td><span class="tag risk">中</span>撤销后 paraId 变化</td><td>同事文档已列：撤销回灌时恢复段可能拿到新 id</td><td>导图按 <code>paraId</code> 找节点，找不到就按“偏移 + 标题文本”回退，并提示一次</td></tr>
+    <tr><td><span class="tag risk">中</span>缩放导致重排</td><td>改字号必须重排，不能只缩放容器</td><td>按“档位”缩放（100/85/70/55%），每档排一次；连续手势结束再落档</td></tr>
+    <tr><td><span class="tag risk">中</span>大图绘制</td><td>Canvas 尺寸超过 8000px 会转 CPU 渲染（官方提示）</td><td>连线只画视口内线段；地图尺寸超限时按块裁剪</td></tr>
+    <tr><td><span class="tag guess">待验证</span>节点变高</td><td>标题换行后高度不等，连线端点要跟着动</td><td>用 <code>onAreaChange</code> 回填实测高度（TopicCard 已有先例）</td></tr>
+  </table>
+</section>
+
+<section id="s10">
+  <h2><span class="no">10</span>需要你拍板的 5 个问题</h2>
+  <ol>
+    <li><b>导图能不能有“正文里没有的节点”？</b>我建议<b>不能</b>（D1）。要能的话，需要把图存成第二份数据，复杂度和漂移风险都上一个台阶。</li>
+    <li><b>删除节点 = 删除整节正文？</b>我建议是，但必须二次确认 + 可撤销。若你希望“只从图里移除、正文保留”，那就变成视图过滤，得另做一套“隐藏”语义。</li>
+    <li><b>首期做几种布局？</b>我建议两种（逻辑图 + 左右均衡）。只做一种也行，但“左右均衡”是思维导图的默认形态，缺了会显得不像导图。</li>
+    <li><b>概要 / 关系线进不进首期？</b>我建议放到 M5。它们要新增侧车表、备份协议和导出降级规则，和“改结构”不是一个复杂度。</li>
+    <li><b>手机端本期做不做？</b>按你之前定的“桌面 / MatePad 电脑模式优先”，我建议本期只做桌面，手机端等导图稳定后再补触摸版（长按菜单、单指平移、双指缩放）。</li>
+  </ol>
+  <div class="callout">
+    你回一句“按建议来”我就按 M1 → M2 → M3 推进；想调整哪条，说编号即可。
+    M1 的第一步是把 <code>OutlineLayout</code> 契约升级（<code>paraId</code>/<code>collapsed</code>/实测尺寸），
+    这一步不碰 UI，风险最低，也决定后面所有布局代码的形态。
+  </div>
+</section>
+
+<footer>
+  语流 · 思维导图方案评审稿 · 2026-11 · 由三个调研 Agent（竞品 / 开源 / 代码现状）并行产出后汇总<br>
+  竞品与开源信息以官方文档与仓库为准；标“推测/待验证”的条目尚未在真机确认。
+</footer>
+
+</div>
+</body>
+</html>
