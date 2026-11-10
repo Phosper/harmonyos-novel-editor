@@ -237,7 +237,20 @@ export struct StructurePage {
     this.onClose()
   }
 
-  /** 键盘：结构编辑与导航分离——Enter 新建同级，双击/Ctrl+Enter 回正文 */
+  /** 读修饰键；部分键位没有修饰键信息，异常时按未按下处理 */
+  private hasModifier(event: KeyEvent, name: string): boolean {
+    try {
+      // getModifierKeyState 在部分 SDK 声明为可选：先判存在再调用
+      if (event.getModifierKeyState === undefined) {
+        return false
+      }
+      return event.getModifierKeyState([name])
+    } catch (e) {
+      return false
+    }
+  }
+
+  /** 键盘：结构编辑与导航分离——Enter 新建同级，双击回正文，Alt+↑↓ 搬整节 */
   private handleKey(event: KeyEvent): boolean {
     if (event.type !== KeyType.Down) {
       return false
@@ -253,6 +266,14 @@ export struct StructurePage {
     if (this.placed.length === 0) {
       return false
     }
+    const alt: boolean = this.hasModifier(event, 'alt')
+    if ((code === KEY_DPAD_UP || code === KEY_DPAD_DOWN) && alt) {
+      // Alt+方向：搬整节（正文跟着走）；没有修饰键时才是移动选中
+      if (this.selectedIndex >= 0) {
+        this.dispatchCommand(code === KEY_DPAD_UP ? OutlineCommandKind.MOVE_UP : OutlineCommandKind.MOVE_DOWN)
+      }
+      return true
+    }
     if (code === KEY_DPAD_UP || code === KEY_DPAD_DOWN) {
       const step: number = code === KEY_DPAD_UP ? -1 : 1
       const base: number = this.selectedIndex < 0 ? (step > 0 ? -1 : this.placed.length) : this.selectedIndex
@@ -267,6 +288,15 @@ export struct StructurePage {
       return true
     }
     if (code === KEY_TAB) {
+      const shift: boolean = this.hasModifier(event, 'shift')
+      const node: PlacedNode | undefined = this.selectedNode()
+      if (shift) {
+        // Shift+Tab：升一级（H3→H2→H1），到 H1 就不再变
+        if (node !== undefined && node.level > 1) {
+          this.dispatchCommand(OutlineCommandKind.SET_KIND, '', node.level - 1)
+        }
+        return true
+      }
       this.dispatchCommand(OutlineCommandKind.INSERT_CHILD)
       return true
     }
