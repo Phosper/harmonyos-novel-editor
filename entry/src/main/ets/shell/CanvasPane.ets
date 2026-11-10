@@ -399,10 +399,6 @@ export struct CanvasPane {
 
   // ===================== 连线 =====================
 
-  private fmt(n: number): string {
-    return (Math.round(n * 10) / 10).toString()
-  }
-
   /** 矩形边缘上朝向 toward 点的锚点（取中心射线与边框的交点） */
   private anchorX(rect: CanvasRect, towardX: number, towardY: number): number {
     const cx: number = rect.x + rect.w / 2
@@ -494,20 +490,74 @@ export struct CanvasPane {
       const labelText: string = link.label !== '' ? link.label : canvasLinkLabel(link.kind)
       const labelX: number = mx + nx * bow * 0.55
       const labelY: number = my + ny * bow * 0.55
+      // 曲线与箭头都采样成折线：Polyline.points 的单位是 vp（与 position/width 同一套），
+      // 而 Path.commands 的单位是 px，两者混用会在 DPR≠1 的屏上线缩水、错位。
+      const curve: number[][] = this.sampleCubic(p1x, p1y, c1x, c1y, p2x, p2y, 16)
+      const arrow: number[][] = []
+      arrow.push([p2x - ah * Math.cos(ang - 0.42), p2y - ah * Math.sin(ang - 0.42)])
+      arrow.push([p2x, p2y])
+      arrow.push([p2x - ah * Math.cos(ang + 0.42), p2y - ah * Math.sin(ang + 0.42)])
+      const box: number[] = this.boundsOf(curve, arrow)
       out.push({
         linkId: link.id,
-        commands: 'M' + this.fmt(p1x) + ' ' + this.fmt(p1y) +
-          ' C' + this.fmt(c1x) + ' ' + this.fmt(c1y) + ' ' + this.fmt(c1x) + ' ' + this.fmt(c1y) +
-          ' ' + this.fmt(p2x) + ' ' + this.fmt(p2y) +
-          ' M' + this.fmt(p2x - ah * Math.cos(ang - 0.42)) + ' ' + this.fmt(p2y - ah * Math.sin(ang - 0.42)) +
-          ' L' + this.fmt(p2x) + ' ' + this.fmt(p2y) +
-          ' L' + this.fmt(p2x - ah * Math.cos(ang + 0.42)) + ' ' + this.fmt(p2y - ah * Math.sin(ang + 0.42)),
+        originX: box[0],
+        originY: box[1],
+        width: box[2],
+        height: box[3],
+        points: this.offsetPoints(curve, box[0], box[1]),
+        arrow: this.offsetPoints(arrow, box[0], box[1]),
         label: labelText,
         labelX: labelX,
         labelY: labelY,
         labelWidth: labelText.length * 11 + 14,
         dashed: false
       })
+    }
+    return out
+  }
+
+  /** 三次贝塞尔采样（vp）：控制点重复两次即二次曲线的效果，与原来的单控制点画法一致 */
+  private sampleCubic(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number,
+    steps: number): number[][] {
+    const out: number[][] = []
+    const n: number = Math.max(2, steps)
+    for (let i: number = 0; i <= n; i++) {
+      const t: number = i / n
+      const u: number = 1 - t
+      const x: number = u * u * u * x0 + 3 * u * u * t * cx + 3 * u * t * t * cx + t * t * t * x1
+      const y: number = u * u * u * y0 + 3 * u * u * t * cy + 3 * u * t * t * cy + t * t * t * y1
+      out.push([x, y])
+    }
+    return out
+  }
+
+  /** 两组点的公共包围盒：[originX, originY, width, height]，四周留出描边余量 */
+  private boundsOf(a: number[][], b: number[][]): number[] {
+    let minX: number = a[0][0]
+    let maxX: number = a[0][0]
+    let minY: number = a[0][1]
+    let maxY: number = a[0][1]
+    for (let i: number = 0; i < a.length; i++) {
+      minX = Math.min(minX, a[i][0])
+      maxX = Math.max(maxX, a[i][0])
+      minY = Math.min(minY, a[i][1])
+      maxY = Math.max(maxY, a[i][1])
+    }
+    for (let i: number = 0; i < b.length; i++) {
+      minX = Math.min(minX, b[i][0])
+      maxX = Math.max(maxX, b[i][0])
+      minY = Math.min(minY, b[i][1])
+      maxY = Math.max(maxY, b[i][1])
+    }
+    const pad: number = 2
+    return [minX - pad, minY - pad, Math.max(1, maxX - minX + pad * 2), Math.max(1, maxY - minY + pad * 2)]
+  }
+
+  /** 把绝对坐标点平移到包围盒坐标系（Polyline 只认自己盒子内的坐标） */
+  private offsetPoints(points: number[][], ox: number, oy: number): number[][] {
+    const out: number[][] = []
+    for (let i: number = 0; i < points.length; i++) {
+      out.push([points[i][0] - ox, points[i][1] - oy])
     }
     return out
   }

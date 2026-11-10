@@ -22,12 +22,18 @@ export {
   OUTLINE_COL_GAP,
   OUTLINE_ROW_GAP,
   OUTLINE_PAD,
+  OUTLINE_LAYOUT_RIGHT,
+  OUTLINE_LAYOUT_BALANCED,
   buildOutline,
   buildOutlineFromParagraphs,
   layoutOutline,
   outlineParents,
   OutlineConnector,
-  outlineConnectors
+  outlineConnectors,
+  OutlineWire,
+  OUTLINE_WIRE_PAD,
+  OUTLINE_WIRE_STEPS,
+  outlineWires
 } from './src/main/ets/contracts/OutlineLayout'
 export type { OutlineHeading, OutlineParagraph } from './src/main/ets/contracts/OutlineLayout'
 // 导图 → 正文的结构命令

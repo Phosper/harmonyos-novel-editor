@@ -4,8 +4,9 @@
 // 编辑：改名/新建/升降级/删除/移动都发 OutlineCommand 给 core_runtime，宿主改正文后回传新快照。
 // 边界：本包不 import entry、不碰正文；折叠与选中是视图态。
 import {
-  MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind, OutlineConnector,
-  OUTLINE_NODE_H, OUTLINE_NODE_W, layoutOutline, outlineConnectors
+  MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind, OutlineWire,
+  OUTLINE_NODE_H, OUTLINE_NODE_W, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_RIGHT,
+  layoutOutline, outlineConnectors, outlineWires
 } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 
@@ -25,6 +26,7 @@ const KEY_ESCAPE: number = 2070
 const KEY_ENTER: number = 2054
 const KEY_NUMPAD_ENTER: number = 2116
 const KEY_TAB: number = 2049
+const KEY_SPACE: number = 2050
 const KEY_FORWARD_DEL: number = 2071
 const KEY_DPAD_UP: number = 2012
 const KEY_DPAD_DOWN: number = 2013
@@ -53,16 +55,26 @@ export struct StructurePage {
   /** 就地改名 */
   @Local renaming: boolean = false
   @Local renameText: string = ''
+  /** 折叠集合（按 paraId 存；视图态，不写正文、不进版本号） */
+  @Local collapsedIds: string[] = []
+  /** 布局形态：true = 根在中间、一级主题左右分；false = 一直向右 */
+  @Local balanced: boolean = true
 
-  /** 连线图元：由布局算出，渲染层只负责画（markmap 的"布局→图元→渲染"分层） */
-  private connectors: OutlineConnector[] = []
-  /** Canvas 是否已经就绪；未就绪时先记下，onReady 再画 */
-  private canvasReady: boolean = false
-  private redrawTimer: number = -1
   /**
-   * 连线用 Canvas 画，不用 Path（Path 的 commands 单位与组件尺寸不一致，真机上只画出一小段）。
+   * 连线图元（包围盒 + 采样点）：渲染层只摆一个 Polyline，不自己算坐标。
+   *
+   * 用 Polyline 而不是 Canvas / Path 的原因（两次真机偏移的教训）：
+   *  - `Path().commands()` 的单位是 **px**（SDK 声明写死 px），与布局的 vp 混用会整体缩小；
+   *  - `Canvas` 是独立绘制面，尺寸与就绪时机都晚于节点布局，缩放的瞬间"节点已经挪走、线还在旧坐标"。
+   * `Polyline.points()` 的单位是 **vp**，与节点的 `.position()` 同一套坐标、同一次布局，不存在时间差。
    */
-  private connCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true))
+  @Local wires: OutlineWire[] = []
+  /**
+   * 布局版本号：每次重排 +1 并拼进 ForEach 的键。
+   * 节点身份键（paraId）在缩放/重排时是不变的，只用它 ArkUI 会复用旧子组件、不再执行构建函数，
+   * 于是节点停在旧位置——这正是"节点不动、只有线动了"的根源。
+   */
+  @Local layoutRev: number = 0
 
   aboutToAppear(): void {
     this.load()
@@ -84,18 +96,26 @@ export struct StructurePage {
       this.empty = true
       this.topicCount = 0
       this.placed = []
+      this.wires = []
       this.mapW = 0
       this.mapH = 0
       this.selectedIndex = -1
+      this.layoutRev = this.layoutRev + 1
       return
     }
     const selectedParaId: string = this.selectedParaId()
-    const layout: MindMapLayout = layoutOutline(snapshot.nodes, null, this.zoom)
+    const collapsedSet: Set<string> = new Set<string>()
+    for (let i: number = 0; i < this.collapsedIds.length; i++) {
+      collapsedSet.add(this.collapsedIds[i])
+    }
+    const layout: MindMapLayout = layoutOutline(snapshot.nodes, collapsedSet, this.zoom,
+      this.balanced ? OUTLINE_LAYOUT_BALANCED : OUTLINE_LAYOUT_RIGHT)
     this.placed = layout.nodes
     this.mapW = layout.width
     this.mapH = layout.height
     this.topicCount = layout.nodes.length - 1
-    this.connectors = outlineConnectors(this.placed)
+    this.wires = outlineWires(outlineConnectors(this.placed))
+    this.layoutRev = this.layoutRev + 1
     this.empty = false
     // 命令后重建时尽量把选中保持在同一个节点上（段落身份不变，索引会变）
     if (selectedParaId !== '') {
@@ -111,21 +131,6 @@ export struct StructurePage {
     if (this.selectedIndex >= this.placed.length) {
       this.selectedIndex = -1
     }
-    this.scheduleConnections()
-  }
-
-  /**
-   * 连线重画要等一帧：刚改过缩放/结构时 Canvas 的尺寸还没落到新值，
-   * 立刻画会按旧尺寸裁切，表现为"节点动了、线还在原地"。
-   */
-  private scheduleConnections(): void {
-    if (this.redrawTimer !== -1) {
-      clearTimeout(this.redrawTimer)
-    }
-    this.redrawTimer = setTimeout(() => {
-      this.redrawTimer = -1
-      this.drawConnections()
-    }, 0)
   }
 
   /** 改缩放：按档位重排一次（不缩放容器，避免文字发糊） */
@@ -135,6 +140,42 @@ export struct StructurePage {
       return
     }
     this.zoom = clamped
+    this.load()
+  }
+
+  /** 换布局形态：左右均衡 ↔ 一直向右（纯布局参数，不动正文） */
+  private toggleLayout(): void {
+    this.balanced = !this.balanced
+    this.load()
+  }
+
+  /** 折叠/展开一节：只改视图集合，不碰正文 */
+  private toggleFold(paraId: string): void {
+    if (paraId === '') {
+      return
+    }
+    const next: string[] = []
+    let found: boolean = false
+    for (let i: number = 0; i < this.collapsedIds.length; i++) {
+      if (this.collapsedIds[i] === paraId) {
+        found = true
+      } else {
+        next.push(this.collapsedIds[i])
+      }
+    }
+    if (!found) {
+      next.push(paraId)
+    }
+    this.collapsedIds = next
+    this.load()
+  }
+
+  /** 展开全部：折叠多了要能一键恢复 */
+  private expandAll(): void {
+    if (this.collapsedIds.length === 0) {
+      return
+    }
+    this.collapsedIds = []
     this.load()
   }
 
@@ -169,6 +210,15 @@ export struct StructurePage {
   private selectedY(): number {
     const node: PlacedNode | undefined = this.selectedNode()
     return node === undefined ? 0 : node.y
+  }
+
+  /** 折叠徽标的横坐标：贴在节点外侧（朝左展开的节点贴在左边） */
+  private badgeX(n: PlacedNode): number {
+    return n.side < 0 ? n.x - 22 : n.x + OUTLINE_NODE_W * n.scale + 6
+  }
+
+  private badgeY(n: PlacedNode): number {
+    return n.y + OUTLINE_NODE_H * n.scale / 2 - 8
   }
 
   private selectAt(index: number): void {
@@ -300,6 +350,14 @@ export struct StructurePage {
     if (this.selectedIndex < 0) {
       return false
     }
+    if (code === KEY_SPACE) {
+      // 空格 = 折叠/展开选中节（只改视图）
+      const target: PlacedNode | undefined = this.selectedNode()
+      if (target !== undefined && target.childCount > 0) {
+        this.toggleFold(target.paraId)
+      }
+      return true
+    }
     if (code === KEY_ENTER) {
       this.dispatchCommand(OutlineCommandKind.INSERT_SIBLING)
       return true
@@ -328,25 +386,18 @@ export struct StructurePage {
     return false
   }
 
-  /** 画连线：只消费布局算好的图元，坐标与节点矩形天然一致 */
-  private drawConnections(): void {
-    if (!this.canvasReady) {
-      return
-    }
-    const ctx: CanvasRenderingContext2D = this.connCtx
-    if (this.mapW <= 0 || this.mapH <= 0) {
-      return
-    }
-    ctx.clearRect(0, 0, this.mapW, this.mapH)
-    ctx.strokeStyle = this.theme.divider
-    ctx.lineWidth = 1.2
-    for (let i: number = 0; i < this.connectors.length; i++) {
-      const c: OutlineConnector = this.connectors[i]
-      ctx.beginPath()
-      ctx.moveTo(c.fromX, c.fromY)
-      ctx.bezierCurveTo(c.controlX, c.fromY, c.controlX, c.toY, c.toX, c.toY)
-      ctx.stroke()
-    }
+  /**
+   * ForEach 的键：节点身份 + 布局版本。
+   * 只写身份的话，缩放/重排后键不变，ArkUI 复用旧子组件、不重跑构建函数 → 节点停在旧位置。
+   */
+  private nodeKey(node: PlacedNode): string {
+    return this.layoutRev.toString() + '|' + (node.paraId === '' ? node.id : node.paraId)
+  }
+
+  /** 连线的键：包围盒与版本一起，几何一变就重建 */
+  private wireKey(wire: OutlineWire, index: number): string {
+    return this.layoutRev.toString() + '|' + index.toString() + '|' + wire.originX.toFixed(1) +
+      '|' + wire.originY.toFixed(1) + '|' + wire.width.toFixed(1) + '|' + wire.height.toFixed(1)
   }
 
   private titleOf(): string {
@@ -381,6 +432,20 @@ export struct StructurePage {
       Text(this.topicCount.toString() + ' 个主题')
         .fontSize(12).fontColor(this.theme.sub)
         .margin({ right: 12 })
+
+      // 布局形态与折叠：都只改视图，不动正文
+      Text(this.balanced ? '左右' : '向右')
+        .fontSize(12).fontColor(this.theme.sub)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .accessibilityText(this.balanced ? '切换为一直向右的布局' : '切换为左右均衡布局')
+        .onClick(() => { this.toggleLayout() })
+      if (this.collapsedIds.length > 0) {
+        Text('展开全部')
+          .fontSize(12).fontColor(this.theme.sub)
+          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+          .accessibilityText('展开所有折叠的主题')
+          .onClick(() => { this.expandAll() })
+      }
 
       // 缩放：按档位重排（文字不糊）；「适应」把整棵树缩进视口
       Row() {
@@ -419,6 +484,48 @@ export struct StructurePage {
     .padding({ left: 20, right: 16 + this.captionInset })
     .alignItems(VerticalAlign.Center)
     .border({ width: { bottom: 1 }, color: this.theme.divider })
+  }
+
+  /**
+   * 一条连线：一个 Polyline。
+   * `points` 的单位与 `.position()`/`.width()` 一样是 vp，所以它和节点在同一套坐标里，
+   * 只需要摆到包围盒左上角——不依赖画布尺寸、不依赖重画时机。
+   */
+  @Builder
+  wireLine(wire: OutlineWire) {
+    Polyline()
+      .width(wire.width)
+      .height(wire.height)
+      .position({ x: wire.originX, y: wire.originY })
+      .points(wire.points)
+      .fillOpacity(0)
+      .stroke(this.theme.divider)
+      .strokeWidth(1.4)
+      .strokeLineCap(LineCapStyle.Round)
+      .strokeLineJoin(LineJoinStyle.Round)
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+  }
+
+  /**
+   * 折叠徽标：有子节点才出现；展开时显示「−」，折叠时显示子节点数量（幕布的做法）。
+   * 独立组件压在节点层之上，点它不会误触「选中 / 双击回正文」。
+   */
+  @Builder
+  foldBadge(n: PlacedNode) {
+    Text(n.collapsed ? n.childCount.toString() : '−')
+      .fontSize(9)
+      .fontColor(this.theme.sub)
+      .width(16)
+      .height(16)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.theme.card)
+      .borderRadius(8)
+      .border({ width: 1, color: this.theme.divider })
+      .position({ x: this.badgeX(n), y: this.badgeY(n) })
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText(n.collapsed ? ('展开这一节，共 ' + n.childCount.toString() + ' 项') : '折叠这一节')
+      .onClick(() => { this.toggleFold(n.paraId) })
   }
 
   @Builder
@@ -499,22 +606,18 @@ export struct StructurePage {
         Scroll() {
           Scroll() {
             Stack({ alignContent: Alignment.TopStart }) {
-              Canvas(this.connCtx)
-                .width(this.mapW)
-                .height(this.mapH)
-                .hitTestBehavior(HitTestMode.None)
-                .accessibilityLevel('no')
-                .onReady(() => {
-                  this.canvasReady = true
-                  this.drawConnections()
-                })
-                .onAreaChange((_old: Area, now: Area) => {
-                  // 尺寸（缩放/窗口变化）落定后必须重画，否则线会停在旧坐标
-                  this.drawConnections()
-                })
+              // 连线层：普通组件（不是画布），坐标与下面的节点同一套，先声明所以在底层
+              ForEach(this.wires, (wire: OutlineWire, index: number) => {
+                this.wireLine(wire)
+              }, (wire: OutlineWire, index: number) => this.wireKey(wire, index))
               ForEach(this.placed, (node: PlacedNode, index: number) => {
                 this.nodeChip(node, index)
-              }, (node: PlacedNode) => node.paraId === '' ? node.id : node.paraId)
+              }, (node: PlacedNode) => this.nodeKey(node))
+              ForEach(this.placed, (node: PlacedNode) => {
+                if (node.childCount > 0) {
+                  this.foldBadge(node)
+                }
+              }, (node: PlacedNode) => 'fold' + this.nodeKey(node) + (node.collapsed ? 'c' : 'e'))
               if (this.renaming && this.selectedIndex >= 0) {
                 this.renameOverlay()
               }

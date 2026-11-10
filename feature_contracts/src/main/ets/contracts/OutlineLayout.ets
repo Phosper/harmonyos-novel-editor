@@ -71,6 +71,10 @@ export class PlacedNode {
   parentIndex: number = -1
   hasChildren: boolean = false
   collapsed: boolean = false
+  /** 展开方向：1 = 向右侧展开，-1 = 向左侧展开，0 = 根（左右均衡布局才用得上） */
+  side: number = 1
+  /** 直接子节点数（含被折叠隐藏的）：折叠徽标上显示的数量 */
+  childCount: number = 0
   /** 本次布局的缩放（渲染层据此算节点框与字号） */
   scale: number = 1
 }
@@ -87,6 +91,10 @@ export const OUTLINE_NODE_H: number = 38
 export const OUTLINE_COL_GAP: number = 300
 export const OUTLINE_ROW_GAP: number = 52
 export const OUTLINE_PAD: number = 24
+
+/** 布局形态：一直向右（逻辑图）／根在中间、一级主题左右分（思维导图，markmap 的 splitBranches 思路） */
+export const OUTLINE_LAYOUT_RIGHT: string = 'right'
+export const OUTLINE_LAYOUT_BALANCED: string = 'balanced'
 
 /**
  * 从"文稿标题 + 扁平标题列表"生成树。
@@ -158,12 +166,72 @@ export function buildOutlineFromParagraphs(docTitle: string, paragraphs: Outline
   return nodes
 }
 
+/** 一棵子树有几个叶子：左右分配时用它当权重（照 markmap 的 splitBranches） */
+function subtreeLeaves(index: number, children: number[][]): number {
+  const kids: number[] = children[index]
+  if (kids.length === 0) {
+    return 1
+  }
+  let sum: number = 0
+  for (let k: number = 0; k < kids.length; k++) {
+    sum += subtreeLeaves(kids[k], children)
+  }
+  return sum
+}
+
+/**
+ * 每个节点的展开方向：根为 0；一级主题按"叶子权重轮流补到较轻的一侧"分左右（markmap 的思路），
+ * 更深层继承父级。只有一侧有节点时退回全向右，避免出现"整棵树长在左边"的怪图。
+ */
+function assignSides(count: number, children: number[][], mode: string): number[] {
+  const sides: number[] = []
+  for (let i: number = 0; i < count; i++) {
+    sides.push(1)
+  }
+  if (count === 0) {
+    return sides
+  }
+  sides[0] = 0
+  const rootKids: number[] = children[0]
+  if (mode !== OUTLINE_LAYOUT_BALANCED || rootKids.length < 2) {
+    return sides
+  }
+  const rootSides: number[] = []
+  let rightWeight: number = 0
+  let leftWeight: number = 0
+  for (let k: number = 0; k < rootKids.length; k++) {
+    const w: number = subtreeLeaves(rootKids[k], children)
+    if (rightWeight <= leftWeight) {
+      rootSides.push(1)
+      rightWeight += w
+    } else {
+      rootSides.push(-1)
+      leftWeight += w
+    }
+  }
+  if (rightWeight === 0 || leftWeight === 0) {
+    return sides
+  }
+  const spread = (index: number, side: number): void => {
+    sides[index] = side
+    const kids: number[] = children[index]
+    for (let k: number = 0; k < kids.length; k++) {
+      spread(kids[k], side)
+    }
+  }
+  for (let k: number = 0; k < rootKids.length; k++) {
+    spread(rootKids[k], rootSides[k])
+  }
+  return sides
+}
+
 /**
  * 树布局：先按"叶子顺序"排 y，内部节点取首末子节点的中点；x = 深度 × 列距。
+ * 两种形态：一直向右（逻辑图）／根在中间、一级主题左右分（思维导图）。
  * 纯函数，同样的输入永远得到同样的输出（便于回归与快照对比）。
  */
 export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | null = null,
-  scale: number = 1): MindMapLayout {
+  scale: number = 1, mode: string = OUTLINE_LAYOUT_RIGHT): MindMapLayout {
   const layout: MindMapLayout = new MindMapLayout()
   if (nodes.length === 0) {
     return layout
@@ -202,9 +270,15 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
   for (let i: number = 0; i < nodes.length; i++) {
     hasChildren.push(false)
   }
+  // 子节点总数（含被折叠隐藏的）：折叠徽标显示"这一节下面有几项"
+  const childCount: number[] = []
+  for (let i: number = 0; i < nodes.length; i++) {
+    childCount.push(0)
+  }
   for (let i: number = 0; i < nodes.length; i++) {
     if (parents[i] >= 0) {
       hasChildren[parents[i]] = true
+      childCount[parents[i]] = childCount[parents[i]] + 1
       if (visible[i]) {
         children[parents[i]].push(i)
       }
@@ -235,31 +309,47 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
     return ys[index]
   }
   place(0)
-  let maxDepth: number = 0
+  const sides: number[] = assignSides(nodes.length, children, mode)
+  // 根要留出左侧子树占的列：否则左边的节点会跑到 x<0，被滚出可视区
+  let maxRightDepth: number = 0
+  let maxLeftDepth: number = 0
+  for (let i: number = 1; i < nodes.length; i++) {
+    if (!visible[i]) {
+      continue
+    }
+    if (sides[i] < 0) {
+      if (nodes[i].depth > maxLeftDepth) {
+        maxLeftDepth = nodes[i].depth
+      }
+    } else if (nodes[i].depth > maxRightDepth) {
+      maxRightDepth = nodes[i].depth
+    }
+  }
+  const rootX: number = pad + maxLeftDepth * colGap
   for (let i: number = 0; i < nodes.length; i++) {
     if (!visible[i]) {
       continue
     }
     const depth: number = nodes[i].depth
-    if (depth > maxDepth) {
-      maxDepth = depth
-    }
     const placed: PlacedNode = new PlacedNode()
     placed.id = nodes[i].id
     placed.title = nodes[i].title
     placed.level = nodes[i].level
     placed.depth = depth
-    placed.x = pad + depth * colGap
+    // 左侧按"根中心镜像"：左缘 x = 根 x − 深度 × 列距，这样两边的列间距与连线长度一致
+    placed.x = sides[i] < 0 ? rootX - depth * colGap : rootX + depth * colGap
     placed.y = ys[i]
     placed.startOffset = nodes[i].startOffset
     placed.paraId = nodes[i].paraId
     placed.parentIndex = parents[i]
     placed.hasChildren = hasChildren[i]
     placed.collapsed = collapsed.has(nodes[i].id)
+    placed.side = sides[i]
+    placed.childCount = childCount[i]
     placed.scale = z
     layout.nodes.push(placed)
   }
-  layout.width = pad * 2 + maxDepth * colGap + nodeW
+  layout.width = rootX + maxRightDepth * colGap + nodeW + pad
   layout.height = pad * 2 + Math.max(0, rows - 1) * rowGap + nodeH
   return layout
 }
@@ -293,12 +383,79 @@ export function outlineConnectors(nodes: PlacedNode[]): OutlineConnector[] {
     const from: PlacedNode = nodes[parentIndex]
     const to: PlacedNode = nodes[i]
     const connector: OutlineConnector = new OutlineConnector()
-    connector.fromX = from.x + OUTLINE_NODE_W * from.scale
+    // 朝左展开时端点镜像：父左缘 → 子右缘；朝右时是父右缘 → 子左缘
+    if (to.side < 0) {
+      connector.fromX = from.x
+      connector.toX = to.x + OUTLINE_NODE_W * to.scale
+    } else {
+      connector.fromX = from.x + OUTLINE_NODE_W * from.scale
+      connector.toX = to.x
+    }
     connector.fromY = from.y + OUTLINE_NODE_H * from.scale / 2
-    connector.toX = to.x
     connector.toY = to.y + OUTLINE_NODE_H * to.scale / 2
     connector.controlX = (connector.fromX + connector.toX) / 2
     out.push(connector)
+  }
+  return out
+}
+
+/**
+ * 一段连线的"可直接渲染"形态：最小包围盒 + 相对该盒的采样点（全部 vp）。
+ *
+ * 为什么不再用 Path / Canvas 画：
+ *  - `Path().commands()` 的单位是 **px**（SDK 声明里写死为 px），与布局的 vp 坐标混用会整体缩小/错位；
+ *  - `Canvas` 是一块独立绘制面，尺寸与就绪时机都不在节点那一帧里，缩放/窗口变化时容易出现
+ *    "节点已经挪走、线还停在旧坐标"。
+ * `Polyline().points()` 的单位是 **vp**，而且它和节点一样是普通组件——同一套坐标、同一次布局，
+ * 只要坐标算对就不存在错位。
+ */
+export class OutlineWire {
+  /** 包围盒左上角（vp，地图坐标系） */
+  originX: number = 0
+  originY: number = 0
+  width: number = 1
+  height: number = 1
+  /** 贝塞尔采样点（vp，相对 originX/originY）：[x, y] 序列，Polyline 直接消费 */
+  points: number[][] = []
+}
+
+/** 描边留白：Polyline 以路径为中心描边，留够半个笔宽，别被自己的包围盒裁掉 */
+export const OUTLINE_WIRE_PAD: number = 2
+/** 每条连线的采样段数：12 段在 80vp 的列间距上已经看不出折线 */
+export const OUTLINE_WIRE_STEPS: number = 12
+
+/** 三次贝塞尔按 t 取值（控制点都在端点水平中线上，所以 x 单调、y 夹在两端之间） */
+function cubicAt(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const u: number = 1 - t
+  return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3
+}
+
+/**
+ * 连线图元 → 可渲染图元（包围盒 + 采样点）。纯函数，可在 Node 里回归：
+ * 采样点必须全部落在包围盒内，否则组件会把线裁掉。
+ */
+export function outlineWires(connectors: OutlineConnector[],
+  steps: number = OUTLINE_WIRE_STEPS): OutlineWire[] {
+  const out: OutlineWire[] = []
+  const n: number = Math.max(2, Math.floor(steps))
+  for (let i: number = 0; i < connectors.length; i++) {
+    const c: OutlineConnector = connectors[i]
+    const minX: number = Math.min(c.fromX, c.toX)
+    const maxX: number = Math.max(c.fromX, c.toX)
+    const minY: number = Math.min(c.fromY, c.toY)
+    const maxY: number = Math.max(c.fromY, c.toY)
+    const wire: OutlineWire = new OutlineWire()
+    wire.originX = minX - OUTLINE_WIRE_PAD
+    wire.originY = minY - OUTLINE_WIRE_PAD
+    wire.width = Math.max(1, maxX - minX + OUTLINE_WIRE_PAD * 2)
+    wire.height = Math.max(1, maxY - minY + OUTLINE_WIRE_PAD * 2)
+    for (let k: number = 0; k <= n; k++) {
+      const t: number = k / n
+      const x: number = cubicAt(c.fromX, c.controlX, c.controlX, c.toX, t) - wire.originX
+      const y: number = cubicAt(c.fromY, c.fromY, c.toY, c.toY, t) - wire.originY
+      wire.points.push([x, y])
+    }
+    out.push(wire)
   }
   return out
 }

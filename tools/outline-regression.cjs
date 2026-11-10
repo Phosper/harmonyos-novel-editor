@@ -30,7 +30,8 @@ for (const source of [
 }
 const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutlineFromParagraphs, layoutOutline, outlineParents,' +
   ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot,'+
-  ' outlineConnectors })', context);
+  ' outlineConnectors, outlineWires, OUTLINE_WIRE_PAD, OUTLINE_WIRE_STEPS,'+
+  ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -158,6 +159,133 @@ check('连线图元跟着节点矩形走：缩放后端点仍对齐', () => {
   // 折叠时子节点不参与布局，连线数量随之减少
   const folded = api.outlineConnectors(api.layoutOutline(nodes, new Set(['p1'])).nodes);
   assert.equal(folded.length, 1);
+});
+
+check('连线图元 → Polyline 采样点：不越界、端点贴合、包围盒跟着缩放', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '第一章', startOffset: 0, endOffset: 3 },
+    { id: 'p2', kind: 2, title: '第一节', startOffset: 6, endOffset: 9 },
+    { id: 'p3', kind: 2, title: '第二节', startOffset: 10, endOffset: 13 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const links = api.outlineConnectors(layout.nodes);
+  const wires = api.outlineWires(links);
+  assert.equal(wires.length, links.length, '每条连线一个 Polyline');
+  assert.equal(wires[0].points.length, api.OUTLINE_WIRE_STEPS + 1, '采样段数 + 1 个点');
+  for (let i = 0; i < wires.length; i++) {
+    const w = wires[i];
+    const c = links[i];
+    for (const p of w.points) {
+      // 组件只会画在自己包围盒里：点越界就会被裁掉（"线只剩一小段"的老毛病）
+      assert.ok(p[0] >= 0 && p[0] <= w.width, 'x 落在包围盒内');
+      assert.ok(p[1] >= 0 && p[1] <= w.height, 'y 落在包围盒内');
+    }
+    assert.ok(Math.abs(w.points[0][0] - (c.fromX - w.originX)) < 0.001, '首点在父节点右缘');
+    assert.ok(Math.abs(w.points[0][1] - (c.fromY - w.originY)) < 0.001);
+    const last = w.points[w.points.length - 1];
+    assert.ok(Math.abs(last[0] - (c.toX - w.originX)) < 0.001, '末点在子节点左缘');
+    assert.ok(Math.abs(last[1] - (c.toY - w.originY)) < 0.001);
+    assert.ok(w.originX <= c.fromX && w.originY <= Math.min(c.fromY, c.toY), '包围盒包住整条曲线（含描边余量）');
+  }
+  // 缩放：包围盒随节点一起收窄，而不是停在旧尺寸
+  const small = api.outlineWires(api.outlineConnectors(api.layoutOutline(nodes, null, 0.76).nodes));
+  assert.ok(small[0].width < wires[0].width - 1, '缩放后连线包围盒跟着收窄');
+  // 采样段数可调（回归里给个下限：2 段也要能画）
+  assert.equal(api.outlineWires(links, 4)[0].points.length, 5);
+});
+
+check('同一水平线的父子连线不会被压成 0 高（高度 0 的 Polyline 不渲染）', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '唯一一章', startOffset: 0, endOffset: 3 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const links = api.outlineConnectors(layout.nodes);
+  assert.equal(links.length, 1);
+  assert.ok(Math.abs(links[0].fromY - links[0].toY) < 0.001, '这里两端的 y 相同');
+  const wire = api.outlineWires(links)[0];
+  assert.ok(wire.height >= 1, '高度不得为 0');
+  assert.ok(wire.width > api.OUTLINE_WIRE_PAD * 2, '宽度含两端描边余量');
+  for (const p of wire.points) {
+    assert.ok(Math.abs(p[1] - api.OUTLINE_WIRE_PAD) < 0.001, '水平线均分在包围盒中线');
+  }
+});
+
+check('折叠徽标：子节点数量不受折叠影响，折叠后子树不参与布局', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '第一章', startOffset: 0, endOffset: 3 },
+    { id: 'p2', kind: 2, title: '一节', startOffset: 6, endOffset: 9 },
+    { id: 'p3', kind: 2, title: '二节', startOffset: 10, endOffset: 13 },
+    { id: 'p4', kind: 1, title: '第二章', startOffset: 14, endOffset: 17 }
+  ]);
+  const open = api.layoutOutline(nodes, null, 1);
+  const first = open.nodes.find(n => n.id === 'p1');
+  assert.equal(first.childCount, 2, '直接子节点数');
+  assert.equal(first.hasChildren, true, '有子节点（画徽标）');
+  const folded = api.layoutOutline(nodes, new Set(['p1']), 1);
+  const f = folded.nodes.find(n => n.id === 'p1');
+  assert.equal(f.childCount, 2, '折叠后数量不变——徽标要显示「2 项」');
+  assert.equal(f.collapsed, true);
+  assert.equal(folded.nodes.length, open.nodes.length - 2, '两个子节点不参与布局');
+});
+
+check('左右均衡：根在中间，一级主题分两侧，左侧连线镜像，最左不越界', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 1, title: '二', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 1, title: '三', startOffset: 6, endOffset: 7 },
+    { id: 'p5', kind: 1, title: '四', startOffset: 8, endOffset: 9 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_BALANCED);
+  const root = layout.nodes[0];
+  const right = layout.nodes.filter(n => n.side > 0);
+  const left = layout.nodes.filter(n => n.side < 0);
+  assert.ok(right.length >= 1 && left.length >= 1, '两侧都要有主题');
+  for (const n of right) {
+    assert.ok(n.x > root.x, '右侧节点在根右边');
+  }
+  for (const n of left) {
+    assert.ok(n.x < root.x, '左侧节点在根左边');
+  }
+  const minX = Math.min(...layout.nodes.map(n => n.x));
+  assert.ok(minX >= api.OUTLINE_PAD - 0.001, '最左节点不能被画到负坐标（否则滚不到）');
+  assert.ok(layout.width >= root.x + api.OUTLINE_NODE_W, '宽度要包住右侧');
+  // 左侧连线端点镜像：父左缘 → 子右缘
+  const links = api.outlineConnectors(layout.nodes);
+  let mirrored = 0;
+  for (let i = 0; i < links.length; i++) {
+    const to = layout.nodes[i + 1];
+    const from = layout.nodes[to.parentIndex];
+    if (to.side < 0) {
+      assert.ok(Math.abs(links[i].fromX - from.x) < 0.001, '起点在父节点左缘');
+      assert.ok(Math.abs(links[i].toX - (to.x + api.OUTLINE_NODE_W * to.scale)) < 0.001, '终点在子节点右缘');
+      mirrored++;
+    } else {
+      assert.ok(Math.abs(links[i].fromX - (from.x + api.OUTLINE_NODE_W * from.scale)) < 0.001, '右侧仍是父右缘');
+    }
+  }
+  assert.ok(mirrored > 0, '至少有一条左侧连线');
+});
+
+check('左右均衡：只有一个一级主题时退回全向右（不把整棵树甩到左边）', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '唯一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '其一', startOffset: 2, endOffset: 3 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_BALANCED);
+  assert.ok(layout.nodes.slice(1).every(n => n.side === 1), '全部朝右');
+  assert.equal(layout.nodes[0].side, 0, '根不带方向');
+});
+
+check('向右布局的几何与旧版一致（根贴内边距、列距不变）', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_RIGHT);
+  assert.equal(layout.nodes[0].x, api.OUTLINE_PAD);
+  assert.equal(layout.nodes[1].x, api.OUTLINE_PAD + api.OUTLINE_COL_GAP);
+  assert.equal(layout.width, api.OUTLINE_PAD * 2 + 2 * api.OUTLINE_COL_GAP + api.OUTLINE_NODE_W);
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

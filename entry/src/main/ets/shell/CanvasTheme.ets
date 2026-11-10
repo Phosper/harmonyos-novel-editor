@@ -177,8 +177,15 @@ export interface CanvasHitResult {
 /** 一条连线的绘制数据（屏幕坐标，vp） */
 export interface CanvasEdgeLine {
   linkId: string
-  /** Path.commands 字符串（屏幕坐标） */
-  commands: string
+  /** 包围盒左上角（屏幕坐标 vp）：曲线与箭头都摆在这里 */
+  originX: number
+  originY: number
+  width: number
+  height: number
+  /** 主曲线采样点（vp，相对包围盒）：Polyline.points 直接消费 */
+  points: number[][]
+  /** 箭头折线（同上坐标）：三点「翅-尖-翅」 */
+  arrow: number[][]
   label: string
   labelX: number
   labelY: number

@@ -23,22 +23,48 @@ export struct CanvasEdges {
     return line.linkId
   }
 
+  private arrowKey(line: CanvasEdgeLine): string {
+    return 'arrow:' + line.linkId
+  }
+
   private labelKey(line: CanvasEdgeLine): string {
     return 'label:' + line.linkId
   }
 
-  /** 一条连线：贝塞尔主曲线 + 箭头（同一 Path 的多段子路径） */
+  /** 一条连线的主曲线：采样折线。points 单位是 vp，与 position/width 同一套坐标 */
   @Builder
-  edgePath(line: CanvasEdgeLine) {
-    Path()
-      .width(this.canvasWidth)
-      .height(this.canvasHeight)
-      .position({ x: 0, y: 0 })
-      .commands(line.commands)
+  edgeCurve(line: CanvasEdgeLine) {
+    Polyline()
+      .width(line.width)
+      .height(line.height)
+      .position({ x: line.originX, y: line.originY })
+      .points(line.points)
       .fillOpacity(0)
       .stroke(this.pal().textSecondary)
       .strokeWidth(1.4)
+      .strokeLineCap(LineCapStyle.Round)
+      .strokeLineJoin(LineJoinStyle.Round)
       .opacity(0.85)
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+  }
+
+  /** 箭头：三点折线（翅-尖-翅），与曲线同包围盒 */
+  @Builder
+  edgeArrow(line: CanvasEdgeLine) {
+    Polyline()
+      .width(line.width)
+      .height(line.height)
+      .position({ x: line.originX, y: line.originY })
+      .points(line.arrow)
+      .fillOpacity(0)
+      .stroke(this.pal().textSecondary)
+      .strokeWidth(1.4)
+      .strokeLineCap(LineCapStyle.Round)
+      .strokeLineJoin(LineJoinStyle.Round)
+      .opacity(0.85)
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
   }
 
   /** 关系标签：小圆角底 + 文本，压在曲线中点附近 */
@@ -57,8 +83,11 @@ export struct CanvasEdges {
   build() {
     Stack() {
       ForEach(this.lines, (line: CanvasEdgeLine) => {
-        this.edgePath(line)
+        this.edgeCurve(line)
       }, (line: CanvasEdgeLine): string => this.lineKey(line))
+      ForEach(this.lines, (line: CanvasEdgeLine) => {
+        this.edgeArrow(line)
+      }, (line: CanvasEdgeLine): string => this.arrowKey(line))
       ForEach(this.lines, (line: CanvasEdgeLine) => {
         if (line.label !== '') {
           this.edgeLabel(line)
