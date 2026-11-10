@@ -80,6 +80,8 @@ export struct TextEditorHost {
   onToggleImmersive: () => void = () => {}
   onUndo: (ownerId: string) => void = () => {}
   onRedo: (ownerId: string) => void = () => {}
+  /** 性能采样（60 帧一次）：宿主可显示在界面上，用于真机排查滚动卡顿 */
+  onPerfSample: (summary: string) => void = () => {}
 
   private flowController: CanvasTextEditorController = new CanvasTextEditorController()
   /** 已载入的文稿标识，用于区分「切换文稿」与「普通重渲染」 */
@@ -216,6 +218,9 @@ export struct TextEditorHost {
         },
         onToggleImmersive: () => {
           this.onToggleImmersive()
+        },
+        onPerfSample: (summary: string) => {
+          this.onPerfSample(summary)
         }
       })
         .width('100%')

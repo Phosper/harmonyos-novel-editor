@@ -62,6 +62,8 @@ export struct EditorPane {
   @Local capFingerprint: string = ''
   @Local capDocId: string = ''
   @Local capSource: string = ''
+  /** 性能采样文案（60 帧更新一次）：抓不到 hilog 时直接看界面 */
+  @Local perfText: string = ''
   /**
    * @Monitor 的路径根必须是**组件自己的状态变量**：直接写 `@Monitor('app.ui.xxx')`
    * 时根是模块级单例，编译器会告警 "needs to monitor the state variables that exist"，
@@ -262,6 +264,10 @@ export struct EditorPane {
               if (this.app !== null) {
                 toggleFocusAnimated(this.getUIContext())
               }
+            },
+            onPerfSample: (summary: string) => {
+              // 每秒最多一次重渲染，只用于诊断；关掉探针后不再有调用
+              this.perfText = summary
             }
           })
             .width('100%').height('100%')
@@ -346,6 +352,14 @@ export struct EditorPane {
   editorHeader() {
     if (this.canShowEditorTools()) {
       Row() {
+        // 诊断：滚动时把排版/绘制耗时显示出来（抓不到 hilog 时截图即可）
+        if (this.perfText !== '') {
+          Text(this.perfText)
+            .fontSize(10)
+            .fontColor(this.colors().textTertiary)
+            .maxLines(1)
+            .padding({ left: 4, right: 8 })
+        }
         // 左侧空白 = 窗口拖动/双击最大化热区；右侧是工具，避免按到按钮时拖窗
         Row() {
         }

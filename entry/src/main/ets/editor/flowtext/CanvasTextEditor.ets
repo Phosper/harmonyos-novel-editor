@@ -469,14 +469,15 @@ export struct CanvasTextEditor {
   /** 请求保存（失焦/键盘隐藏等时机，T028） */
   onRequestSave: (() => void) | null = null;
   /** 沉浸编辑开关（F11）：由宿主切换界面状态，编辑器只转发 */
-  onToggleImmersive: (() => void) | null = null;
-  /** 选区"查找"请求（携带选中文本，由应用层打开查找面板） */
+  onToggleImmersive: (() => void) | null = null;  /** 选区"查找"请求（携带选中文本，由应用层打开查找面板） */
   onRequestFind: ((text: string) => void) | null = null;
   /** 选区"分享"请求（携带选中文本） */
   onRequestShare: ((text: string) => void) | null = null;
   /** 撤销/重做交给宿主（历史栈在 EditorStore 里，不在文档模型内） */
   onUndo: (() => void) | null = null;
   onRedo: (() => void) | null = null;
+  /** 性能采样回调（60 帧一次）：宿主把数字显示在界面上，抓不到 hilog 时也能看 */
+  onPerfSample: ((summary: string) => void) | null = null;
 
   private ctx: DrawingRenderingContext = new DrawingRenderingContext(LengthMetricsUnit.PX);
   private theme: EditorTheme = new EditorTheme();
@@ -2967,12 +2968,20 @@ export struct CanvasTextEditor {
     if (this.perfFrames < 60) {
       return;
     }
+    const summary: string = '排版 ' + (this.perfLayoutMs / 60).toFixed(1) +
+      'ms · 绘制 ' + (this.perfDrawMs / 60).toFixed(1) +
+      'ms · 峰值 ' + this.perfMaxMs.toString() +
+      'ms · ' + this.lines.length.toString() + ' 行';
     console.info('[FlowTextPerf] frames=60 layoutAvg=' + (this.perfLayoutMs / 60).toFixed(2) +
       'ms drawAvg=' + (this.perfDrawMs / 60).toFixed(2) +
       'ms maxFrame=' + this.perfMaxMs.toString() +
       'ms lines=' + this.lines.length.toString() +
       ' scrollY=' + Math.round(this.scrollY).toString() +
       ' docLen=' + this.doc.length.toString());
+    // 同时回给宿主显示在界面上：抓不到 hilog 时截一张图就能看到同样的数字
+    if (this.onPerfSample !== null) {
+      this.onPerfSample(summary);
+    }
     this.perfFrames = 0;
     this.perfLayoutMs = 0;
     this.perfDrawMs = 0;
