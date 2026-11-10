@@ -28,7 +28,7 @@ for (const source of [
 ]) {
   vm.runInContext(strip(source), context);
 }
-const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, layoutOutline, outlineParents,' +
+const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutlineFromParagraphs, layoutOutline, outlineParents,' +
   ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot })', context);
 
 let pass = 0;
@@ -105,6 +105,35 @@ check('快照带根节点，标题按文档顺序挂上去', () => {
   assert.equal(snapshot.docTitle, '书名');
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot.nodes.map(n => [n.title, n.depth]))),
     [['书名', 0], ['第一章', 1], ['第二章', 1]]);
+});
+
+check('段落模型建树：节点 id 用 paraId，父下标与节范围可算', () => {
+  const nodes = api.buildOutlineFromParagraphs('书名', [
+    { id: 'p1', kind: 1, title: '第一章', startOffset: 0, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '第一节', startOffset: 10, endOffset: 13 },
+    { id: 'p5', kind: 1, title: '第二章', startOffset: 20, endOffset: 23 }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(nodes.map(n => [n.id, n.paraId, n.parentIndex, n.depth]))),
+    [['root', '', -1, 0], ['p1', 'p1', 0, 1], ['p3', 'p3', 1, 2], ['p5', 'p5', 0, 1]]);
+  // 第一节的节范围到第二章开头；第一章到第二章开头
+  assert.equal(nodes[2].sectionEnd, 20);
+  assert.equal(nodes[1].sectionEnd, 20);
+});
+
+check('折叠：子树不参与布局，画布随之变矮', () => {
+  const nodes = api.buildOutlineFromParagraphs('书名', [
+    { id: 'p1', kind: 1, title: '第一章', startOffset: 0, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '第一节', startOffset: 10, endOffset: 13 },
+    { id: 'p5', kind: 1, title: '第二章', startOffset: 20, endOffset: 23 }
+  ]);
+  const open = api.layoutOutline(nodes, null);
+  const folded = api.layoutOutline(nodes, new Set(['p1']));
+  assert.equal(open.nodes.length, 4);
+  assert.equal(folded.nodes.length, 3, '被折叠节点的子节点不再出现');
+  assert.ok(folded.height <= open.height, '画布高度不会因折叠变大');
+  const first = folded.nodes.find(n => n.id === 'p1');
+  assert.equal(first.hasChildren, true, '折叠态仍要知道自己有子节点（画徽标）');
+  assert.equal(first.collapsed, true);
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

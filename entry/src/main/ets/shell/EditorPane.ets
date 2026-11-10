@@ -16,7 +16,10 @@ import type { CanvasEditorSelection } from '../editor/flowtext/CanvasTextEditor'
 import { ScrollPolicy, StyleKind, FormatRun } from '../editor/flowtext/model/EditorTypes'
 import { FormatCodec } from '../editor/flowtext/model/FormatCodec'
 import { TextFormat, FormatOptions } from '../utils/TextFormat'
-import { buildOutlineSnapshot } from '../editor/OutlineExtract'
+import { buildOutlineSnapshotFromModel } from '../editor/OutlineExtract'
+import { reconcileDocument } from '../editor/model/DocumentModel'
+import type { DocModel } from '../editor/model/DocumentModel'
+import { documentSession } from '../repository/DocumentSession'
 import type { OutlineSnapshot } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 import { EditorTools } from './EditorTools'
@@ -620,8 +623,12 @@ export struct EditorPane {
       this.toast('先打开一篇文稿')
       return
     }
-    const snapshot: OutlineSnapshot = buildOutlineSnapshot(stores.editor.activeId, stores.editor.title,
-      stores.editor.content, stores.editor.runsJson, stores.editor.contentRev)
+    // 用会话里已落库的段落模型对齐 id（reconcile 保留未变段落的 paraId），
+    // 这样导图节点身份稳定：改标题、挪顺序都不会让节点"换人"。
+    const cached: DocModel | undefined = documentSession.get(stores.editor.activeId)
+    const model: DocModel = reconcileDocument(cached === undefined ? null : cached,
+      stores.editor.activeId, stores.editor.title, stores.editor.content, stores.editor.runsJson)
+    const snapshot: OutlineSnapshot = buildOutlineSnapshotFromModel(model, stores.editor.contentRev)
     outlineService().publish(snapshot)
     stores.ui.enterStructure()
   }

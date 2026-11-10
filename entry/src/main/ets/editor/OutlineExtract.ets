@@ -6,8 +6,10 @@
 // 不做的事：不改正文、不建第二份标题树（ADR-002）。P5 段落身份落地后，这里换成按 paraId 取。
 import { FormatCodec } from './flowtext/model/FormatCodec'
 import type { FormatRun } from './flowtext/model/EditorTypes'
-import { OutlineSnapshot, buildOutline } from 'feature_contracts'
-import type { OutlineHeading } from 'feature_contracts'
+import { OutlineSnapshot, buildOutline, buildOutlineFromParagraphs } from 'feature_contracts'
+import type { OutlineHeading, OutlineParagraph } from 'feature_contracts'
+import type { DocModel, ParaSpan } from './model/DocumentModel'
+import { paragraphSpans } from './model/DocumentModel'
 
 const HEADING_MIN: number = 1
 const HEADING_MAX: number = 3
@@ -74,5 +76,36 @@ export function buildOutlineSnapshot(docId: string, docTitle: string, text: stri
   snapshot.docTitle = docTitle
   snapshot.version = version
   snapshot.nodes = buildOutline(docTitle, extractHeadings(text, runsJson))
+  return snapshot
+}
+
+/**
+ * 主路径（M1 起）：从段落模型生成快照，节点 id = 稳定 paraId。
+ * 模型由宿主用 reconcileDocument 产出（保留旧 id），所以改标题/移动之后节点身份不变。
+ */
+export function buildOutlineSnapshotFromModel(model: DocModel, version: number): OutlineSnapshot {
+  const snapshot: OutlineSnapshot = new OutlineSnapshot()
+  snapshot.docId = model.id
+  snapshot.docTitle = model.title
+  snapshot.version = version
+  const spans: ParaSpan[] = paragraphSpans(model)
+  const headings: OutlineParagraph[] = []
+  for (let i: number = 0; i < model.paragraphs.length; i++) {
+    const paragraph = model.paragraphs[i]
+    if (paragraph.kind < HEADING_MIN || paragraph.kind > HEADING_MAX) {
+      continue
+    }
+    const title: string = paragraph.text.trim()
+    if (title === '') {
+      continue
+    }
+    const span: ParaSpan = spans[i]
+    const heading: OutlineParagraph = {
+      id: paragraph.id, kind: paragraph.kind, title: title,
+      startOffset: span.start, endOffset: span.end
+    }
+    headings.push(heading)
+  }
+  snapshot.nodes = buildOutlineFromParagraphs(model.title, headings)
   return snapshot
 }

@@ -102,7 +102,8 @@ check('the structure package only talks to the host through core_runtime', () =>
 
 check('the host publishes the outline before opening the map', () => {
   const pane = read('entry/src/main/ets/shell/EditorPane.ets');
-  assert.match(pane, /buildOutlineSnapshot\(/);
+  assert.match(pane, /buildOutlineSnapshotFromModel\(/);
+  assert.match(pane, /reconcileDocument\(/, 'snapshot ids must come from the reconciled paragraph model');
   assert.match(pane, /outlineService\(\)\.publish\(/);
   assert.match(pane, /enterStructure\(\)/);
   const shell = read('entry/src/main/ets/shell/AppShell.ets');

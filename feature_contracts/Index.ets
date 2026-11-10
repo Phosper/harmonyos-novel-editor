@@ -23,7 +23,8 @@ export {
   OUTLINE_ROW_GAP,
   OUTLINE_PAD,
   buildOutline,
+  buildOutlineFromParagraphs,
   layoutOutline,
   outlineParents
 } from './src/main/ets/contracts/OutlineLayout'
-export type { OutlineHeading } from './src/main/ets/contracts/OutlineLayout'
+export type { OutlineHeading, OutlineParagraph } from './src/main/ets/contracts/OutlineLayout'

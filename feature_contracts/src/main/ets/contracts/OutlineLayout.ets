@@ -27,15 +27,24 @@ export class OutlineNode {
   depth: number = 0
   startOffset: number = 0
   endOffset: number = 0
+  /** 稳定身份：正文段落 id（root 为空串）。取代早先的 'h'+偏移 */
+  paraId: string = ''
+  /** 父节点在 nodes 数组里的下标（root 为 -1） */
+  parentIndex: number = -1
+  /** 这一节最后一个段落结束处的正文偏移（拖动搬运时用） */
+  sectionEnd: number = 0
 
   constructor(id: string = '', title: string = '', level: number = 0, depth: number = 0,
-    startOffset: number = 0, endOffset: number = 0) {
+    startOffset: number = 0, endOffset: number = 0, paraId: string = '', parentIndex: number = -1) {
     this.id = id
     this.title = title
     this.level = level
     this.depth = depth
     this.startOffset = startOffset
     this.endOffset = endOffset
+    this.paraId = paraId
+    this.parentIndex = parentIndex
+    this.sectionEnd = endOffset
   }
 }
 
@@ -57,6 +66,11 @@ export class PlacedNode {
   x: number = 0
   y: number = 0
   startOffset: number = 0
+  /** 稳定身份（正文段落 id） */
+  paraId: string = ''
+  parentIndex: number = -1
+  hasChildren: boolean = false
+  collapsed: boolean = false
 }
 
 export class MindMapLayout {
@@ -90,10 +104,55 @@ export function buildOutline(docTitle: string, headings: OutlineHeading[]): Outl
     const parentIndex: number = stack[stack.length - 1]
     const node: OutlineNode = new OutlineNode(
       'h' + h.startOffset.toString(), h.title, level, nodes[parentIndex].depth + 1,
-      h.startOffset, h.endOffset)
+      h.startOffset, h.endOffset, '', parentIndex)
     nodes.push(node)
     stack.push(nodes.length - 1)
   }
+  return nodes
+}
+
+/** 一个标题段落（由宿主从段落模型投影出来，带稳定 id） */
+export interface OutlineParagraph {
+  id: string
+  kind: number
+  title: string
+  startOffset: number
+  endOffset: number
+}
+
+/**
+ * 从段落模型建树：节点 id = 段落 paraId（不再用偏移），父下标直接写进节点。
+ * 这是 M1 之后的主路径；文本版 buildOutline 只作旧数据/回归兜底。
+ */
+export function buildOutlineFromParagraphs(docTitle: string, paragraphs: OutlineParagraph[]): OutlineNode[] {
+  const root: OutlineNode = new OutlineNode('root', docTitle.trim() === '' ? '未命名文稿' : docTitle,
+    0, 0, 0, 0, '', -1)
+  const nodes: OutlineNode[] = [root]
+  const stack: number[] = [0]
+  for (let i: number = 0; i < paragraphs.length; i++) {
+    const p: OutlineParagraph = paragraphs[i]
+    const level: number = Math.max(1, Math.min(3, p.kind))
+    while (stack.length > 1 && nodes[stack[stack.length - 1]].level >= level) {
+      stack.pop()
+    }
+    const parentIndex: number = stack[stack.length - 1]
+    const node: OutlineNode = new OutlineNode(p.id, p.title, level, nodes[parentIndex].depth + 1,
+      p.startOffset, p.endOffset, p.id, parentIndex)
+    nodes.push(node)
+    stack.push(nodes.length - 1)
+  }
+  // 一节的范围：到下一个同级或更高级标题之前；没有就用自己的段落结尾
+  for (let i: number = nodes.length - 1; i >= 1; i--) {
+    let end: number = nodes[i].endOffset
+    for (let j: number = i + 1; j < nodes.length; j++) {
+      if (nodes[j].level <= nodes[i].level) {
+        end = nodes[j].startOffset
+        break
+      }
+    }
+    nodes[i].sectionEnd = end
+  }
+  nodes[0].sectionEnd = nodes.length > 1 ? nodes[nodes.length - 1].sectionEnd : 0
   return nodes
 }
 
@@ -101,25 +160,44 @@ export function buildOutline(docTitle: string, headings: OutlineHeading[]): Outl
  * 树布局：先按"叶子顺序"排 y，内部节点取首末子节点的中点；x = 深度 × 列距。
  * 纯函数，同样的输入永远得到同样的输出（便于回归与快照对比）。
  */
-export function layoutOutline(nodes: OutlineNode[]): MindMapLayout {
+export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | null = null): MindMapLayout {
   const layout: MindMapLayout = new MindMapLayout()
   if (nodes.length === 0) {
     return layout
+  }
+  const parents: number[] = outlineParents(nodes)
+  const collapsed: Set<string> = collapsedIds === null ? new Set<string>() : collapsedIds
+  // 折叠：自己或任一祖先被折叠 → 本次不参与布局
+  const visible: boolean[] = []
+  for (let i: number = 0; i < nodes.length; i++) {
+    let seen: boolean = true
+    let cursor: number = parents[i]
+    let guard: number = 0
+    while (cursor >= 0 && guard < 256) {
+      if (collapsed.has(nodes[cursor].id)) {
+        seen = false
+        break
+      }
+      cursor = parents[cursor]
+      guard++
+    }
+    visible.push(seen)
   }
   const children: number[][] = []
   for (let i: number = 0; i < nodes.length; i++) {
     children.push([])
   }
-  const stack: number[] = []
+  const hasChildren: boolean[] = []
   for (let i: number = 0; i < nodes.length; i++) {
-    const level: number = nodes[i].level
-    while (stack.length > 0 && nodes[stack[stack.length - 1]].level >= level) {
-      stack.pop()
+    hasChildren.push(false)
+  }
+  for (let i: number = 0; i < nodes.length; i++) {
+    if (parents[i] >= 0) {
+      hasChildren[parents[i]] = true
+      if (visible[i]) {
+        children[parents[i]].push(i)
+      }
     }
-    if (stack.length > 0) {
-      children[stack[stack.length - 1]].push(i)
-    }
-    stack.push(i)
   }
   const ys: number[] = []
   for (let i: number = 0; i < nodes.length; i++) {
@@ -148,6 +226,9 @@ export function layoutOutline(nodes: OutlineNode[]): MindMapLayout {
   place(0)
   let maxDepth: number = 0
   for (let i: number = 0; i < nodes.length; i++) {
+    if (!visible[i]) {
+      continue
+    }
     const depth: number = nodes[i].depth
     if (depth > maxDepth) {
       maxDepth = depth
@@ -160,6 +241,10 @@ export function layoutOutline(nodes: OutlineNode[]): MindMapLayout {
     placed.x = OUTLINE_PAD + depth * OUTLINE_COL_GAP
     placed.y = ys[i]
     placed.startOffset = nodes[i].startOffset
+    placed.paraId = nodes[i].paraId
+    placed.parentIndex = parents[i]
+    placed.hasChildren = hasChildren[i]
+    placed.collapsed = collapsed.has(nodes[i].id)
     layout.nodes.push(placed)
   }
   layout.width = OUTLINE_PAD * 2 + maxDepth * OUTLINE_COL_GAP + OUTLINE_NODE_W
