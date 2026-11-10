@@ -264,6 +264,45 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
   return layout
 }
 
+/**
+ * 一条连线（vp）：布局的纯产物，渲染层只负责画。
+ * 思路来自 markmap 的"布局输出图元、渲染器只是消费者"与 simple-mind-map 的
+ * "父右缘中点 → 子左缘中点、三次贝塞尔"。
+ */
+export class OutlineConnector {
+  fromX: number = 0
+  fromY: number = 0
+  toX: number = 0
+  toY: number = 0
+  /** 三段贝塞尔的中间控制点（水平方向上取两端中点） */
+  controlX: number = 0
+}
+
+/**
+ * 由**已布局节点**算出全部连线。
+ * 单独成函数的意义：连线永远跟着节点矩形走，缩放/折叠只要重排就自动一致，
+ * 不会出现"线画在旧位置、节点已经挪走"的偏移。
+ */
+export function outlineConnectors(nodes: PlacedNode[]): OutlineConnector[] {
+  const out: OutlineConnector[] = []
+  for (let i: number = 1; i < nodes.length; i++) {
+    const parentIndex: number = nodes[i].parentIndex
+    if (parentIndex < 0 || parentIndex >= nodes.length) {
+      continue
+    }
+    const from: PlacedNode = nodes[parentIndex]
+    const to: PlacedNode = nodes[i]
+    const connector: OutlineConnector = new OutlineConnector()
+    connector.fromX = from.x + OUTLINE_NODE_W * from.scale
+    connector.fromY = from.y + OUTLINE_NODE_H * from.scale / 2
+    connector.toX = to.x
+    connector.toY = to.y + OUTLINE_NODE_H * to.scale / 2
+    connector.controlX = (connector.fromX + connector.toX) / 2
+    out.push(connector)
+  }
+  return out
+}
+
 /** 父节点索引（-1 = 无父）；连线绘制用，与 buildOutline 的层级规则保持一致 */
 export function outlineParents(nodes: OutlineNode[]): number[] {
   const parents: number[] = []

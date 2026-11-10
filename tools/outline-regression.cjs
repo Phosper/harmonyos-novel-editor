@@ -29,7 +29,8 @@ for (const source of [
   vm.runInContext(strip(source), context);
 }
 const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutlineFromParagraphs, layoutOutline, outlineParents,' +
-  ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot })', context);
+  ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot,'+
+  ' outlineConnectors })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -134,6 +135,29 @@ check('折叠：子树不参与布局，画布随之变矮', () => {
   const first = folded.nodes.find(n => n.id === 'p1');
   assert.equal(first.hasChildren, true, '折叠态仍要知道自己有子节点（画徽标）');
   assert.equal(first.collapsed, true);
+});
+
+check('连线图元跟着节点矩形走：缩放后端点仍对齐', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '第一章', startOffset: 0, endOffset: 3 },
+    { id: 'p2', kind: 2, title: '第一节', startOffset: 6, endOffset: 9 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 0.76);
+  const links = api.outlineConnectors(layout.nodes);
+  assert.equal(links.length, 2, 'root→第一章、第一章→第一节');
+  const root = layout.nodes[0];
+  const first = layout.nodes[1];
+  assert.ok(Math.abs(links[0].fromX - (root.x + api.OUTLINE_NODE_W * root.scale)) < 0.001, '起点在父节点右缘');
+  assert.ok(Math.abs(links[0].fromY - (root.y + api.OUTLINE_NODE_H * root.scale / 2)) < 0.001, '起点在父节点垂直中点');
+  assert.ok(Math.abs(links[0].toX - first.x) < 0.001, '终点在子节点左缘');
+  assert.ok(Math.abs(links[0].toY - (first.y + api.OUTLINE_NODE_H * first.scale / 2)) < 0.001);
+  assert.ok(Math.abs(links[0].controlX - (links[0].fromX + links[0].toX) / 2) < 0.001);
+  // 换一档缩放，端点必须跟着变（否则就是"节点动了、线没动"）
+  const zoomed = api.outlineConnectors(api.layoutOutline(nodes, null, 1.4).nodes);
+  assert.ok(Math.abs(zoomed[0].fromX - links[0].fromX) > 1, '缩放后端点跟着重算');
+  // 折叠时子节点不参与布局，连线数量随之减少
+  const folded = api.outlineConnectors(api.layoutOutline(nodes, new Set(['p1'])).nodes);
+  assert.equal(folded.length, 1);
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

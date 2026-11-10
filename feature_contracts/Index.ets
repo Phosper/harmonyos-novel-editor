@@ -25,7 +25,9 @@ export {
   buildOutline,
   buildOutlineFromParagraphs,
   layoutOutline,
-  outlineParents
+  outlineParents,
+  OutlineConnector,
+  outlineConnectors
 } from './src/main/ets/contracts/OutlineLayout'
 export type { OutlineHeading, OutlineParagraph } from './src/main/ets/contracts/OutlineLayout'
 // 导图 → 正文的结构命令

@@ -4,8 +4,8 @@
 // 编辑：改名/新建/升降级/删除/移动都发 OutlineCommand 给 core_runtime，宿主改正文后回传新快照。
 // 边界：本包不 import entry、不碰正文；折叠与选中是视图态。
 import {
-  MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind,
-  OUTLINE_NODE_H, OUTLINE_NODE_W, layoutOutline, outlineParents
+  MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind, OutlineConnector,
+  OUTLINE_NODE_H, OUTLINE_NODE_W, layoutOutline, outlineConnectors
 } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 
@@ -54,8 +54,11 @@ export struct StructurePage {
   @Local renaming: boolean = false
   @Local renameText: string = ''
 
-  /** 每个节点在 placed 里的父索引（-1 = 根） */
-  private parents: number[] = []
+  /** 连线图元：由布局算出，渲染层只负责画（markmap 的"布局→图元→渲染"分层） */
+  private connectors: OutlineConnector[] = []
+  /** Canvas 是否已经就绪；未就绪时先记下，onReady 再画 */
+  private canvasReady: boolean = false
+  private redrawTimer: number = -1
   /**
    * 连线用 Canvas 画，不用 Path（Path 的 commands 单位与组件尺寸不一致，真机上只画出一小段）。
    */
@@ -92,7 +95,7 @@ export struct StructurePage {
     this.mapW = layout.width
     this.mapH = layout.height
     this.topicCount = layout.nodes.length - 1
-    this.parents = outlineParents(snapshot.nodes)
+    this.connectors = outlineConnectors(this.placed)
     this.empty = false
     // 命令后重建时尽量把选中保持在同一个节点上（段落身份不变，索引会变）
     if (selectedParaId !== '') {
@@ -108,7 +111,21 @@ export struct StructurePage {
     if (this.selectedIndex >= this.placed.length) {
       this.selectedIndex = -1
     }
-    this.drawConnections()
+    this.scheduleConnections()
+  }
+
+  /**
+   * 连线重画要等一帧：刚改过缩放/结构时 Canvas 的尺寸还没落到新值，
+   * 立刻画会按旧尺寸裁切，表现为"节点动了、线还在原地"。
+   */
+  private scheduleConnections(): void {
+    if (this.redrawTimer !== -1) {
+      clearTimeout(this.redrawTimer)
+    }
+    this.redrawTimer = setTimeout(() => {
+      this.redrawTimer = -1
+      this.drawConnections()
+    }, 0)
   }
 
   /** 改缩放：按档位重排一次（不缩放容器，避免文字发糊） */
@@ -311,30 +328,23 @@ export struct StructurePage {
     return false
   }
 
-  /** 画父子连线：三次贝塞尔，端点取父节点右缘中点与子节点左缘中点 */
+  /** 画连线：只消费布局算好的图元，坐标与节点矩形天然一致 */
   private drawConnections(): void {
+    if (!this.canvasReady) {
+      return
+    }
     const ctx: CanvasRenderingContext2D = this.connCtx
-    if (this.mapW <= 0 || this.mapH <= 0 || this.placed.length === 0) {
+    if (this.mapW <= 0 || this.mapH <= 0) {
       return
     }
     ctx.clearRect(0, 0, this.mapW, this.mapH)
     ctx.strokeStyle = this.theme.divider
     ctx.lineWidth = 1.2
-    for (let i: number = 1; i < this.placed.length; i++) {
-      const parent: number = this.placed[i].parentIndex
-      if (parent < 0 || parent >= this.placed.length) {
-        continue
-      }
-      const from: PlacedNode = this.placed[parent]
-      const to: PlacedNode = this.placed[i]
-      const x1: number = from.x + OUTLINE_NODE_W * from.scale
-      const y1: number = from.y + OUTLINE_NODE_H * from.scale / 2
-      const x2: number = to.x
-      const y2: number = to.y + OUTLINE_NODE_H * to.scale / 2
-      const mid: number = (x1 + x2) / 2
+    for (let i: number = 0; i < this.connectors.length; i++) {
+      const c: OutlineConnector = this.connectors[i]
       ctx.beginPath()
-      ctx.moveTo(x1, y1)
-      ctx.bezierCurveTo(mid, y1, mid, y2, x2, y2)
+      ctx.moveTo(c.fromX, c.fromY)
+      ctx.bezierCurveTo(c.controlX, c.fromY, c.controlX, c.toY, c.toX, c.toY)
       ctx.stroke()
     }
   }
@@ -494,7 +504,14 @@ export struct StructurePage {
                 .height(this.mapH)
                 .hitTestBehavior(HitTestMode.None)
                 .accessibilityLevel('no')
-                .onReady(() => { this.drawConnections() })
+                .onReady(() => {
+                  this.canvasReady = true
+                  this.drawConnections()
+                })
+                .onAreaChange((_old: Area, now: Area) => {
+                  // 尺寸（缩放/窗口变化）落定后必须重画，否则线会停在旧坐标
+                  this.drawConnections()
+                })
               ForEach(this.placed, (node: PlacedNode, index: number) => {
                 this.nodeChip(node, index)
               }, (node: PlacedNode) => node.paraId === '' ? node.id : node.paraId)
