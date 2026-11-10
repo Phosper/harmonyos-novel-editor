@@ -519,6 +519,11 @@ export struct CanvasTextEditor {
   private perfLayoutMs: number = 0;
   private perfDrawMs: number = 0;
   private perfMaxMs: number = 0;
+  /** 上次采样时的排版计数（算 60 帧增量：新排多少行、窗口重建几次） */
+  private perfAppendedSeen: number = 0;
+  private perfWindowsSeen: number = 0;
+  /** 帧间预排版（-1 = 没有排队） */
+  private prefetchTimer: number = -1;
   /** 桌面双击选词：鼠标 Press 不走触摸的连击判定，这里单独记时间与位置 */
   /** 鼠标按下进行中（松手前一直为 true）：据此识别整个拖动期间的合成触摸事件 */
   private pointerPressed: boolean = false;
@@ -1180,6 +1185,10 @@ export struct CanvasTextEditor {
     if (this.cursorReportTimer !== -1) {
       clearTimeout(this.cursorReportTimer);
       this.cursorReportTimer = -1;
+    }
+    if (this.prefetchTimer !== -1) {
+      clearTimeout(this.prefetchTimer);
+      this.prefetchTimer = -1;
     }
     // 卸载时必须停掉贴边自动滚动的定时器，否则它会继续改 scrollY/drawNow（画布已没了）
     this.stopAutoScrollSelection();
@@ -2949,6 +2958,33 @@ export struct CanvasTextEditor {
       dimEnabled, focusFirst, focusLast, typewriterOn, caretLine,
       (this.doc.text.length === 0 && !this.previewMgr.isComposing) ? this.placeholder : '', this.placeholderColorFor());
     this.notePerf(layoutCost, Date.now() - renderStart);
+    // 帧间空闲时把下一屏半预排好：滚动帧里就不用再做排版（实测排版耗时是绘制的近十倍）
+    this.schedulePrefetch();
+  }
+
+  /**
+   * 预排版：目标 = 视口底部再往下半屏，每次最多 4 行，排在 16ms 定时器里。
+   * 切碎了做，单次只占约 1ms，不会把某一帧顶穿；追不上滚动就自然退回"边滚边排"。
+   */
+  private schedulePrefetch(): void {
+    if (this.prefetchTimer !== -1 || this.cache === null || this.previewMgr.isComposing) {
+      return;
+    }
+    const target: number = this.scrollY + this.viewHeightVp * 1.5;
+    if (this.viewHeightVp <= 0 || this.cache.isComplete() || this.cache.height >= target) {
+      return;
+    }
+    this.prefetchTimer = setTimeout(() => {
+      this.prefetchTimer = -1;
+      if (this.cache === null || this.previewMgr.isComposing) {
+        return;
+      }
+      const next: number = this.scrollY + this.viewHeightVp * 1.5;
+      this.cache.ensureLayoutBudgeted(this.doc.text, this.doc.version, this.doc.formatVersion, next, 4);
+      if (!this.cache.isComplete() && this.cache.height < next) {
+        this.schedulePrefetch();
+      }
+    }, 16);
   }
 
   /**
@@ -2968,14 +3004,23 @@ export struct CanvasTextEditor {
     if (this.perfFrames < 60) {
       return;
     }
+    const appended: number = this.cache !== null ? this.cache.appendedRows : 0;
+    const windows: number = this.cache !== null ? this.cache.windowRebuilds : 0;
+    const newRows: number = appended - this.perfAppendedSeen;
+    const newWindows: number = windows - this.perfWindowsSeen;
+    this.perfAppendedSeen = appended;
+    this.perfWindowsSeen = windows;
     const summary: string = '排版 ' + (this.perfLayoutMs / 60).toFixed(1) +
       'ms · 绘制 ' + (this.perfDrawMs / 60).toFixed(1) +
       'ms · 峰值 ' + this.perfMaxMs.toString() +
-      'ms · ' + this.lines.length.toString() + ' 行';
+      'ms · ' + this.lines.length.toString() + ' 行 · 新排 ' + newRows.toString() +
+      ' 行 · 窗重建 ' + newWindows.toString();
     console.info('[FlowTextPerf] frames=60 layoutAvg=' + (this.perfLayoutMs / 60).toFixed(2) +
       'ms drawAvg=' + (this.perfDrawMs / 60).toFixed(2) +
       'ms maxFrame=' + this.perfMaxMs.toString() +
       'ms lines=' + this.lines.length.toString() +
+      ' newRows=' + newRows.toString() +
+      ' windowRebuilds=' + newWindows.toString() +
       ' scrollY=' + Math.round(this.scrollY).toString() +
       ' docLen=' + this.doc.length.toString());
     // 同时回给宿主显示在界面上：抓不到 hilog 时截一张图就能看到同样的数字

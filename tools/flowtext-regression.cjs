@@ -1628,5 +1628,15 @@ check('desktop keeps the selection quiet, touch still pops the bar',()=>{
     assert.ok(/if \(this\.scrollClampPending\) \{[\s\S]{0,140}?this\.clampScroll\(\);/.test(src),
       'drawNow applies the pending clamp once per frame');
   });
+  check('layout is prefetched in budgeted slices between frames',()=>{
+    const src=read('editor/flowtext/CanvasTextEditor.ets');
+    assert.ok(/ensureLayoutBudgeted\(/.test(src), 'prefetch uses the budgeted layout entry');
+    assert.ok(/this\.schedulePrefetch\(\);/.test(src), 'drawNow kicks prefetch after the frame');
+    assert.ok(/private prefetchTimer: number = -1;/.test(src), 'prefetch timer is tracked');
+    const cache=read('editor/flowtext/render/LayoutCache.ets');
+    assert.ok(/ensureLayoutBudgeted\(content: string, version: number, formatVersion: number,\s*\n?\s*untilYVp: number, maxLines: number\): number/.test(cache),
+      'budgeted layout exists in LayoutCache');
+    assert.ok(/this\.windowBuildCount\+\+/.test(cache), 'window rebuilds are counted for diagnosis');
+  });
   console.log(`FlowText regression: ${count} checks passed`);
 })().catch(error=>{console.error(error);process.exitCode=1;});
