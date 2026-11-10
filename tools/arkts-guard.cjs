@@ -31,7 +31,10 @@ const T4 = ['model/CanvasTypes.ets', 'model/CanvasStoreModels.ets', 'constants/C
   'shell/CanvasEdges.ets', 'shell/EvidenceDrawer.ets', 'shell/CanvasTransition.ets', 'shell/CardPicker.ets', 'editor/CanvasDraftWriter.ets',
   'editor/CanvasCapture.ets',
   'editor/CanvasSelectionBridge.ets'];
-const FILES = T1.concat(T2, T3, T4);
+// P5 正文底座：段落语义、侧车 DAO、迁移与仓储。新增文件一律先登记再跑守卫。
+const P5 = ['editor/model/DocumentModel.ets', 'database/MetaDao.ets', 'database/ParagraphDao.ets',
+  'repository/ParagraphRepository.ets', 'repository/ParagraphMigration.ets', 'repository/DocumentSession.ets'];
+const FILES = T1.concat(T2, T3, T4, P5);
 
 const violations = [];
 const warnings = [];

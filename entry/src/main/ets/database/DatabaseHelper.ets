@@ -219,12 +219,41 @@ export class DatabaseHelper {
         'FOREIGN KEY (from_topic_id) REFERENCES topics(id) ON DELETE CASCADE,' +
         'FOREIGN KEY (to_topic_id) REFERENCES topics(id) ON DELETE CASCADE' +
         ')',
+      // P5：段落稳定身份。正文仍以 chapters.content 为旧读路径，段落表先做侧车；
+      // 启动迁移把缺侧车的老文稿按换行拆段，写路径切换前不改变编辑器行为。
+      'CREATE TABLE IF NOT EXISTS doc_paragraphs (' +
+        'doc_id TEXT NOT NULL,' +
+        'para_id TEXT NOT NULL,' +
+        'ordinal REAL NOT NULL,' +
+        'kind INTEGER NOT NULL DEFAULT 0,' +
+        'indent INTEGER NOT NULL DEFAULT 0,' +
+        "text TEXT NOT NULL DEFAULT ''," +
+        'PRIMARY KEY (doc_id, para_id),' +
+        'FOREIGN KEY (doc_id) REFERENCES chapters(id) ON DELETE CASCADE' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS doc_runs (' +
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,' +
+        'doc_id TEXT NOT NULL,' +
+        'para_id TEXT NOT NULL,' +
+        'start_off INTEGER NOT NULL,' +
+        'end_off INTEGER NOT NULL,' +
+        'bold INTEGER NOT NULL DEFAULT 0,' +
+        'italic INTEGER NOT NULL DEFAULT 0,' +
+        'FOREIGN KEY (doc_id, para_id) REFERENCES doc_paragraphs(doc_id, para_id) ON DELETE CASCADE' +
+        ')',
+      'CREATE TABLE IF NOT EXISTS schema_meta (' +
+        'meta_key TEXT PRIMARY KEY,' +
+        "meta_value TEXT NOT NULL DEFAULT ''," +
+        'updated_at INTEGER NOT NULL' +
+        ')',
       'CREATE INDEX IF NOT EXISTS idx_canvas_book ON canvases(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_topics_book ON topics(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_evidence_topic ON topic_evidence(topic_id)',
       'CREATE INDEX IF NOT EXISTS idx_placement_canvas ON canvas_placements(canvas_id)',
       'CREATE INDEX IF NOT EXISTS idx_placement_parent ON canvas_placements(parent_id)',
-      'CREATE INDEX IF NOT EXISTS idx_link_canvas ON canvas_links(canvas_id)'
+      'CREATE INDEX IF NOT EXISTS idx_link_canvas ON canvas_links(canvas_id)',
+      'CREATE INDEX IF NOT EXISTS idx_doc_paragraphs_order ON doc_paragraphs(doc_id, ordinal)',
+      'CREATE INDEX IF NOT EXISTS idx_doc_runs_para ON doc_runs(doc_id, para_id)'
     ]
     for (const sql of sqls) {
       try {

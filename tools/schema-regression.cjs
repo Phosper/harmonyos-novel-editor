@@ -51,20 +51,22 @@ check('空库可完整建表（含外键）且可重复执行', () => {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     .all().map((row) => row.name);
   const expected = ['books', 'canvas_links', 'canvas_placements', 'canvases', 'chapters',
-    'characters', 'inspirations', 'relationships', 'topic_evidence', 'topics', 'world_settings'];
+    'characters', 'doc_paragraphs', 'doc_runs', 'inspirations', 'relationships', 'schema_meta',
+    'topic_evidence', 'topics', 'world_settings'];
   for (let i = 0; i < expected.length; i++) {
     assert.ok(tables.indexOf(expected[i]) >= 0, '缺表 ' + expected[i] + '，实际: ' + tables.join(','));
   }
   const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")
     .all().map((row) => row.name);
   ['idx_canvas_book', 'idx_topics_book', 'idx_evidence_topic', 'idx_placement_canvas',
-    'idx_placement_parent', 'idx_link_canvas'].forEach((name) => {
+    'idx_placement_parent', 'idx_link_canvas', 'idx_doc_paragraphs_order',
+    'idx_doc_runs_para'].forEach((name) => {
     assert.ok(indexes.indexOf(name) >= 0, '缺索引 ' + name);
   });
   db.close();
 });
 
-check('旧库（仅 books/chapters）升级后 11 表齐全', () => {
+check('旧库（仅 books/chapters）升级后 14 张业务表齐全', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('CREATE TABLE books (id TEXT PRIMARY KEY, name TEXT NOT NULL, mode TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
@@ -72,8 +74,36 @@ check('旧库（仅 books/chapters）升级后 11 表齐全', () => {
   for (let i = 0; i < sqls.length; i++) {
     db.exec(sqls[i]);
   }
-  const count = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table'").get().n;
-  assert.ok(count >= 11, '升级后表数量不足: ' + count);
+  const count = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().n;
+  assert.ok(count >= 14, '升级后表数量不足: ' + count);
+  db.close();
+});
+
+check('段落与行内样式随文稿删除级联清理', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  for (let i = 0; i < sqls.length; i++) {
+    db.exec(sqls[i]);
+  }
+  db.exec("INSERT INTO chapters (id, title, created_at, updated_at) VALUES ('ch1', 't', 1, 1)");
+  db.exec("INSERT INTO doc_paragraphs (doc_id, para_id, ordinal, kind, indent, text) " +
+    "VALUES ('ch1', 'p1', 0, 1, 0, '标题')");
+  db.exec("INSERT INTO doc_runs (doc_id, para_id, start_off, end_off, bold, italic) " +
+    "VALUES ('ch1', 'p1', 0, 1, 1, 0)");
+  // 删段落应先带走它的行内样式
+  db.exec("DELETE FROM doc_paragraphs WHERE doc_id = 'ch1' AND para_id = 'p1'");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_runs").get().n, 0,
+    '删除段落应级联删除 doc_runs');
+  // 删文稿应带走段落与行内样式
+  db.exec("INSERT INTO doc_paragraphs (doc_id, para_id, ordinal, kind, indent, text) " +
+    "VALUES ('ch1', 'p1', 0, 1, 0, '标题')");
+  db.exec("INSERT INTO doc_runs (doc_id, para_id, start_off, end_off, bold, italic) " +
+    "VALUES ('ch1', 'p1', 0, 1, 1, 0)");
+  db.exec("DELETE FROM chapters WHERE id = 'ch1'");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_paragraphs").get().n, 0,
+    '删除文稿应级联删除 doc_paragraphs');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_runs").get().n, 0,
+    '删除文稿应级联删除 doc_runs');
   db.close();
 });
 

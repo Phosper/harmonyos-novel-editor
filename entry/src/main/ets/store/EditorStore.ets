@@ -16,6 +16,7 @@ import type { ChapterModel } from '../model/Chapter'
 import { DOC_TAB_COLORS } from '../constants/DesignTokens'
 import { OpenDoc, SaveState, HistoryEntry } from './StoreModels'
 import { chapterRepo } from './Repos'
+import { documentSession } from '../repository/DocumentSession'
 import { Logger } from '../utils/Logger'
 import { exceedsContentLimit, utf8ByteLength, contentLimitMessage, countChars } from '../utils/TextLimit'
 
@@ -227,6 +228,7 @@ export class EditorStore {
     if (idx < 0) {
       return
     }
+    documentSession.evict(id)
     const wasActive: boolean = this.openDocs[idx].active
     const wasId: string = this.activeId
     this.openDocs.splice(idx, 1)
@@ -608,6 +610,7 @@ export class EditorStore {
   discard(id: string): void {
     this.undoStack = this.undoStack.filter((e: HistoryEntry) => e.docId !== id)
     this.redoStack = this.redoStack.filter((e: HistoryEntry) => e.docId !== id)
+    documentSession.evict(id)
   }
 
   reset(): void {
@@ -617,5 +620,6 @@ export class EditorStore {
     this.undoStack = []
     this.redoStack = []
     this.contentRev++
+    documentSession.clear()
   }
 }

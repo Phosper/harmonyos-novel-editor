@@ -249,6 +249,25 @@ export class ChapterDao extends BaseDao<ChapterModel> {
     return this.queryRows(p)
   }
 
+  /**
+   * 还没有段落侧车的文稿 id（含废纸篓）：P5 迁移按 id 逐篇读全文，
+   * 避免把整个库的正文一次性搬进内存；新文稿在下一次启动也会被补上。
+   */
+  async queryIdsWithoutParagraphs(): Promise<string[]> {
+    const rs: relationalStore.ResultSet = await this.getStore().querySql(
+      'SELECT c.id FROM chapters c LEFT JOIN doc_paragraphs p ON p.doc_id = c.id ' +
+      'WHERE p.doc_id IS NULL ORDER BY c.id')
+    const ids: string[] = []
+    try {
+      while (rs.goToNextRow()) {
+        ids.push(this.safeGetString(rs, 'id'))
+      }
+      return ids
+    } finally {
+      this.closeQuietly(rs)
+    }
+  }
+
   /** 排序字段白名单：这个值会被拼进 SQL，只接受已知列名 */
   private static safeOrderColumn(name: string): string {
     return name === 'sort_order' ? 'sort_order' : 'updated_at'

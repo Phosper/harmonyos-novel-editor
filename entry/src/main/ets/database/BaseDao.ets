@@ -161,6 +161,17 @@ export abstract class BaseDao<T> {
     }
   }
 
+  /** 段落 ordinal 等实数列：getLong 会截断小数，必须走这个助手 */
+  protected safeGetDouble(rs: relationalStore.ResultSet, col: string): number {
+    try {
+      const idx: number = rs.getColumnIndex(col)
+      if (idx < 0) return 0
+      return rs.getDouble(idx)
+    } catch (e) {
+      return 0
+    }
+  }
+
   protected safeGetBool(rs: relationalStore.ResultSet, col: string): boolean {
     return this.safeGetLong(rs, col) !== 0
   }

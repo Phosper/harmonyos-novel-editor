@@ -33,6 +33,7 @@ import { bookRepo, chapterRepo, materialRepo, relationRepo, canvasRepo, runInTra
 import type { TransactionRepos } from './Repos'
 import { BookBackupSnapshot, BackupPayload, BackupPayloadLoose } from './BackupTypes'
 import { CanvasBackupBundle, CanvasBackupLooseBundle } from '../model/CanvasStoreModels'
+import { paragraphMigration } from '../repository/ParagraphMigration'
 import { UiStore } from './UiStore'
 import { ProjectStore } from './ProjectStore'
 import { EditorStore } from './EditorStore'
@@ -73,6 +74,12 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
     }
     await prefs.init(ctx)
     await dbHelper.init(ctx)
+    // P5：只建段落侧车，不切读写路径；迁移失败退回旧正文路径，不阻塞启动。
+    try {
+      await paragraphMigration.runIfNeeded()
+    } catch (e) {
+      Logger.warn('Paragraph migration failed, keep legacy text path: ' + String(e))
+    }
     await this.ui.loadFromPrefs()
 
     await this.project.loadBooks()

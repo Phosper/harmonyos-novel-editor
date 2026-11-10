@@ -18,7 +18,8 @@ for (const file of ['editor/flowtext/model/EditorTypes.ets', 'editor/flowtext/mo
   vm.runInContext(strip(read(file)), context);
 }
 const api = vm.runInContext('({ FormatRun, FormatCodec, createDocument, project, paragraphSpans,' +
-  ' paragraphIdAt, splitParagraph, mergeParagraphs, setParagraphKind, sectionRange, moveSection, changeIndent })', context);
+  ' paragraphIdAt, splitParagraph, mergeParagraphs, setParagraphKind, sectionRange, moveSection,' +
+  ' changeIndent, reconcileDocument })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -144,6 +145,53 @@ check('偏移定位：段尾归本段，越界归最后一段', () => {
   assert.equal(api.paragraphIdAt(model, 6), 'p1', 'end of paragraph belongs to itself');
   assert.equal(api.paragraphIdAt(model, 7), 'p2');
   assert.equal(api.paragraphIdAt(model, 999), 'p5');
+});
+
+check('整篇上报改一段：其余段落 id 不动', () => {
+  const old = api.createDocument('d1', '', '第一段\n第二段\n第三段', '');
+  const next = api.reconcileDocument(old, 'd1', '', '第一段\n第二段改了\n第三段', '');
+  assert.deepEqual(ids(next), ['p1', 'p2', 'p3']);
+  assert.deepEqual(texts(next), ['第一段', '第二段改了', '第三段']);
+  assert.equal(next.version, old.version + 1);
+});
+
+check('插入一段：只给新段新 id，前后段保持', () => {
+  const old = api.createDocument('d1', '', 'A\nB\nC', '');
+  const next = api.reconcileDocument(old, 'd1', '', 'A\n新\nB\nC', '');
+  assert.deepEqual(ids(next), ['p1', 'p5', 'p2', 'p3']);
+  assert.deepEqual(texts(next), ['A', '新', 'B', 'C']);
+});
+
+check('删除一段：其余段落 id 不变，旧 id 不复活', () => {
+  const old = api.createDocument('d1', '', 'A\nX\nB', '');
+  const next = api.reconcileDocument(old, 'd1', '', 'A\nB', '');
+  assert.deepEqual(ids(next), ['p1', 'p3']);
+  assert.deepEqual(texts(next), ['A', 'B']);
+});
+
+check('分裂一段：左段保留 id，右段新建', () => {
+  const old = api.createDocument('d1', '', '正文内容', '');
+  const next = api.reconcileDocument(old, 'd1', '', '正文\n内容', '');
+  assert.deepEqual(ids(next), ['p1', 'p3']);
+  assert.deepEqual(texts(next), ['正文', '内容']);
+});
+
+check('合并两段：保留左段 id，右段被移除', () => {
+  const old = api.createDocument('d1', '', 'ab\nc', '');
+  const next = api.reconcileDocument(old, 'd1', '', 'abc', '');
+  assert.deepEqual(ids(next), ['p1']);
+  assert.equal(next.paragraphs[0].text, 'abc');
+});
+
+check('行内样式跟随段落 identity 重映射', () => {
+  const oldRuns = api.FormatCodec.encode([new api.FormatRun(2, 4, true, false, 0, 0)]);
+  const old = api.createDocument('d1', '', 'A\n目标', oldRuns);
+  const nextRuns = api.FormatCodec.encode([new api.FormatRun(5, 7, true, false, 0, 0)]);
+  const next = api.reconcileDocument(old, 'd1', '', '插入\nA\n目标', nextRuns);
+  assert.deepEqual(ids(next), ['p4', 'p1', 'p2']);
+  assert.equal(next.runs.length, 1);
+  assert.equal(next.runs[0].paraId, 'p2', 'bold run must follow 目标 to its old id');
+  assert.deepEqual(json(next.runs.map(r => [r.start, r.end])), [[0, 2]]);
 });
 
 console.log('Document model regression: ' + pass + ' checks passed');

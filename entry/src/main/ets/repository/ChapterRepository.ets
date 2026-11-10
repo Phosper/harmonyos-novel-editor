@@ -7,15 +7,22 @@
 import { relationalStore } from '@kit.ArkData'
 import { ChapterDao, ChapterFilter } from '../database/ChapterDao'
 import type { ChapterOrderStat } from '../database/ChapterDao'
+import { dbHelper } from '../database/DatabaseHelper'
+import { ParagraphRepository } from './ParagraphRepository'
+import { documentSession } from './DocumentSession'
+import { DocModel, createDocument, project, reconcileDocument } from '../editor/model/DocumentModel'
 import { IdGenerator } from '../utils/IdGenerator'
 import type { ChapterModel } from '../model/Chapter'
 import { ChapterFormat, TRASH_RETENTION_DAYS } from '../model/Chapter'
 import { LibId, LibCounts } from '../constants/DesignTokens'
+import { Logger } from '../utils/Logger'
 
 export class ChapterRepository {
   private dao: ChapterDao
+  private readonly tx: relationalStore.Transaction | null
 
   constructor(tx: relationalStore.Transaction | null = null) {
+    this.tx = tx
     this.dao = new ChapterDao(tx)
   }
 
@@ -29,9 +36,37 @@ export class ChapterRepository {
    * 打开文稿：必须按 id 取**完整**正文。
    * 列表投影里的正文只有前缀，且内存里的 chapter 可能已被编辑过；
    * 直接用列表项当草稿初值会把旧正文写回去（关掉标签再打开即丢稿）。
+   *
+   * P5 起优先读段落侧车投影；侧车缺失或正文不一致时回退 chapters.content，
+   * 保证旧库、备份恢复和直接写库的文稿仍然可打开。
    */
   async loadOne(chapterId: string): Promise<ChapterModel | null> {
-    return this.dao.queryById(chapterId)
+    const chapter: ChapterModel | null = await this.dao.queryById(chapterId)
+    if (chapter === null) {
+      documentSession.evict(chapterId)
+      return null
+    }
+    const runs: string = chapter.formatRuns !== undefined ? chapter.formatRuns : ''
+    const sidecar: DocModel | null = await new ParagraphRepository().loadDocument(chapterId, chapter.title)
+    let model: DocModel
+    let persisted: boolean = false
+    if (sidecar !== null) {
+      const projection = project(sidecar)
+      if (projection.text === chapter.content) {
+        chapter.content = projection.text
+        chapter.formatRuns = projection.runsJson
+        model = sidecar
+        persisted = true
+      } else {
+        Logger.warn('Paragraph sidecar stale, fallback to chapters.content: ' + chapterId)
+        model = createDocument(chapter.id, chapter.title, chapter.content, runs)
+      }
+    } else {
+      // 新稿/备份恢复/旧库：先按旧正文建立会话模型，下一次保存会写入侧车。
+      model = createDocument(chapter.id, chapter.title, chapter.content, runs)
+    }
+    documentSession.put(chapterId, model, persisted)
+    return chapter
   }
 
   /** 整本导出 / 备份：需要每篇的完整正文与格式边车 */
@@ -97,14 +132,56 @@ export class ChapterRepository {
     await this.dao.updateTitle(chapterId, title.trim())
   }
 
+  /**
+   * 只替换正文（导入/EPUB 等场景）：保留原光标与格式，走与自动保存相同的写入口，
+   * 避免 chapters 已更新而段落侧车仍是旧正文。
+   */
   async updateContent(chapterId: string, content: string): Promise<void> {
-    await this.dao.updateContent(chapterId, content)
+    const current: ChapterModel | null = await this.dao.queryById(chapterId)
+    if (current === null) {
+      return
+    }
+    const runs: string = current.formatRuns !== undefined ? current.formatRuns : ''
+    await this.saveDraft(chapterId, content, current.caretOffset, runs)
   }
 
-  /** 一次自动保存：正文 / 光标 / 格式边车走单条 UPDATE */
+  /**
+   * 一次自动保存：章节行与段落侧车在同一事务内落库。
+   *
+   * 侧车不是第二事实源：先用 reconcileDocument 在旧模型上保留 para_id，
+   * 再做差异写入；chapters.content 仍由同一条 UPDATE 更新。
+   */
   async saveDraft(chapterId: string, content: string, caretOffset: number,
     formatRuns: string): Promise<void> {
-    await this.dao.saveDraft(chapterId, content, caretOffset, formatRuns)
+    const paragraphRepo: ParagraphRepository = new ParagraphRepository()
+    // 打开的文稿由 loadOne 放进会话；没有缓存（导入、备份、未打开文稿）才回库读。
+    const cached: DocModel | undefined = documentSession.get(chapterId)
+    // 旧稿/新稿第一次保存还没有侧车行：oldModel 传 null，走整篇插入而不是差异更新。
+    const oldModel: DocModel | null = cached !== undefined
+      ? (documentSession.isPersisted(chapterId) ? cached : null)
+      : await paragraphRepo.loadDocument(chapterId, '')
+    const nextModel: DocModel = reconcileDocument(oldModel, chapterId, '', content, formatRuns)
+    if (this.tx !== null) {
+      await new ChapterDao(this.tx).saveDraft(chapterId, content, caretOffset, formatRuns)
+      await new ParagraphRepository(this.tx).saveModel(chapterId, oldModel, nextModel)
+      return
+    }
+    const tx: relationalStore.Transaction = await dbHelper.beginTransaction()
+    try {
+      await new ChapterDao(tx).saveDraft(chapterId, content, caretOffset, formatRuns)
+      await new ParagraphRepository(tx).saveModel(chapterId, oldModel, nextModel)
+      await tx.commit()
+      if (cached !== undefined) {
+        documentSession.put(chapterId, nextModel, true)
+      }
+    } catch (e) {
+      try {
+        await tx.rollback()
+      } catch (rollbackError) {
+        Logger.error('Chapter/paragraph rollback failed: ' + String(rollbackError))
+      }
+      throw new Error(String(e))
+    }
   }
 
   async setFormat(chapterId: string, format: ChapterFormat): Promise<void> {
@@ -113,6 +190,7 @@ export class ChapterRepository {
 
   async hardDelete(chapterId: string): Promise<void> {
     await this.dao.delete(chapterId)
+    documentSession.evict(chapterId)
   }
 
   async moveToBook(chapterId: string, bookId: string): Promise<void> {

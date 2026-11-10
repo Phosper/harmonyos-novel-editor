@@ -8,7 +8,8 @@
 //   2) 把段落投影回 FlowText 需要的 text + run[]（编辑器内核不用改）；
 //   3) 结构性编辑：分裂 / 合并 / 改段落种类 / 移动整节——都按"保留左段 id"的规则。
 //
-// 明确未做（留给下一步）：段内插入/删除的增量命令、撤销记录、落库。
+// 本文件不碰数据库：documentRows() 只给持久化层出行，实际落库在 repository/ParagraphRepository。
+// 明确未做（留给下一步）：段内插入/删除的增量命令、撤销记录、接编辑器。
 import { FormatRun, ParagraphKind, isListParagraph, MAX_LIST_LEVEL } from '../flowtext/model/EditorTypes'
 import { FormatCodec } from '../flowtext/model/FormatCodec'
 
@@ -19,13 +20,19 @@ export class DocParagraph {
   /** 列表层级（0–2）：只有列表/待办段有意义 */
   indent: number = 0
   text: string = ''
+  /**
+   * 持久化排序。按实数使用：插入时取相邻中点，避免每次回车都把后续行全部重写。
+   * SQLite 的 INTEGER 列也能存非整数；DAO 用 getDouble 读回。
+   */
+  ordinal: number = 0
 
   constructor(id: string = '', kind: number = ParagraphKind.BODY, text: string = '',
-    indent: number = 0) {
+    indent: number = 0, ordinal: number = 0) {
     this.id = id
     this.kind = kind
     this.text = text
     this.indent = indent
+    this.ordinal = ordinal
   }
 }
 
@@ -73,6 +80,51 @@ export class Projection {
   text: string = ''
   runsJson: string = ''
   spans: ParaSpan[] = []
+}
+
+/** doc_paragraphs 一行：持久化层用，DocModel 本身不持有 docId/ordinal */
+export class DocParagraphRow {
+  docId: string = ''
+  paraId: string = ''
+  ordinal: number = 0
+  kind: number = ParagraphKind.BODY
+  indent: number = 0
+  text: string = ''
+
+  constructor(docId: string = '', paraId: string = '', ordinal: number = 0,
+    kind: number = ParagraphKind.BODY, indent: number = 0, text: string = '') {
+    this.docId = docId
+    this.paraId = paraId
+    this.ordinal = ordinal
+    this.kind = kind
+    this.indent = indent
+    this.text = text
+  }
+}
+
+/** doc_runs 一行：偏移相对段首 */
+export class DocRunRow {
+  docId: string = ''
+  paraId: string = ''
+  start: number = 0
+  end: number = 0
+  bold: boolean = false
+  italic: boolean = false
+
+  constructor(docId: string = '', paraId: string = '', start: number = 0, end: number = 0,
+    bold: boolean = false, italic: boolean = false) {
+    this.docId = docId
+    this.paraId = paraId
+    this.start = start
+    this.end = end
+    this.bold = bold
+    this.italic = italic
+  }
+}
+
+export class DocRows {
+  paragraphs: DocParagraphRow[] = []
+  runs: DocRunRow[] = []
 }
 
 function nextParagraphId(model: DocModel): string {
@@ -124,7 +176,7 @@ export function createDocument(id: string, title: string, text: string, runsJson
     const end: number = offset + line.length
     const attrs: number[] = attrsAt(all, start, end)
     const paragraph: DocParagraph = new DocParagraph('p' + (i + 1).toString(),
-      attrs[0], line, attrs[1])
+      attrs[0], line, attrs[1], i)
     model.paragraphs.push(paragraph)
     // 行内样式裁到本段，并转成段内偏移
     for (let r: number = 0; r < all.length; r++) {
@@ -189,6 +241,245 @@ export function project(model: DocModel): Projection {
   return projection
 }
 
+/**
+ * 持久化映射：DocModel → 段落表/行内样式表的行。
+ * 纯函数，DAO 与 Node 回归共用同一套序号与相对偏移，避免两处各写一份。
+ */
+export function documentRows(model: DocModel): DocRows {
+  const rows: DocRows = new DocRows()
+  for (let i: number = 0; i < model.paragraphs.length; i++) {
+    const p: DocParagraph = model.paragraphs[i]
+    rows.paragraphs.push(new DocParagraphRow(model.id, p.id, p.ordinal, p.kind, p.indent, p.text))
+  }
+  for (let i: number = 0; i < model.runs.length; i++) {
+    const run: DocInlineRun = model.runs[i]
+    if (!run.bold && !run.italic) {
+      continue
+    }
+    rows.runs.push(new DocRunRow(model.id, run.paraId, run.start, run.end, run.bold, run.italic))
+  }
+  return rows
+}
+
+/**
+ * 把编辑器上报的「全文 + 格式」合并到旧段落模型，尽量保留 para_id。
+ *
+ * 编辑器目前只上报整篇文本，没有逐段命令；这里用“公共前缀/后缀 + 中间窗口”
+ * 做增量对齐：连续输入只改一段时，其余段落的 id 完全不动；插入/删除段落时，
+ * 只有变化窗口内的段才新建/移除 id。窗口内的规则与 ADR-002 §2.5 一致：
+ *   - 一段拆成多段：左段保留 id，右段新建；
+ *   - 多段合成一段：保留左段 id；
+ *   - 同长度窗口：按位置保留 id（视为逐段改写）。
+ *
+ * 这不是最终的命令服务：撤销/重做恢复旧文本时，仍可能给恢复出来的段新 id；
+ * 命令级撤销落地后，由命令记录直接恢复原身份。
+ */
+export function reconcileDocument(oldModel: DocModel | null, docId: string, title: string,
+  text: string, runsJson: string): DocModel {
+  const next: DocModel = createDocument(docId, title, text, runsJson)
+  if (oldModel === null || oldModel.paragraphs.length === 0) {
+    return next
+  }
+  const oldLines: string[] = paragraphTexts(oldModel)
+  const newLines: string[] = paragraphTexts(next)
+  let prefix: number = 0
+  while (prefix < oldLines.length && prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]) {
+    prefix++
+  }
+  let suffix: number = 0
+  while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) {
+    suffix++
+  }
+  const tempIds: string[] = []
+  const finalIds: string[] = []
+  for (let i: number = 0; i < next.paragraphs.length; i++) {
+    tempIds.push(next.paragraphs[i].id)
+    finalIds.push('')
+  }
+  for (let i: number = 0; i < prefix; i++) {
+    finalIds[i] = oldModel.paragraphs[i].id
+  }
+  for (let i: number = 0; i < suffix; i++) {
+    finalIds[next.paragraphs.length - 1 - i] = oldModel.paragraphs[oldModel.paragraphs.length - 1 - i].id
+  }
+  assignMiddleIds(oldModel, prefix, oldModel.paragraphs.length - suffix,
+    next, prefix, next.paragraphs.length - suffix, finalIds)
+  let maxId: number = Math.max(maxParagraphNumber(oldModel.paragraphs),
+    maxParagraphNumber(next.paragraphs))
+  for (let i: number = 0; i < finalIds.length; i++) {
+    if (finalIds[i] === '') {
+      maxId++
+      finalIds[i] = 'p' + maxId.toString()
+    }
+  }
+  const idMap: Map<string, string> = new Map<string, string>()
+  for (let i: number = 0; i < next.paragraphs.length; i++) {
+    const temp: string = tempIds[i]
+    const final: string = finalIds[i]
+    if (temp !== final) {
+      idMap.set(temp, final)
+    }
+    next.paragraphs[i].id = final
+  }
+  if (idMap.size > 0) {
+    for (let i: number = 0; i < next.runs.length; i++) {
+      const mapped: string | undefined = idMap.get(next.runs[i].paraId)
+      if (mapped !== undefined) {
+        next.runs[i].paraId = mapped
+      }
+    }
+  }
+  assignOrdinals(oldModel, next)
+  normalizeInline(next)
+  next.version = oldModel.version + 1
+  return next
+}
+
+/**
+ * 保留旧段落的 ordinal；新段落取相邻旧段落的中点。
+ * 这样插入/删除只改少数行，不需要把后面所有 ordinal 重排。
+ */
+function assignOrdinals(oldModel: DocModel, next: DocModel): void {
+  const oldById: Map<string, DocParagraph> = new Map<string, DocParagraph>()
+  for (let i: number = 0; i < oldModel.paragraphs.length; i++) {
+    oldById.set(oldModel.paragraphs[i].id, oldModel.paragraphs[i])
+  }
+  const assigned: boolean[] = []
+  for (let i: number = 0; i < next.paragraphs.length; i++) {
+    const old: DocParagraph | undefined = oldById.get(next.paragraphs[i].id)
+    if (old !== undefined) {
+      next.paragraphs[i].ordinal = old.ordinal
+      assigned.push(true)
+    } else {
+      assigned.push(false)
+    }
+  }
+  let needReindex: boolean = false
+  for (let i: number = 0; i < next.paragraphs.length; i++) {
+    if (assigned[i]) {
+      continue
+    }
+    let prev: number = -1
+    for (let j: number = i - 1; j >= 0; j--) {
+      if (assigned[j]) {
+        prev = j
+        break
+      }
+    }
+    let following: number = -1
+    for (let j: number = i + 1; j < next.paragraphs.length; j++) {
+      if (assigned[j]) {
+        following = j
+        break
+      }
+    }
+    if (prev >= 0 && following >= 0) {
+      const before: number = next.paragraphs[prev].ordinal
+      const after: number = next.paragraphs[following].ordinal
+      if (after - before < 0.000001) {
+        needReindex = true
+        break
+      }
+      next.paragraphs[i].ordinal = (before + after) / 2
+    } else if (prev >= 0) {
+      next.paragraphs[i].ordinal = next.paragraphs[prev].ordinal + 1
+    } else if (following >= 0) {
+      next.paragraphs[i].ordinal = next.paragraphs[following].ordinal - 1
+    } else {
+      next.paragraphs[i].ordinal = i
+    }
+    assigned[i] = true
+  }
+  if (needReindex) {
+    for (let i: number = 0; i < next.paragraphs.length; i++) {
+      next.paragraphs[i].ordinal = i
+    }
+  }
+}
+
+function paragraphTexts(model: DocModel): string[] {
+  const lines: string[] = []
+  for (let i: number = 0; i < model.paragraphs.length; i++) {
+    lines.push(model.paragraphs[i].text)
+  }
+  return lines
+}
+
+function maxParagraphNumber(paragraphs: DocParagraph[]): number {
+  let max: number = 0
+  for (let i: number = 0; i < paragraphs.length; i++) {
+    const id: string = paragraphs[i].id
+    if (id.startsWith('p')) {
+      const value: number = Number.parseInt(id.substring(1), 10)
+      if (Number.isFinite(value) && value > max) {
+        max = value
+      }
+    }
+  }
+  return max
+}
+
+function assignMiddleIds(oldModel: DocModel, oldStart: number, oldEnd: number,
+  next: DocModel, newStart: number, newEnd: number, finalIds: string[]): void {
+  const oldLen: number = oldEnd - oldStart
+  const newLen: number = newEnd - newStart
+  if (oldLen <= 0 || newLen <= 0) {
+    return
+  }
+  // 一段拆多段：左段保留 id；多段合一段：保留左段 id。
+  if (oldLen === 1 || newLen === 1) {
+    finalIds[newStart] = oldModel.paragraphs[oldStart].id
+    return
+  }
+  // 同长度窗口按位置视为逐段改写，id 不动。
+  if (oldLen === newLen) {
+    for (let i: number = 0; i < oldLen; i++) {
+      finalIds[newStart + i] = oldModel.paragraphs[oldStart + i].id
+    }
+    return
+  }
+  // 窗口很大（整篇粘贴/替换）时不做 LCS，按位置保留前 min 段，其余新建。
+  if (oldLen * newLen > 40000) {
+    const shared: number = Math.min(oldLen, newLen)
+    for (let i: number = 0; i < shared; i++) {
+      finalIds[newStart + i] = oldModel.paragraphs[oldStart + i].id
+    }
+    return
+  }
+  const dp: number[][] = []
+  for (let i: number = 0; i <= oldLen; i++) {
+    const row: number[] = []
+    for (let j: number = 0; j <= newLen; j++) {
+      row.push(0)
+    }
+    dp.push(row)
+  }
+  for (let i: number = 1; i <= oldLen; i++) {
+    for (let j: number = 1; j <= newLen; j++) {
+      if (oldModel.paragraphs[oldStart + i - 1].text === next.paragraphs[newStart + j - 1].text) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+      }
+    }
+  }
+  let i: number = oldLen
+  let j: number = newLen
+  while (i > 0 && j > 0) {
+    if (oldModel.paragraphs[oldStart + i - 1].text === next.paragraphs[newStart + j - 1].text) {
+      finalIds[newStart + j - 1] = oldModel.paragraphs[oldStart + i - 1].id
+      i--
+      j--
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--
+    } else {
+      j--
+    }
+  }
+}
+
 function findSpan(spans: ParaSpan[], id: string): ParaSpan | undefined {
   for (let i: number = 0; i < spans.length; i++) {
     if (spans[i].id === id) {
@@ -228,6 +519,14 @@ function normalizeInline(model: DocModel): void {
   model.runs = out
 }
 
+/** 相邻 ordinal 的中点；间隙耗尽时交给 assignOrdinals 的 reindex 兜底 */
+function ordinalBetween(before: number, after: number): number {
+  if (after - before > 0.000001) {
+    return (before + after) / 2
+  }
+  return before + 1
+}
+
 /** 段落索引（找不到 = -1） */
 export function indexOfParagraph(model: DocModel, id: string): number {
   for (let i: number = 0; i < model.paragraphs.length; i++) {
@@ -261,14 +560,19 @@ export function splitParagraph(model: DocModel, index: number, offset: number): 
   const at: number = Math.max(0, Math.min(offset, left.text.length))
   if (at === 0 || at === left.text.length) {
     // 段首/段尾分裂等价于插入一个空段落
-    const empty: DocParagraph = new DocParagraph(nextParagraphId(model), left.kind, '', left.indent)
+    const empty: DocParagraph = new DocParagraph(nextParagraphId(model), left.kind, '', left.indent,
+      at === 0 ? left.ordinal - 1 : left.ordinal + 1)
     const insertAt: number = at === 0 ? index : index + 1
     model.paragraphs.splice(insertAt, 0, empty)
     model.version++
     return empty.id
   }
+  const following: DocParagraph | undefined = index + 1 < model.paragraphs.length
+    ? model.paragraphs[index + 1] : undefined
+  const rightOrdinal: number = following !== undefined
+    ? ordinalBetween(left.ordinal, following.ordinal) : left.ordinal + 1
   const right: DocParagraph = new DocParagraph(nextParagraphId(model), left.kind,
-    left.text.substring(at), left.indent)
+    left.text.substring(at), left.indent, rightOrdinal)
   left.text = left.text.substring(0, at)
   const kept: DocInlineRun[] = []
   for (let i: number = 0; i < model.runs.length; i++) {
@@ -383,6 +687,10 @@ export function moveSection(model: DocModel, headIndex: number, targetIndex: num
   }
   for (let i: number = 0; i < block.length; i++) {
     model.paragraphs.splice(target + i, 0, block[i])
+  }
+  // 整节移动会改变大段顺序；这里统一重排 ordinal（结构编辑不频繁）。
+  for (let i: number = 0; i < model.paragraphs.length; i++) {
+    model.paragraphs[i].ordinal = i
   }
   model.version++
   return true

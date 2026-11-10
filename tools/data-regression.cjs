@@ -30,11 +30,21 @@ class ResultSet {
 class StoreDouble {
   constructor() {
     this.tables = new Map(['books', 'chapters', 'characters', 'world_settings', 'inspirations', 'relationships',
-      'topics', 'topic_evidence', 'canvases', 'canvas_placements', 'canvas_links']
+      'topics', 'topic_evidence', 'canvases', 'canvas_placements', 'canvas_links',
+      'doc_paragraphs', 'doc_runs', 'schema_meta']
       .map(name => [name, new Map()]));
-    this.routes = []; this.activeTx = null;
+    this.routes = []; this.activeTx = null; this.nextRowId = 1;
   }
-  seed(table, row) { this.tables.get(table).set(row.id, {...row}); }
+  seed(table, row) {
+    let key = row.id;
+    if (key === undefined) {
+      if (table === 'doc_paragraphs') key = row.doc_id + '|' + row.para_id;
+      else if (table === 'schema_meta') key = row.meta_key;
+      else if (table === 'doc_runs') key = 'r' + (this.nextRowId++);
+      else key = JSON.stringify(row);
+    }
+    this.tables.get(table).set(key, {...row});
+  }
   get(table, id) { return this.tables.get(table).get(id); }
   checkWrite() { if (this.activeTx) throw new Error('14800024: database locked'); }
   async insert(table, value) {
@@ -104,6 +114,9 @@ class StoreDouble {
     this.checkWrite();
     const shadow = new StoreDouble();
     for (const [table, rows] of this.tables) for (const row of rows.values()) shadow.seed(table, row);
+    // 让事务里的写入仍然触发测试的延迟/失败钩子（章节保存现在走事务）。
+    shadow.onInsert = this.onInsert; shadow.onUpdate = this.onUpdate;
+    shadow.onQuery = this.onQuery; shadow.onQuerySql = this.onQuerySql;
     const source = this;
     const tx = {
       async insert(table, value) {
@@ -141,10 +154,12 @@ for (const file of [
   'model/Book', 'model/Chapter', 'model/Character', 'model/WorldSetting', 'model/Inspiration', 'model/Relationship',
   'model/CanvasTypes', 'model/CanvasStoreModels',
   'constants/DesignTokens', 'utils/TextLimit', 'utils/IdGenerator', 'utils/TimeUtil',
+  'editor/flowtext/model/EditorTypes', 'editor/flowtext/model/FormatCodec', 'editor/model/DocumentModel',
   'database/BaseDao', 'database/BookDao', 'database/ChapterDao', 'database/CharacterDao',
   'database/WorldSettingDao', 'database/InspirationDao', 'database/RelationshipDao',
   'database/CanvasBoardDao', 'database/CanvasCardDao', 'database/CanvasEvidenceDao',
-  'database/CanvasPlacementDao', 'database/CanvasLinkDao',
+  'database/CanvasPlacementDao', 'database/CanvasLinkDao', 'database/ParagraphDao', 'database/MetaDao',
+  'repository/ParagraphRepository', 'repository/DocumentSession',
   'repository/BookRepository', 'repository/ChapterRepository', 'repository/MaterialRepository', 'repository/RelationshipRepository',
   'repository/CanvasRepository',
   'store/Repos', 'store/StoreModels', 'store/EditorStore', 'store/ProjectStore', 'store/MaterialStore', 'store/RelationStore',
@@ -152,13 +167,14 @@ for (const file of [
 ]) load(file + '.ets');
 const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES,' +
   ' runInTransaction, chapterRepo, canvasRepo, CanvasCardKind, CanvasBoardScope, CanvasEvidenceKind, CanvasLinkKind,' +
-  ' canvasFindPlacement})', context);
+  ' canvasFindPlacement, documentSession})', context);
 function chapter(id = 'a', bookId = 'book-a', content = 'previous saved text') {
   return {id, book_id: bookId, title: 'Chapter ' + id, content, format: 'txt', format_runs: '', sort_order: 0,
     word_count: content.length, caret_offset: 0, is_fav: 0, is_inspiration: 0, is_trash: 0, created_at: 1, updated_at: 1};
 }
 function fixture() {
   store = new StoreDouble(); timers.clear();
+  api.documentSession.clear();
   const app = new api.AppStores();
   app.project.currentBookId = 'book-a';
   app.project.books = [{id: 'book-a', name: 'Book A', mode: api.BookMode.PROFESSIONAL}, {id: 'book-b', name: 'Book B', mode: api.BookMode.PROFESSIONAL}];
@@ -238,9 +254,21 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     store.onUpdate = null; await app.editor.flushAll(); assert.equal(doc.dirty, false);
     assert.equal(store.get('chapters', 'a').content, 'newer input'); assert.equal(store.get('chapters', 'a').format_runs, '[1]');
   });
+  await check('closing a tab or resetting the editor releases document session models', async () => {
+    const {app, doc} = fixture(); doc.dirty = false;
+    api.documentSession.put('a', {id: 'a'}, true);
+    await app.closeTab('a');
+    assert.equal(api.documentSession.has('a'), false);
+    api.documentSession.put('b', {id: 'b'}, true);
+    app.editor.reset();
+    assert.equal(api.documentSession.size(), 0);
+  });
   await check('closing a tab queues behind an in-flight autosave and persists its newer draft', async () => {
     const {app} = fixture(); const entered = deferred(), resume = deferred(); let writes = 0;
-    store.onUpdate = async () => { if (++writes === 1) { entered.resolve(); await resume.promise; } };
+    // 只数章节行的更新；段落侧车的差异写入不算一次“保存”。
+    store.onUpdate = async (value, predicates) => {
+      if (predicates.table === 'chapters' && ++writes === 1) { entered.resolve(); await resume.promise; }
+    };
     const saving = app.editor.flushActive(); await entered.promise;
     app.editor.setEditorState('text before closing', '[2]', 9);
     const closing = app.closeTab('a'); await Promise.resolve(); await Promise.resolve(); assert.equal(writes, 1);
