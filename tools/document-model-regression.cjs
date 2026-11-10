@@ -19,7 +19,7 @@ for (const file of ['editor/flowtext/model/EditorTypes.ets', 'editor/flowtext/mo
 }
 const api = vm.runInContext('({ FormatRun, FormatCodec, createDocument, project, paragraphSpans,' +
   ' paragraphIdAt, splitParagraph, mergeParagraphs, setParagraphKind, sectionRange, moveSection,' +
-  ' changeIndent, reconcileDocument })', context);
+  ' changeIndent, reconcileDocument, moveSectionUp, moveSectionDown, previousHeadingIndex, nextHeadingIndex })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -192,6 +192,21 @@ check('行内样式跟随段落 identity 重映射', () => {
   assert.equal(next.runs.length, 1);
   assert.equal(next.runs[0].paraId, 'p2', 'bold run must follow 目标 to its old id');
   assert.deepEqual(json(next.runs.map(r => [r.start, r.end])), [[0, 2]]);
+});
+
+check('整节上移/下移：按标题边界搬整段，id 一个不变', () => {
+  const text = '第一章\n甲\n第二章\n乙';
+  const runs = [new api.FormatRun(0, 3, false, false, 1, 0), new api.FormatRun(6, 9, false, false, 1, 0)];
+  const m = api.createDocument('d', 't', text, api.FormatCodec.encode(runs));
+  assert.equal(api.previousHeadingIndex(m, 2), 0);
+  assert.equal(api.nextHeadingIndex(m, 1), 2);
+  assert.equal(api.moveSectionDown(m, 0), true);
+  assert.deepEqual(texts(m), ['第二章', '乙', '第一章', '甲']);
+  assert.deepEqual(ids(m), ['p3', 'p4', 'p1', 'p2'], '整节搬走，身份不重排');
+  assert.equal(api.moveSectionDown(m, 2), false, '最后一节不能再下移');
+  assert.equal(api.moveSectionUp(m, 2), true);
+  assert.deepEqual(texts(m), ['第一章', '甲', '第二章', '乙']);
+  assert.equal(api.moveSectionUp(m, 0), false, '第一节不能再上移');
 });
 
 console.log('Document model regression: ' + pass + ' checks passed');

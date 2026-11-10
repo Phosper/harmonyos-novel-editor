@@ -20,6 +20,7 @@ import { buildOutlineSnapshot } from '../editor/OutlineExtract'
 import type { OutlineSnapshot } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 import { EditorTools } from './EditorTools'
+import { OutlinePanel } from './OutlinePanel'
 import { CardPicker } from './CardPicker'
 import { canvasCapturePayload } from '../editor/CanvasCapture'
 import type { CanvasCapturePayload } from '../editor/CanvasCapture'
@@ -64,6 +65,8 @@ export struct EditorPane {
   @Local capSource: string = ''
   /** 性能采样文案（60 帧更新一次）：抓不到 hilog 时直接看界面 */
   @Local perfText: string = ''
+  /** 大纲面板（桌面优先）：列标题、点回正文、整节上移/下移 */
+  @Local showOutline: boolean = false
   /**
    * @Monitor 的路径根必须是**组件自己的状态变量**：直接写 `@Monitor('app.ui.xxx')`
    * 时根是模块级单例，编译器会告警 "needs to monitor the state variables that exist"，
@@ -296,6 +299,12 @@ export struct EditorPane {
           }
         })
       }
+      if (this.showOutline) {
+        OutlinePanel({
+          app: this.app,
+          onClose: () => { this.showOutline = false }
+        })
+      }
 
       if (this.showReplace) {
         this.replacePanel()
@@ -473,6 +482,16 @@ export struct EditorPane {
             .fontSize(12).fontColor(this.colors().textTertiary)
           Blank()
           // 只读导图入口：桌面/宽屏才有标题行，手机端等结构工具补全后再给入口
+          Text('大纲')
+            .fontSize(12)
+            .fontColor(this.showOutline ? this.colors().brand : this.colors().textSecondary)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .borderRadius(WeaverRadii.XS)
+            .backgroundColor(this.showOutline ? this.colors().activeBg : this.colors().bgSurface)
+            .margin({ right: 6 })
+            .hoverEffect(HoverEffect.Highlight)
+            .accessibilityText('打开大纲面板')
+            .onClick(() => { this.showOutline = !this.showOutline })
           Text('导图')
             .fontSize(12)
             .fontColor(this.colors().textSecondary)

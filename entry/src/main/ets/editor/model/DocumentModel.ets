@@ -665,6 +665,48 @@ export function sectionRange(model: DocModel, index: number): number[] {
   return [index, end]
 }
 
+/** 上一个标题段的下标（-1 = 前面没有标题） */
+export function previousHeadingIndex(model: DocModel, index: number): number {
+  for (let i: number = Math.min(index - 1, model.paragraphs.length - 1); i >= 0; i--) {
+    const kind: number = model.paragraphs[i].kind
+    if (kind >= ParagraphKind.H1 && kind <= ParagraphKind.H3) {
+      return i
+    }
+  }
+  return -1
+}
+
+/** 从 from 开始（含）往后第一个标题段的下标（-1 = 后面没有标题） */
+export function nextHeadingIndex(model: DocModel, from: number): number {
+  for (let i: number = Math.max(0, from); i < model.paragraphs.length; i++) {
+    const kind: number = model.paragraphs[i].kind
+    if (kind >= ParagraphKind.H1 && kind <= ParagraphKind.H3) {
+      return i
+    }
+  }
+  return -1
+}
+
+/** 「上移一节」：把当前节挪到上一节前面 */
+export function moveSectionUp(model: DocModel, headIndex: number): boolean {
+  const prev: number = previousHeadingIndex(model, headIndex)
+  if (prev < 0) {
+    return false
+  }
+  return moveSection(model, headIndex, prev)
+}
+
+/** 「下移一节」：把当前节挪到下一节后面 */
+export function moveSectionDown(model: DocModel, headIndex: number): boolean {
+  const range: number[] = sectionRange(model, headIndex)
+  const next: number = nextHeadingIndex(model, range[1])
+  if (next < 0) {
+    return false
+  }
+  const nextRange: number[] = sectionRange(model, next)
+  return moveSection(model, headIndex, nextRange[1])
+}
+
 /**
  * 移动整节：把 headIndex 那一节（标题 + 下属内容）移到 targetIndex 之前。
  * id 一律不变——这样锚点、导图节点、引用都不会失效。
