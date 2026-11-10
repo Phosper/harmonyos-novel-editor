@@ -1,13 +1,11 @@
-// 只读导图（结构包）
+// 文稿绑定导图（结构包）
 //
-// 范围（用户确认）：从标题派生、点主题回到正文；**不做编辑**，不改正文结构。
-// 优先级：桌面 / MatePad Edge 电脑模式先可用；手机端等后续再单独排版。
-//
-// 数据来源：宿主打开本页前把快照 publish 到 core_runtime，这里只读（ADR-003 §2.3）。
-// 返回正文：把要跳到的偏移写回宿主，由宿主关闭本页后定位——导图包不直接操作编辑器。
+// 数据：宿主 publish 一份 OutlineSnapshot（节点带稳定 paraId）；本页只读快照、只发命令。
+// 编辑：改名/新建/升降级/删除/移动都发 OutlineCommand 给 core_runtime，宿主改正文后回传新快照。
+// 边界：本包不 import entry、不碰正文；折叠与选中是视图态。
 import {
-  MindMapLayout, OutlineSnapshot, PlacedNode, OUTLINE_NODE_H, OUTLINE_NODE_W,
-  layoutOutline, outlineParents
+  MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind,
+  OUTLINE_NODE_H, OUTLINE_NODE_W, layoutOutline, outlineParents
 } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 
@@ -20,7 +18,18 @@ export class StructureTheme {
   divider: string = '#ECECEE'
   brand: string = '#1C1C1E'
   onBrand: string = '#FFFFFF'
+  danger: string = '#D70015'
 }
+
+const KEY_ESCAPE: number = 2070
+const KEY_ENTER: number = 2054
+const KEY_NUMPAD_ENTER: number = 2116
+const KEY_TAB: number = 2049
+const KEY_FORWARD_DEL: number = 2071
+const KEY_DPAD_UP: number = 2012
+const KEY_DPAD_DOWN: number = 2013
+const KEY_F2: number = 2092
+const RENAME_INPUT_ID: string = 'structure-rename-input'
 
 @ComponentV2
 export struct StructurePage {
@@ -41,12 +50,14 @@ export struct StructurePage {
   @Local selectedIndex: number = -1
   @Local viewW: number = 0
   @Local viewH: number = 0
+  /** 就地改名 */
+  @Local renaming: boolean = false
+  @Local renameText: string = ''
+
   /** 每个节点在 placed 里的父索引（-1 = 根） */
   private parents: number[] = []
   /**
-   * 连线用 Canvas 画，不用 Path。
-   * 原因：Path 的 commands 坐标与组件尺寸单位实测不一致（真机上只画出一小段），
-   * 而 CanvasRenderingContext2D 的坐标就是 vp，和思路板点阵背景同一套已验证的画法。
+   * 连线用 Canvas 画，不用 Path（Path 的 commands 单位与组件尺寸不一致，真机上只画出一小段）。
    */
   private connCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true))
 
@@ -56,12 +67,26 @@ export struct StructurePage {
 
   private load(): void {
     const snapshot: OutlineSnapshot | null = outlineService().current()
-    // 只有根节点 = 文稿还没有标题：空态引导，不画一张只有一个点的图
-    if (snapshot === null || snapshot.nodes.length <= 1) {
+    if (snapshot === null) {
       this.empty = true
       this.topicCount = 0
       return
     }
+    this.applySnapshot(snapshot)
+  }
+
+  /** 用一份快照重排（首次打开与每次命令成功后都走这里） */
+  private applySnapshot(snapshot: OutlineSnapshot): void {
+    if (snapshot.nodes.length <= 1) {
+      this.empty = true
+      this.topicCount = 0
+      this.placed = []
+      this.mapW = 0
+      this.mapH = 0
+      this.selectedIndex = -1
+      return
+    }
+    const selectedParaId: string = this.selectedParaId()
     const layout: MindMapLayout = layoutOutline(snapshot.nodes, null, this.zoom)
     this.placed = layout.nodes
     this.mapW = layout.width
@@ -69,15 +94,20 @@ export struct StructurePage {
     this.topicCount = layout.nodes.length - 1
     this.parents = outlineParents(snapshot.nodes)
     this.empty = false
+    // 命令后重建时尽量把选中保持在同一个节点上（段落身份不变，索引会变）
+    if (selectedParaId !== '') {
+      let kept: number = -1
+      for (let i: number = 0; i < this.placed.length; i++) {
+        if (this.placed[i].paraId === selectedParaId) {
+          kept = i
+          break
+        }
+      }
+      this.selectedIndex = kept
+    }
     if (this.selectedIndex >= this.placed.length) {
       this.selectedIndex = -1
     }
-    // 诊断：真机上一眼确认"节点/画布/连线"三组数字，排查渲染问题比看截图快
-    console.info('[StructureMap] nodes=' + this.placed.length.toString() +
-      ' topics=' + this.topicCount.toString() +
-      ' map=' + this.mapW.toFixed(1) + 'x' + this.mapH.toFixed(1) +
-      ' links=' + Math.max(0, this.placed.length - 1).toString())
-    // Canvas 可能还没 ready（此时绘制会被忽略），onReady 里会再画一次
     this.drawConnections()
   }
 
@@ -102,27 +132,150 @@ export struct StructurePage {
     this.setZoom(z)
   }
 
-  /** 键盘：方向键选节点、Enter 回正文、Esc 关闭 */
+  private selectedNode(): PlacedNode | undefined {
+    if (this.selectedIndex < 0 || this.selectedIndex >= this.placed.length) {
+      return undefined
+    }
+    return this.placed[this.selectedIndex]
+  }
+
+  private selectedParaId(): string {
+    const node: PlacedNode | undefined = this.selectedNode()
+    return node === undefined ? '' : node.paraId
+  }
+
+  private selectedX(): number {
+    const node: PlacedNode | undefined = this.selectedNode()
+    return node === undefined ? 0 : node.x
+  }
+
+  private selectedY(): number {
+    const node: PlacedNode | undefined = this.selectedNode()
+    return node === undefined ? 0 : node.y
+  }
+
+  private selectAt(index: number): void {
+    if (index < 0 || index >= this.placed.length) {
+      return
+    }
+    this.selectedIndex = index
+    this.renaming = false
+  }
+
+  /** 发一条命令；成功后用宿主回传的快照重排 */
+  private dispatchCommand(kind: OutlineCommandKind, text: string = '', level: number = 1): boolean {
+    const node: PlacedNode | undefined = this.selectedNode()
+    if (node === undefined) {
+      return false
+    }
+    const command: OutlineCommand = new OutlineCommand(kind, node.paraId, text, level)
+    const next: OutlineSnapshot | null = outlineService().dispatch(command)
+    if (next === null) {
+      this.toast('这次修改没有生效（正文可能刚被改动）')
+      return false
+    }
+    this.applySnapshot(next)
+    return true
+  }
+
+  private startRename(): void {
+    const node: PlacedNode | undefined = this.selectedNode()
+    if (node === undefined) {
+      return
+    }
+    this.renameText = node.title
+    this.renaming = true
+    // 浮层刚挂载时还拿不到焦点，稍后再请求一次；requestFocus 必须包 try/catch（150002 前科）
+    setTimeout(() => {
+      try {
+        this.getUIContext().getFocusController().requestFocus(RENAME_INPUT_ID)
+      } catch (e) {
+        // 拿不到焦点不影响保存（回车仍可从输入框冒泡）
+      }
+    }, 40)
+  }
+
+  private commitRename(): void {
+    if (!this.renaming) {
+      return
+    }
+    this.renaming = false
+    const text: string = this.renameText.trim()
+    const node: PlacedNode | undefined = this.selectedNode()
+    if (node === undefined || text === '' || text === node.title) {
+      return
+    }
+    this.dispatchCommand(OutlineCommandKind.RENAME, text)
+  }
+
+  /** 删除整节：二次确认后执行（正文里的删除仍可撤销） */
+  private confirmDelete(): void {
+    const node: PlacedNode | undefined = this.selectedNode()
+    if (node === undefined) {
+      return
+    }
+    try {
+      this.getUIContext().getPromptAction().showDialog({
+        title: '删除这一节？',
+        message: '「' + node.title + '」及其下的正文会一起删除；可以在正文里撤销。',
+        buttons: [
+          { text: '取消', color: this.theme.sub },
+          { text: '删除', color: this.theme.danger }
+        ]
+      }).then((result) => {
+        if (result.index === 1) {
+          this.dispatchCommand(OutlineCommandKind.DELETE_SECTION)
+        }
+      }).catch(() => {})
+    } catch (e) {
+      this.toast('无法打开确认框')
+    }
+  }
+
+  private jumpTo(offset: number): void {
+    outlineService().requestReveal(offset)
+    this.onClose()
+  }
+
+  /** 键盘：结构编辑与导航分离——Enter 新建同级，双击/Ctrl+Enter 回正文 */
   private handleKey(event: KeyEvent): boolean {
-    if (event.type !== KeyType.Down || this.placed.length === 0) {
+    if (event.type !== KeyType.Down) {
+      return false
+    }
+    if (this.renaming) {
       return false
     }
     const code: number = event.keyCode
-    if (code === 2070) {
+    if (code === KEY_ESCAPE) {
       this.onClose()
       return true
     }
-    if (code === 2012 || code === 2013) {
-      const step: number = code === 2012 ? -1 : 1
+    if (this.placed.length === 0) {
+      return false
+    }
+    if (code === KEY_DPAD_UP || code === KEY_DPAD_DOWN) {
+      const step: number = code === KEY_DPAD_UP ? -1 : 1
       const base: number = this.selectedIndex < 0 ? (step > 0 ? -1 : this.placed.length) : this.selectedIndex
-      const next: number = Math.max(0, Math.min(this.placed.length - 1, base + step))
-      this.selectedIndex = next
+      this.selectAt(Math.max(0, Math.min(this.placed.length - 1, base + step)))
       return true
     }
-    if (code === 2054 || code === 2116) {
-      if (this.selectedIndex >= 0 && this.selectedIndex < this.placed.length) {
-        this.jumpTo(this.placed[this.selectedIndex].startOffset)
-      }
+    if (this.selectedIndex < 0) {
+      return false
+    }
+    if (code === KEY_ENTER) {
+      this.dispatchCommand(OutlineCommandKind.INSERT_SIBLING)
+      return true
+    }
+    if (code === KEY_TAB) {
+      this.dispatchCommand(OutlineCommandKind.INSERT_CHILD)
+      return true
+    }
+    if (code === KEY_F2) {
+      this.startRename()
+      return true
+    }
+    if (code === KEY_FORWARD_DEL) {
+      this.confirmDelete()
       return true
     }
     return false
@@ -138,19 +291,16 @@ export struct StructurePage {
     ctx.strokeStyle = this.theme.divider
     ctx.lineWidth = 1.2
     for (let i: number = 1; i < this.placed.length; i++) {
-      const parent: number = this.parents[i]
-      if (parent < 0) {
+      const parent: number = this.placed[i].parentIndex
+      if (parent < 0 || parent >= this.placed.length) {
         continue
       }
       const from: PlacedNode = this.placed[parent]
       const to: PlacedNode = this.placed[i]
-      const fromW: number = OUTLINE_NODE_W * from.scale
-      const fromH: number = OUTLINE_NODE_H * from.scale
-      const toH: number = OUTLINE_NODE_H * to.scale
-      const x1: number = from.x + fromW
-      const y1: number = from.y + fromH / 2
+      const x1: number = from.x + OUTLINE_NODE_W * from.scale
+      const y1: number = from.y + OUTLINE_NODE_H * from.scale / 2
       const x2: number = to.x
-      const y2: number = to.y + toH / 2
+      const y2: number = to.y + OUTLINE_NODE_H * to.scale / 2
       const mid: number = (x1 + x2) / 2
       ctx.beginPath()
       ctx.moveTo(x1, y1)
@@ -159,18 +309,20 @@ export struct StructurePage {
     }
   }
 
-  /** 点主题：记下偏移、请求宿主回正文（本包不碰编辑器） */
-  private jumpTo(offset: number): void {
-    outlineService().requestReveal(offset)
-    this.onClose()
-  }
-
   private titleOf(): string {
     const snapshot: OutlineSnapshot | null = outlineService().current()
     if (snapshot !== null && snapshot.docTitle !== '') {
       return snapshot.docTitle
     }
     return this.docTitle === '' ? '结构' : this.docTitle
+  }
+
+  private toast(message: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: message })
+    } catch (e) {
+      // 提示失败不影响主流程
+    }
   }
 
   @Builder
@@ -252,8 +404,27 @@ export struct StructurePage {
     })
     .position({ x: n.x, y: n.y })
     .hoverEffect(HoverEffect.Highlight)
-    .accessibilityText('主题：' + n.title + '，点击回到正文')
-    .onClick(() => { this.jumpTo(n.startOffset) })
+    .accessibilityText('主题：' + n.title + '，回车新建同级，Tab 新建子级，双击回到正文')
+    .onClick(() => { this.selectAt(index) })
+    .gesture(TapGesture({ count: 2 }).onAction(() => { this.jumpTo(n.startOffset) }))
+  }
+
+  /** 就地改名浮层：压在节点原来的位置上 */
+  @Builder
+  renameOverlay() {
+    TextInput({ text: this.renameText })
+      .id(RENAME_INPUT_ID)
+      .width(OUTLINE_NODE_W * this.zoom)
+      .height(OUTLINE_NODE_H * this.zoom)
+      .fontSize(Math.max(10, 13 * this.zoom))
+      .padding({ left: 8, right: 8 })
+      .backgroundColor(this.theme.card)
+      .borderRadius(10)
+      .border({ width: 2, color: this.theme.brand })
+      .position({ x: this.selectedX(), y: this.selectedY() })
+      .onChange((value: string) => { this.renameText = value })
+      .onSubmit(() => { this.commitRename() })
+      .onBlur(() => { this.commitRename() })
   }
 
   @Builder
@@ -284,11 +455,10 @@ export struct StructurePage {
       if (this.empty) {
         this.emptyView()
       } else {
-        // 桌面端一次看到整棵树：外层横向 + 内层纵向（ScrollDirection.Free 已废弃，改用嵌套）
+        // 外层横向 + 内层纵向（ScrollDirection.Free 已废弃）
         Scroll() {
           Scroll() {
             Stack({ alignContent: Alignment.TopStart }) {
-              // 连线层在最底下，不参与命中
               Canvas(this.connCtx)
                 .width(this.mapW)
                 .height(this.mapH)
@@ -297,7 +467,10 @@ export struct StructurePage {
                 .onReady(() => { this.drawConnections() })
               ForEach(this.placed, (node: PlacedNode, index: number) => {
                 this.nodeChip(node, index)
-              }, (node: PlacedNode) => node.id)
+              }, (node: PlacedNode) => node.paraId === '' ? node.id : node.paraId)
+              if (this.renaming && this.selectedIndex >= 0) {
+                this.renameOverlay()
+              }
             }
             .width(this.mapW)
             .height(this.mapH)

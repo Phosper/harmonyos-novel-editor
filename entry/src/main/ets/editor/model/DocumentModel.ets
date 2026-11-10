@@ -665,6 +665,52 @@ export function sectionRange(model: DocModel, index: number): number[] {
   return [index, end]
 }
 
+/**
+ * 在指定下标插入一个新段落（结构编辑：新建同级/子级）。
+ * @returns 新段落的 id；越界返回空串
+ */
+export function insertParagraph(model: DocModel, at: number, kind: number, text: string): string {
+  const index: number = Math.max(0, Math.min(at, model.paragraphs.length))
+  const level: number = Math.max(ParagraphKind.BODY, Math.min(ParagraphKind.TODO_DONE, Math.round(kind)))
+  const paragraph: DocParagraph = new DocParagraph(nextParagraphId(model), level, text, 0)
+  model.paragraphs.splice(index, 0, paragraph)
+  for (let i: number = 0; i < model.paragraphs.length; i++) {
+    model.paragraphs[i].ordinal = i
+  }
+  model.version++
+  return paragraph.id
+}
+
+/**
+ * 删除整节（标题 + 下属正文），并清掉这些段落的行内样式。
+ * 与 moveSection 一样，其他段落的 id 不变。
+ */
+export function removeSection(model: DocModel, headIndex: number): boolean {
+  const range: number[] = sectionRange(model, headIndex)
+  const start: number = range[0]
+  const end: number = range[1]
+  if (start >= end || start < 0 || end > model.paragraphs.length) {
+    return false
+  }
+  // 至少要留下一个段落，否则编辑器会拿到空文档（空文档应由上层显式处理）
+  if (end - start >= model.paragraphs.length) {
+    return false
+  }
+  const removed: Set<string> = new Set<string>()
+  for (let i: number = start; i < end; i++) {
+    removed.add(model.paragraphs[i].id)
+  }
+  model.paragraphs.splice(start, end - start)
+  if (removed.size > 0) {
+    model.runs = model.runs.filter((run: DocInlineRun): boolean => !removed.has(run.paraId))
+  }
+  for (let i: number = 0; i < model.paragraphs.length; i++) {
+    model.paragraphs[i].ordinal = i
+  }
+  model.version++
+  return true
+}
+
 /** 上一个标题段的下标（-1 = 前面没有标题） */
 export function previousHeadingIndex(model: DocModel, index: number): number {
   for (let i: number = Math.min(index - 1, model.paragraphs.length - 1); i >= 0; i--) {

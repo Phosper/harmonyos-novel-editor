@@ -19,7 +19,8 @@ for (const file of ['editor/flowtext/model/EditorTypes.ets', 'editor/flowtext/mo
 }
 const api = vm.runInContext('({ FormatRun, FormatCodec, createDocument, project, paragraphSpans,' +
   ' paragraphIdAt, splitParagraph, mergeParagraphs, setParagraphKind, sectionRange, moveSection,' +
-  ' changeIndent, reconcileDocument, moveSectionUp, moveSectionDown, previousHeadingIndex, nextHeadingIndex })', context);
+  ' changeIndent, reconcileDocument, moveSectionUp, moveSectionDown, previousHeadingIndex, nextHeadingIndex,'+
+  ' insertParagraph, removeSection })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -207,6 +208,30 @@ check('整节上移/下移：按标题边界搬整段，id 一个不变', () => 
   assert.equal(api.moveSectionUp(m, 2), true);
   assert.deepEqual(texts(m), ['第一章', '甲', '第二章', '乙']);
   assert.equal(api.moveSectionUp(m, 0), false, '第一节不能再上移');
+});
+
+check('新建段落：插到指定位置，其他段落 id 不变', () => {
+  const m = sample();
+  const before = ids(m);
+  const newId = api.insertParagraph(m, 2, 2, '插入的小节');
+  assert.equal(newId.startsWith('p'), true);
+  assert.deepEqual(texts(m), ['第一章 引言', '这是正文。', '插入的小节', '子项内容', '第一节', '结尾']);
+  assert.deepEqual(ids(m).slice(0, 2), before.slice(0, 2));
+  assert.deepEqual(ids(m).slice(3), before.slice(2), '原有段落顺序与身份都不变');
+});
+
+check('删除整节：只删该节段落与它的行内样式', () => {
+  // 两节结构：第一节只有 H2 + 正文（带粗体），第二节是 H1
+  const text = '第一节\n粗体正文\n第二章';
+  const runs = [new api.FormatRun(0, 3, false, false, 2, 0),
+    new api.FormatRun(4, 6, true, false, 0, 0),
+    new api.FormatRun(10, 13, false, false, 1, 0)];
+  const m = api.createDocument('d', 't', text, api.FormatCodec.encode(runs));
+  assert.equal(m.runs.length, 1);
+  assert.equal(api.removeSection(m, 0), true);
+  assert.deepEqual(texts(m), ['第二章']);
+  assert.equal(m.runs.length, 0, '被删段落的行内样式一起清掉');
+  assert.equal(api.removeSection(m, 0), false, '不能把文档删空');
 });
 
 console.log('Document model regression: ' + pass + ' checks passed');

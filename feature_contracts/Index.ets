@@ -28,3 +28,5 @@ export {
   outlineParents
 } from './src/main/ets/contracts/OutlineLayout'
 export type { OutlineHeading, OutlineParagraph } from './src/main/ets/contracts/OutlineLayout'
+// 导图 → 正文的结构命令
+export { OutlineCommand, OutlineCommandKind } from './src/main/ets/contracts/OutlineCommands'

@@ -131,4 +131,15 @@ check('feature catalog surfaces the package state', () => {
   assert.match(settings, /扩展功能/);
 });
 
+check('the map edits through commands, never through the host store', () => {
+  const page = read('structure_feature/src/main/ets/pages/StructurePage.ets');
+  assert.match(page, /outlineService\(\)\.dispatch\(/, 'structure package sends commands');
+  assert.match(page, /new OutlineCommand\(/, 'commands are plain data from the contract package');
+  assert.ok(!/applyGeneratedContent|EditorStore|documentSession/.test(page),
+    'the feature package must not touch the editor or the repository');
+  const pane = read('entry/src/main/ets/shell/EditorPane.ets');
+  assert.match(pane, /outlineService\(\)\.setCommandHandler\(applyOutlineCommand\)/,
+    'the host registers the command handler before opening the map');
+});
+
 console.log('Modules regression: ' + pass + ' checks passed');

@@ -6,10 +6,19 @@
 //
 // 可变状态放在 core_runtime（允许），契约包保持无状态。
 import { OutlineSnapshot } from 'feature_contracts'
+import { OutlineCommand } from 'feature_contracts'
+
+/**
+ * 宿主注册的命令处理者：把命令翻成正文编辑，成功后返回**新的快照**。
+ * 返回 null = 失败（导图页给提示，不改自己的显示）。
+ */
+export type OutlineCommandHandler = (command: OutlineCommand) => OutlineSnapshot | null
 
 class OutlineService {
   private snapshot: OutlineSnapshot | null = null
   private pendingReveal: number = -1
+  /** 宿主注入；未注入时 dispatch 直接失败（导图只读） */
+  private handler: OutlineCommandHandler | null = null
 
   /** 发布当前文稿的大纲（导图页打开前调用） */
   publish(snapshot: OutlineSnapshot): void {
@@ -19,6 +28,26 @@ class OutlineService {
   /** 导图页读取；没有快照时返回 null（页面显示空态，不崩） */
   current(): OutlineSnapshot | null {
     return this.snapshot
+  }
+
+  /** 宿主在打开导图时注册；关闭后可置 null，避免泄漏页面 */
+  setCommandHandler(handler: OutlineCommandHandler | null): void {
+    this.handler = handler
+  }
+
+  /**
+   * 导图发起的结构编辑。同步返回新快照（写正文是同步的内存操作，落库异步另行排队），
+   * 调用方拿到后直接重排即可，不需要额外的"变更通知"通道。
+   */
+  dispatch(command: OutlineCommand): OutlineSnapshot | null {
+    if (this.handler === null) {
+      return null
+    }
+    const next: OutlineSnapshot | null = this.handler(command)
+    if (next !== null) {
+      this.snapshot = next
+    }
+    return next
   }
 
   /** 导图里点了某个主题：记下正文偏移，等宿主关闭后定位 */

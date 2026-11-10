@@ -22,6 +22,7 @@ import type { DocModel } from '../editor/model/DocumentModel'
 import { documentSession } from '../repository/DocumentSession'
 import type { OutlineSnapshot } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
+import { applyOutlineCommand } from '../editor/OutlineCommands'
 import { EditorTools } from './EditorTools'
 import { OutlinePanel } from './OutlinePanel'
 import { CardPicker } from './CardPicker'
@@ -630,6 +631,8 @@ export struct EditorPane {
       stores.editor.activeId, stores.editor.title, stores.editor.content, stores.editor.runsJson)
     const snapshot: OutlineSnapshot = buildOutlineSnapshotFromModel(model, stores.editor.contentRev)
     outlineService().publish(snapshot)
+    // 导图的编辑命令交给宿主执行（结构包只发命令，不认识正文）
+    outlineService().setCommandHandler(applyOutlineCommand)
     stores.ui.enterStructure()
   }
 
