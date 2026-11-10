@@ -31,6 +31,7 @@ for (const source of [
 const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutlineFromParagraphs, layoutOutline, outlineParents,' +
   ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot,'+
   ' outlineConnectors, outlineWires, OUTLINE_WIRE_PAD, OUTLINE_WIRE_STEPS,'+
+  ' OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,'+
   ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED })', context);
 
 let pass = 0;
@@ -286,6 +287,57 @@ check('向右布局的几何与旧版一致（根贴内边距、列距不变）'
   assert.equal(layout.nodes[0].x, api.OUTLINE_PAD);
   assert.equal(layout.nodes[1].x, api.OUTLINE_PAD + api.OUTLINE_COL_GAP);
   assert.equal(layout.width, api.OUTLINE_PAD * 2 + 2 * api.OUTLINE_COL_GAP + api.OUTLINE_NODE_W);
+});
+
+check('分支色号与编号：同一分支同色，编号按文档顺序且不受折叠影响', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 3, title: '一一一', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 1, title: '二', startOffset: 6, endOffset: 7 },
+    { id: 'p5', kind: 2, title: '二一', startOffset: 8, endOffset: 9 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  assert.equal(layout.nodes[0].branchIndex, -1, '根没有分支');
+  assert.equal(byId('p3').branchIndex, 0, '孙节点继承一级主题的色号');
+  assert.equal(byId('p5').branchIndex, 1, '第二个一级主题换色号');
+  assert.deepEqual(JSON.parse(JSON.stringify(layout.nodes.map(n => n.orderLabel))),
+    ['', '1', '1.1', '1.1.1', '2', '2.1']);
+  // 折叠不改变编号：编号按真实文档顺序算，不是按可见顺序
+  const folded = api.layoutOutline(nodes, new Set(['p1']), 1);
+  assert.equal(folded.nodes.find(n => n.id === 'p4').orderLabel, '2');
+  // 连线与图元都带着"要画哪种颜色"
+  const links = api.outlineConnectors(layout.nodes);
+  for (let i = 0; i < links.length; i++) {
+    assert.equal(links[i].branchIndex, layout.nodes[i + 1].branchIndex, '连线取子节点的分支色号');
+  }
+  const wires = api.outlineWires(links);
+  assert.equal(wires[0].branchIndex, links[0].branchIndex, '图元保留色号');
+});
+
+check('折线画法：四点折线，首尾贴合端点，全部落在包围盒内', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const links = api.outlineConnectors(layout.nodes);
+  // 第 2 条（p1 → p2）两端 y 不同，才会出现竖段；第 1 条是根→p1，天然水平
+  const elbow = api.outlineWires(links, api.OUTLINE_WIRE_STEPS, api.OUTLINE_WIRE_ELBOW)[1];
+  assert.equal(elbow.points.length, 4, '父缘 → 中缝 → 中缝 → 子缘');
+  assert.ok(Math.abs(elbow.points[0][0] - (links[1].fromX - elbow.originX)) < 0.001, '首点在父节点右缘');
+  assert.ok(Math.abs(elbow.points[1][0] - (links[1].controlX - elbow.originX)) < 0.001, '竖段落在两点中间');
+  assert.ok(Math.abs(elbow.points[3][0] - (links[1].toX - elbow.originX)) < 0.001, '末点在子节点左缘');
+  assert.ok(Math.abs(elbow.points[1][1] - elbow.points[2][1]) > 0.001, '两段水平线高度不同才需要竖段');
+  for (const p of elbow.points) {
+    assert.ok(p[0] >= 0 && p[0] <= elbow.width, 'x 不越界');
+    assert.ok(p[1] >= 0 && p[1] <= elbow.height, 'y 不越界');
+  }
+  // 切回曲线：点数回到采样数 + 1
+  assert.equal(api.outlineWires(links, api.OUTLINE_WIRE_STEPS, api.OUTLINE_WIRE_CURVE)[0].points.length,
+    api.OUTLINE_WIRE_STEPS + 1);
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

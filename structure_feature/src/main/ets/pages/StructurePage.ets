@@ -6,6 +6,7 @@
 import {
   MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind, OutlineWire,
   OUTLINE_NODE_H, OUTLINE_NODE_W, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_RIGHT,
+  OUTLINE_WIRE_STEPS, OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,
   layoutOutline, outlineConnectors, outlineWires
 } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
@@ -20,6 +21,10 @@ export class StructureTheme {
   brand: string = '#1C1C1E'
   onBrand: string = '#FFFFFF'
   danger: string = '#D70015'
+  /** 单色连线 */
+  line: string = '#C7C7CC'
+  /** 分支配色（按一级主题循环取色，同分支永远同色） */
+  branches: string[] = ['#D2543F', '#3FA37A', '#3F76C4', '#8B5CD6', '#C99A2E', '#3E9EAE']
 }
 
 const KEY_ESCAPE: number = 2070
@@ -59,6 +64,16 @@ export struct StructurePage {
   @Local collapsedIds: string[] = []
   /** 布局形态：true = 根在中间、一级主题左右分；false = 一直向右 */
   @Local balanced: boolean = true
+  /** 连线画法（曲线 / 折线） */
+  @Local wireStyle: string = OUTLINE_WIRE_CURVE
+  /** 连线是否按一级分支着色 */
+  @Local colorByBranch: boolean = true
+  /** 是否显示层级编号（2.1.3） */
+  @Local showNumbers: boolean = false
+  /** 节点外观：card = 白卡片，line = 线框，plain = 只有文字 */
+  @Local nodeStyle: string = 'card'
+  /** 右侧样式面板 */
+  @Local styleOpen: boolean = true
 
   /**
    * 连线图元（包围盒 + 采样点）：渲染层只摆一个 Polyline，不自己算坐标。
@@ -114,7 +129,7 @@ export struct StructurePage {
     this.mapW = layout.width
     this.mapH = layout.height
     this.topicCount = layout.nodes.length - 1
-    this.wires = outlineWires(outlineConnectors(this.placed))
+    this.wires = outlineWires(outlineConnectors(this.placed), OUTLINE_WIRE_STEPS, this.wireStyle)
     this.layoutRev = this.layoutRev + 1
     this.empty = false
     // 命令后重建时尽量把选中保持在同一个节点上（段落身份不变，索引会变）
@@ -177,6 +192,78 @@ export struct StructurePage {
     }
     this.collapsedIds = []
     this.load()
+  }
+
+  /** 换连线画法：曲线 ↔ 折线 */
+  private setWireStyle(style: string): void {
+    if (this.wireStyle === style) {
+      return
+    }
+    this.wireStyle = style
+    this.load()
+  }
+
+  private setColorByBranch(on: boolean): void {
+    if (this.colorByBranch === on) {
+      return
+    }
+    this.colorByBranch = on
+    this.load()
+  }
+
+  private setShowNumbers(on: boolean): void {
+    if (this.showNumbers === on) {
+      return
+    }
+    this.showNumbers = on
+    this.load()
+  }
+
+  private setNodeStyle(style: string): void {
+    if (this.nodeStyle === style) {
+      return
+    }
+    this.nodeStyle = style
+    this.load()
+  }
+
+  /** 一条连线/一段编号的颜色：按分支取色，或退回单色 */
+  private branchColor(index: number): string {
+    if (!this.colorByBranch || index < 0) {
+      return this.theme.line
+    }
+    const list: string[] = this.theme.branches
+    if (list.length === 0) {
+      return this.theme.line
+    }
+    return list[index % list.length]
+  }
+
+  private chipBg(n: PlacedNode): string {
+    if (n.depth === 0) {
+      return this.theme.brand
+    }
+    return this.nodeStyle === 'card' ? this.theme.card : '#00000000'
+  }
+
+  private chipBorderWidth(n: PlacedNode, index: number): number {
+    if (this.selectedIndex === index) {
+      return 2
+    }
+    if (n.depth === 0 || this.nodeStyle === 'plain') {
+      return 0
+    }
+    return 1
+  }
+
+  private chipBorderColor(n: PlacedNode, index: number): string {
+    if (this.selectedIndex === index) {
+      return this.theme.brand
+    }
+    if (this.nodeStyle === 'line') {
+      return this.branchColor(n.branchIndex)
+    }
+    return this.theme.divider
   }
 
   /** 适应窗口：按当前视口把整棵树缩到看得全 */
@@ -434,11 +521,6 @@ export struct StructurePage {
         .margin({ right: 12 })
 
       // 布局形态与折叠：都只改视图，不动正文
-      Text(this.balanced ? '左右' : '向右')
-        .fontSize(12).fontColor(this.theme.sub)
-        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-        .accessibilityText(this.balanced ? '切换为一直向右的布局' : '切换为左右均衡布局')
-        .onClick(() => { this.toggleLayout() })
       if (this.collapsedIds.length > 0) {
         Text('展开全部')
           .fontSize(12).fontColor(this.theme.sub)
@@ -446,6 +528,15 @@ export struct StructurePage {
           .accessibilityText('展开所有折叠的主题')
           .onClick(() => { this.expandAll() })
       }
+
+      // 样式面板开合
+      Text('样式')
+        .fontSize(12).fontColor(this.styleOpen ? this.theme.text : this.theme.sub)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .backgroundColor(this.styleOpen ? this.theme.divider : '#00000000')
+        .borderRadius(6)
+        .accessibilityText(this.styleOpen ? '收起样式面板' : '展开样式面板')
+        .onClick(() => { this.styleOpen = !this.styleOpen })
 
       // 缩放：按档位重排（文字不糊）；「适应」把整棵树缩进视口
       Row() {
@@ -499,7 +590,7 @@ export struct StructurePage {
       .position({ x: wire.originX, y: wire.originY })
       .points(wire.points)
       .fillOpacity(0)
-      .stroke(this.theme.divider)
+      .stroke(this.branchColor(wire.branchIndex))
       .strokeWidth(1.4)
       .strokeLineCap(LineCapStyle.Round)
       .strokeLineJoin(LineJoinStyle.Round)
@@ -531,6 +622,13 @@ export struct StructurePage {
   @Builder
   nodeChip(n: PlacedNode, index: number) {
     Row() {
+      if (this.showNumbers && n.orderLabel !== '') {
+        Text(n.orderLabel)
+          .fontSize(Math.max(9, 11 * n.scale))
+          .fontColor(n.depth === 0 ? this.theme.onBrand : this.branchColor(n.branchIndex))
+          .margin({ right: 6 })
+          .maxLines(1)
+      }
       Text(n.title)
         .fontSize(Math.max(9, (n.depth === 0 ? 13 : 12) * n.scale))
         .fontWeight(n.depth === 0 ? FontWeight.Medium : FontWeight.Normal)
@@ -543,12 +641,9 @@ export struct StructurePage {
     .height(OUTLINE_NODE_H * n.scale)
     .padding({ left: 10, right: 8 })
     .alignItems(VerticalAlign.Center)
-    .backgroundColor(n.depth === 0 ? this.theme.brand : this.theme.card)
-    .borderRadius(10)
-    .border({
-      width: this.selectedIndex === index ? 2 : (n.depth === 0 ? 0 : 1),
-      color: this.selectedIndex === index ? this.theme.brand : this.theme.divider
-    })
+    .backgroundColor(this.chipBg(n))
+    .borderRadius(this.nodeStyle === 'plain' ? 0 : 10)
+    .border({ width: this.chipBorderWidth(n, index), color: this.chipBorderColor(n, index) })
     .position({ x: n.x, y: n.y })
     .hoverEffect(HoverEffect.Highlight)
     .accessibilityText('主题：' + n.title + '，回车新建同级，Tab 新建子级，双击回到正文')
@@ -596,46 +691,179 @@ export struct StructurePage {
     .padding({ left: 24, right: 24 })
   }
 
+  /** 地图本体：外层横向 + 内层纵向（ScrollDirection.Free 已废弃） */
+  @Builder
+  mapView() {
+    Scroll() {
+      Scroll() {
+        Stack({ alignContent: Alignment.TopStart }) {
+          // 连线层：普通组件（不是画布），坐标与下面的节点同一套，先声明所以在底层
+          ForEach(this.wires, (wire: OutlineWire, index: number) => {
+            this.wireLine(wire)
+          }, (wire: OutlineWire, index: number) => this.wireKey(wire, index))
+          ForEach(this.placed, (node: PlacedNode, index: number) => {
+            this.nodeChip(node, index)
+          }, (node: PlacedNode) => this.nodeKey(node))
+          ForEach(this.placed, (node: PlacedNode) => {
+            if (node.childCount > 0) {
+              this.foldBadge(node)
+            }
+          }, (node: PlacedNode) => 'fold' + this.nodeKey(node) + (node.collapsed ? 'c' : 'e'))
+          if (this.renaming && this.selectedIndex >= 0) {
+            this.renameOverlay()
+          }
+        }
+        .width(this.mapW)
+        .height(this.mapH)
+      }
+      .scrollable(ScrollDirection.Vertical)
+      .scrollBar(BarState.Auto)
+      .width(this.mapW)
+      .height('100%')
+      .align(Alignment.TopStart)
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Auto)
+    .layoutWeight(1)
+    .height('100%')
+    .align(Alignment.TopStart)
+  }
+
+  @Builder
+  panelTitle(text: string) {
+    Text(text)
+      .fontSize(11)
+      .fontColor(this.theme.sub)
+      .margin({ top: 16, bottom: 8 })
+  }
+
+  /** 样式面板里的一个可选块：选中态反色，点一下把视图参数换掉 */
+  @Builder
+  panelChip(label: string, active: boolean, tag: string) {
+    Text(label)
+      .fontSize(12)
+      .fontColor(active ? this.theme.onBrand : this.theme.text)
+      .backgroundColor(active ? this.theme.brand : this.theme.card)
+      .border({ width: 1, color: active ? this.theme.brand : this.theme.divider })
+      .borderRadius(6)
+      .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText(label + (active ? '（当前）' : ''))
+      .onClick(() => { this.applyStyleTag(tag) })
+  }
+
+  private applyStyleTag(tag: string): void {
+    if (tag === 'balanced') {
+      if (!this.balanced) {
+        this.toggleLayout()
+      }
+      return
+    }
+    if (tag === 'right') {
+      if (this.balanced) {
+        this.toggleLayout()
+      }
+      return
+    }
+    if (tag === 'curve') {
+      this.setWireStyle(OUTLINE_WIRE_CURVE)
+      return
+    }
+    if (tag === 'elbow') {
+      this.setWireStyle(OUTLINE_WIRE_ELBOW)
+      return
+    }
+    if (tag === 'branch') {
+      this.setColorByBranch(true)
+      return
+    }
+    if (tag === 'mono') {
+      this.setColorByBranch(false)
+      return
+    }
+    if (tag === 'num') {
+      this.setShowNumbers(true)
+      return
+    }
+    if (tag === 'nonum') {
+      this.setShowNumbers(false)
+      return
+    }
+    if (tag === 'card' || tag === 'line' || tag === 'plain') {
+      this.setNodeStyle(tag)
+    }
+  }
+
+  /** 右侧样式面板：只承载"看起来怎样"，没有一个开关会改正文 */
+  @Builder
+  stylePanel() {
+    Scroll() {
+      Column() {
+        Text('样式')
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.theme.text)
+
+        this.panelTitle('结构')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('左右', this.balanced, 'balanced')
+          this.panelChip('向右', !this.balanced, 'right')
+        }
+
+        this.panelTitle('连线')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('曲线', this.wireStyle === OUTLINE_WIRE_CURVE, 'curve')
+          this.panelChip('折线', this.wireStyle === OUTLINE_WIRE_ELBOW, 'elbow')
+        }
+
+        this.panelTitle('配色')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('按分支', this.colorByBranch, 'branch')
+          this.panelChip('单色', !this.colorByBranch, 'mono')
+        }
+
+        this.panelTitle('编号')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('显示', this.showNumbers, 'num')
+          this.panelChip('隐藏', !this.showNumbers, 'nonum')
+        }
+
+        this.panelTitle('节点')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('卡片', this.nodeStyle === 'card', 'card')
+          this.panelChip('线框', this.nodeStyle === 'line', 'line')
+          this.panelChip('无框', this.nodeStyle === 'plain', 'plain')
+        }
+
+        Text('这里只改变看法，不写进正文；结构改动仍然走命令回写。')
+          .fontSize(10)
+          .fontColor(this.theme.sub)
+          .margin({ top: 18 })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .padding({ left: 16, right: 8, top: 14, bottom: 24 })
+    }
+    .width(216)
+    .height('100%')
+    .align(Alignment.TopStart)
+    .scrollBar(BarState.Off)
+    .border({ width: { left: 1 }, color: this.theme.divider })
+  }
+
   build() {
     Column() {
       this.header()
       if (this.empty) {
         this.emptyView()
       } else {
-        // 外层横向 + 内层纵向（ScrollDirection.Free 已废弃）
-        Scroll() {
-          Scroll() {
-            Stack({ alignContent: Alignment.TopStart }) {
-              // 连线层：普通组件（不是画布），坐标与下面的节点同一套，先声明所以在底层
-              ForEach(this.wires, (wire: OutlineWire, index: number) => {
-                this.wireLine(wire)
-              }, (wire: OutlineWire, index: number) => this.wireKey(wire, index))
-              ForEach(this.placed, (node: PlacedNode, index: number) => {
-                this.nodeChip(node, index)
-              }, (node: PlacedNode) => this.nodeKey(node))
-              ForEach(this.placed, (node: PlacedNode) => {
-                if (node.childCount > 0) {
-                  this.foldBadge(node)
-                }
-              }, (node: PlacedNode) => 'fold' + this.nodeKey(node) + (node.collapsed ? 'c' : 'e'))
-              if (this.renaming && this.selectedIndex >= 0) {
-                this.renameOverlay()
-              }
-            }
-            .width(this.mapW)
-            .height(this.mapH)
+        Row() {
+          this.mapView()
+          if (this.styleOpen) {
+            this.stylePanel()
           }
-          .scrollable(ScrollDirection.Vertical)
-          .scrollBar(BarState.Auto)
-          .width(this.mapW)
-          .height('100%')
-          .align(Alignment.TopStart)
         }
-        .scrollable(ScrollDirection.Horizontal)
-        .scrollBar(BarState.Auto)
-        .layoutWeight(1)
         .width('100%')
-        .align(Alignment.TopStart)
+        .layoutWeight(1)
       }
     }
     .width('100%').height('100%')

@@ -33,6 +33,8 @@ export {
   OutlineWire,
   OUTLINE_WIRE_PAD,
   OUTLINE_WIRE_STEPS,
+  OUTLINE_WIRE_CURVE,
+  OUTLINE_WIRE_ELBOW,
   outlineWires
 } from './src/main/ets/contracts/OutlineLayout'
 export type { OutlineHeading, OutlineParagraph } from './src/main/ets/contracts/OutlineLayout'

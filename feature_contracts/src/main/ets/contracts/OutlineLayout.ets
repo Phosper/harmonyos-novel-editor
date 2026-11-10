@@ -73,6 +73,10 @@ export class PlacedNode {
   collapsed: boolean = false
   /** 展开方向：1 = 向右侧展开，-1 = 向左侧展开，0 = 根（左右均衡布局才用得上） */
   side: number = 1
+  /** 一级主题的序号（0 起，根为 -1）：分支配色按它取色，同一分支永远同色 */
+  branchIndex: number = -1
+  /** 编号（如 2.1.3）：按文档顺序算，不受折叠影响；编号开关打开时才显示 */
+  orderLabel: string = ''
   /** 直接子节点数（含被折叠隐藏的）：折叠徽标上显示的数量 */
   childCount: number = 0
   /** 本次布局的缩放（渲染层据此算节点框与字号） */
@@ -263,26 +267,44 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
     visible.push(seen)
   }
   const children: number[][] = []
+  /** 全部子节点（含被折叠隐藏的）：编号、分支色号、折叠徽标都按"真实的文档顺序"算 */
+  const childrenAll: number[][] = []
   for (let i: number = 0; i < nodes.length; i++) {
     children.push([])
+    childrenAll.push([])
   }
   const hasChildren: boolean[] = []
   for (let i: number = 0; i < nodes.length; i++) {
     hasChildren.push(false)
   }
-  // 子节点总数（含被折叠隐藏的）：折叠徽标显示"这一节下面有几项"
-  const childCount: number[] = []
-  for (let i: number = 0; i < nodes.length; i++) {
-    childCount.push(0)
-  }
   for (let i: number = 0; i < nodes.length; i++) {
     if (parents[i] >= 0) {
       hasChildren[parents[i]] = true
-      childCount[parents[i]] = childCount[parents[i]] + 1
+      childrenAll[parents[i]].push(i)
       if (visible[i]) {
         children[parents[i]].push(i)
       }
     }
+  }
+  // 分支配色与编号：沿树走一遍（深度 ≤ 3，递归不成问题）
+  const branchIndex: number[] = []
+  const labels: string[] = []
+  for (let i: number = 0; i < nodes.length; i++) {
+    branchIndex.push(-1)
+    labels.push('')
+  }
+  const walk = (index: number, branch: number, prefix: string): void => {
+    branchIndex[index] = branch
+    labels[index] = prefix
+    const kids: number[] = childrenAll[index]
+    for (let k: number = 0; k < kids.length; k++) {
+      const step: string = (k + 1).toString()
+      walk(kids[k], branch, prefix === '' ? step : prefix + '.' + step)
+    }
+  }
+  const tops: number[] = childrenAll[0]
+  for (let k: number = 0; k < tops.length; k++) {
+    walk(tops[k], k, (k + 1).toString())
   }
   const ys: number[] = []
   for (let i: number = 0; i < nodes.length; i++) {
@@ -345,7 +367,9 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
     placed.hasChildren = hasChildren[i]
     placed.collapsed = collapsed.has(nodes[i].id)
     placed.side = sides[i]
-    placed.childCount = childCount[i]
+    placed.branchIndex = branchIndex[i]
+    placed.orderLabel = labels[i]
+    placed.childCount = childrenAll[i].length
     placed.scale = z
     layout.nodes.push(placed)
   }
@@ -366,6 +390,8 @@ export class OutlineConnector {
   toY: number = 0
   /** 三段贝塞尔的中间控制点（水平方向上取两端中点） */
   controlX: number = 0
+  /** 所属一级分支（取色用）；根的直接子节点起算，0 起 */
+  branchIndex: number = -1
 }
 
 /**
@@ -394,6 +420,7 @@ export function outlineConnectors(nodes: PlacedNode[]): OutlineConnector[] {
     connector.fromY = from.y + OUTLINE_NODE_H * from.scale / 2
     connector.toY = to.y + OUTLINE_NODE_H * to.scale / 2
     connector.controlX = (connector.fromX + connector.toX) / 2
+    connector.branchIndex = to.branchIndex
     out.push(connector)
   }
   return out
@@ -415,14 +442,19 @@ export class OutlineWire {
   originY: number = 0
   width: number = 1
   height: number = 1
-  /** 贝塞尔采样点（vp，相对 originX/originY）：[x, y] 序列，Polyline 直接消费 */
+  /** 采样点（vp，相对 originX/originY）：[x, y] 序列，Polyline 直接消费 */
   points: number[][] = []
+  /** 所属一级分支（渲染层据此取色） */
+  branchIndex: number = -1
 }
 
 /** 描边留白：Polyline 以路径为中心描边，留够半个笔宽，别被自己的包围盒裁掉 */
 export const OUTLINE_WIRE_PAD: number = 2
 /** 每条连线的采样段数：12 段在 80vp 的列间距上已经看不出折线 */
 export const OUTLINE_WIRE_STEPS: number = 12
+/** 连线画法：平滑曲线（曲线肘）／折线（先横后竖再横，XMind 的"折线"） */
+export const OUTLINE_WIRE_CURVE: string = 'curve'
+export const OUTLINE_WIRE_ELBOW: string = 'elbow'
 
 /** 三次贝塞尔按 t 取值（控制点都在端点水平中线上，所以 x 单调、y 夹在两端之间） */
 function cubicAt(p0: number, p1: number, p2: number, p3: number, t: number): number {
@@ -434,8 +466,8 @@ function cubicAt(p0: number, p1: number, p2: number, p3: number, t: number): num
  * 连线图元 → 可渲染图元（包围盒 + 采样点）。纯函数，可在 Node 里回归：
  * 采样点必须全部落在包围盒内，否则组件会把线裁掉。
  */
-export function outlineWires(connectors: OutlineConnector[],
-  steps: number = OUTLINE_WIRE_STEPS): OutlineWire[] {
+export function outlineWires(connectors: OutlineConnector[], steps: number = OUTLINE_WIRE_STEPS,
+  style: string = OUTLINE_WIRE_CURVE): OutlineWire[] {
   const out: OutlineWire[] = []
   const n: number = Math.max(2, Math.floor(steps))
   for (let i: number = 0; i < connectors.length; i++) {
@@ -445,10 +477,20 @@ export function outlineWires(connectors: OutlineConnector[],
     const minY: number = Math.min(c.fromY, c.toY)
     const maxY: number = Math.max(c.fromY, c.toY)
     const wire: OutlineWire = new OutlineWire()
+    wire.branchIndex = c.branchIndex
     wire.originX = minX - OUTLINE_WIRE_PAD
     wire.originY = minY - OUTLINE_WIRE_PAD
     wire.width = Math.max(1, maxX - minX + OUTLINE_WIRE_PAD * 2)
     wire.height = Math.max(1, maxY - minY + OUTLINE_WIRE_PAD * 2)
+    if (style === OUTLINE_WIRE_ELBOW) {
+      // 折线：父右缘 → 列中缝 → 子左缘（朝左展开时方向自然反向）
+      wire.points.push([c.fromX - wire.originX, c.fromY - wire.originY])
+      wire.points.push([c.controlX - wire.originX, c.fromY - wire.originY])
+      wire.points.push([c.controlX - wire.originX, c.toY - wire.originY])
+      wire.points.push([c.toX - wire.originX, c.toY - wire.originY])
+      out.push(wire)
+      continue
+    }
     for (let k: number = 0; k <= n; k++) {
       const t: number = k / n
       const x: number = cubicAt(c.fromX, c.controlX, c.controlX, c.toX, t) - wire.originX
