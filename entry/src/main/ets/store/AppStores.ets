@@ -707,7 +707,8 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
         // 导图附加信息（M5）：概要与关系线的 chapterId 换成新章节 id，自身 id 重新发号
         const looseMap: MapExtraBackupLoose = {
           summaries: payload.mapSummaries ?? [],
-          relations: payload.mapRelations ?? []
+          relations: payload.mapRelations ?? [],
+          nodeStyles: payload.mapNodeStyles ?? []
         }
         await repos.mapExtraRepo.restoreRows(looseMap, chapterIdMap)
         return created
@@ -794,7 +795,8 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
       canvasPlacements: canvasBundle.canvasPlacements,
       canvasLinks: canvasBundle.canvasLinks,
       mapSummaries: mapBundle.summaries,
-      mapRelations: mapBundle.relations
+      mapRelations: mapBundle.relations,
+      mapNodeStyles: mapBundle.nodeStyles
     }
     return payload
   }

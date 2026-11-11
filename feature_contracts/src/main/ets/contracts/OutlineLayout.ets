@@ -446,6 +446,10 @@ export class OutlineWire {
   points: number[][] = []
   /** 所属一级分支（渲染层据此取色） */
   branchIndex: number = -1
+  /** 连线在子节点那一端的绝对坐标与切线角（弧度）：画箭头/圆点用 */
+  endX: number = 0
+  endY: number = 0
+  endAngle: number = 0
 }
 
 /** 描边留白：Polyline 以路径为中心描边，留够半个笔宽，别被自己的包围盒裁掉 */
@@ -488,6 +492,10 @@ export function outlineWires(connectors: OutlineConnector[], steps: number = OUT
       wire.points.push([c.controlX - wire.originX, c.fromY - wire.originY])
       wire.points.push([c.controlX - wire.originX, c.toY - wire.originY])
       wire.points.push([c.toX - wire.originX, c.toY - wire.originY])
+      // 末段是竖直的：箭头朝上下
+      wire.endX = c.toX
+      wire.endY = c.toY
+      wire.endAngle = c.toY >= c.fromY ? Math.PI / 2 : -Math.PI / 2
       out.push(wire)
       continue
     }
@@ -497,6 +505,12 @@ export function outlineWires(connectors: OutlineConnector[], steps: number = OUT
       const y: number = cubicAt(c.fromY, c.fromY, c.toY, c.toY, t) - wire.originY
       wire.points.push([x, y])
     }
+    // 末端切线：取最后两个采样点
+    const last: number[] = wire.points[n]
+    const prev: number[] = wire.points[n - 1]
+    wire.endX = c.toX
+    wire.endY = c.toY
+    wire.endAngle = Math.atan2(last[1] - prev[1], last[0] - prev[0])
     out.push(wire)
   }
   return out

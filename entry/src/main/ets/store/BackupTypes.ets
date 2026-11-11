@@ -10,7 +10,7 @@ import type { RelationshipModel } from '../model/Relationship'
 import type {
   CanvasBoardData, CanvasCardData, CanvasEvidenceData, CanvasLinkData, CanvasPlacementData
 } from '../model/CanvasTypes'
-import type { MapSummaryBackupRow, MapRelationBackupRow } from '../repository/MapExtraRepository'
+import type { MapSummaryBackupRow, MapRelationBackupRow, MapNodeStyleBackupRow } from '../repository/MapExtraRepository'
 
 export interface BookBackupSnapshot {
   id: string
@@ -40,6 +40,8 @@ export interface BackupPayload {
   /** M5 新增：导图附加信息（概要与关系线），按章节归属，恢复时随章节重映射 */
   mapSummaries?: MapSummaryBackupRow[]
   mapRelations?: MapRelationBackupRow[]
+  /** M6 新增：节点级样式（形状/填充/加粗/标记/标签） */
+  mapNodeStyles?: MapNodeStyleBackupRow[]
 }
 
 /** 导入侧宽松视图：允许字段缺失，由导入逻辑逐项兜底 */
@@ -60,4 +62,5 @@ export interface BackupPayloadLoose {
   canvasLinks?: CanvasLinkData[]
   mapSummaries?: MapSummaryBackupRow[]
   mapRelations?: MapRelationBackupRow[]
+  mapNodeStyles?: MapNodeStyleBackupRow[]
 }

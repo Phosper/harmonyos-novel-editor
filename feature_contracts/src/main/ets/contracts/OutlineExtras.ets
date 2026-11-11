@@ -43,6 +43,31 @@ export class OutlineExtras {
   docId: string = ''
   summaries: OutlineSummary[] = []
   relations: OutlineRelation[] = []
+  /** 节点级样式（只存"改过"的那些，没改的跟随全局设置） */
+  nodeStyles: OutlineNodeStyle[] = []
+}
+
+/**
+ * 单个主题的样式（M6）。
+ * 每项留空 = 跟随全局设置；有任何一项非默认，才在侧车里留一行 —— 这样
+ * "没动过样式的文稿"不会因为打开过导图就多出一堆空行。
+ */
+export class OutlineNodeStyle {
+  paraId: string = ''
+  /** 形状：'' 跟随全局 | 'card' | 'pill' | 'plain' */
+  shape: string = ''
+  /** 填充色 '' 跟随主题；否则 #RRGGBB */
+  fill: string = ''
+  /** 文字加粗（标题层级不改变，只改看相） */
+  bold: boolean = false
+  /** 标记（图标）：最多三个，直接存字符 */
+  markers: string[] = []
+  /** 标签：挂在节点下方的一行小字 */
+  label: string = ''
+
+  constructor(paraId: string = '') {
+    this.paraId = paraId
+  }
 }
 
 /** 附加信息的编辑命令：与正文命令分开，永远不触发正文写入 */
@@ -52,6 +77,8 @@ export class OutlineExtraCommand {
   fromId: string = ''
   toId: string = ''
   text: string = ''
+  /** SET_NODE_STYLE 用：整份节点样式（页面每次给最新的一份，宿主整行覆盖） */
+  style: OutlineNodeStyle | null = null
 
   constructor(kind: string = '', extraId: string = '', fromId: string = '', toId: string = '',
     text: string = '') {
@@ -67,6 +94,57 @@ export const OUTLINE_EXTRA_ADD_SUMMARY: string = 'add-summary'
 export const OUTLINE_EXTRA_REMOVE_SUMMARY: string = 'remove-summary'
 export const OUTLINE_EXTRA_ADD_RELATION: string = 'add-relation'
 export const OUTLINE_EXTRA_REMOVE_RELATION: string = 'remove-relation'
+export const OUTLINE_EXTRA_SET_NODE_STYLE: string = 'set-node-style'
+
+/** 可选的节点形状（'' = 跟随全局） */
+export const OUTLINE_SHAPE_CARD: string = 'card'
+export const OUTLINE_SHAPE_PILL: string = 'pill'
+export const OUTLINE_SHAPE_PLAIN: string = 'plain'
+
+/** 节点样式是否等于"什么都没改"——是的话侧车不留行 */
+export function isBlankNodeStyle(style: OutlineNodeStyle): boolean {
+  return style.shape === '' && style.fill === '' && !style.bold &&
+    style.markers.length === 0 && style.label === ''
+}
+
+/** 按 paraId 找样式；没有返回 undefined（渲染层据此用全局设置） */
+export function findNodeStyle(styles: OutlineNodeStyle[], paraId: string): OutlineNodeStyle | undefined {
+  if (paraId === '') {
+    return undefined
+  }
+  for (let i: number = 0; i < styles.length; i++) {
+    if (styles[i].paraId === paraId) {
+      return styles[i]
+    }
+  }
+  return undefined
+}
+
+/** 点一下标记：有就删、没有就加（最多三个，避免把标题挤没） */
+export function toggleMarker(style: OutlineNodeStyle, marker: string): OutlineNodeStyle {
+  const next: OutlineNodeStyle = new OutlineNodeStyle(style.paraId)
+  next.shape = style.shape
+  next.fill = style.fill
+  next.bold = style.bold
+  next.label = style.label
+  let found: boolean = false
+  for (let i: number = 0; i < style.markers.length; i++) {
+    if (style.markers[i] === marker) {
+      found = true
+    } else {
+      next.markers.push(style.markers[i])
+    }
+  }
+  if (!found && next.markers.length < 3) {
+    next.markers.push(marker)
+  }
+  return next
+}
+
+/** 标签挂在节点下方：返回文字框顶边（vp） */
+export function nodeLabelY(node: PlacedNode): number {
+  return node.y + OUTLINE_NODE_H * node.scale + 2
+}
 
 /** 括号离节点的距离、文字框宽度、描边留白 */
 export const OUTLINE_SUMMARY_GAP: number = 14

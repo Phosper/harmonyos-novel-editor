@@ -8,10 +8,11 @@ import {
   OUTLINE_NODE_H, OUTLINE_NODE_W, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_RIGHT,
   OUTLINE_WIRE_STEPS, OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,
   layoutOutline, outlineConnectors, outlineWires,
-  OutlineExtras, OutlineExtraCommand, OutlineSummaryBox, OutlineRelationWire,
+  OutlineExtras, OutlineExtraCommand, OutlineSummaryBox, OutlineRelationWire, OutlineNodeStyle,
   OUTLINE_EXTRA_ADD_SUMMARY, OUTLINE_EXTRA_REMOVE_SUMMARY,
-  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION,
-  OUTLINE_SUMMARY_TEXT_W,
+  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION, OUTLINE_EXTRA_SET_NODE_STYLE,
+  OUTLINE_SHAPE_CARD, OUTLINE_SHAPE_PILL, OUTLINE_SHAPE_PLAIN,
+  OUTLINE_SUMMARY_TEXT_W, findNodeStyle, isBlankNodeStyle, toggleMarker, nodeLabelY,
   outlineSummaryBoxes, outlineRelationWires, summaryRangeOf
 } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
@@ -43,6 +44,10 @@ const KEY_DPAD_DOWN: number = 2013
 const KEY_F2: number = 2092
 const RENAME_INPUT_ID: string = 'structure-rename-input'
 const EXTRA_INPUT_ID: string = 'structure-extra-input'
+/** 可选的节点标记（图标）：直接存字符，没有字体/图片依赖 */
+const NODE_MARKERS: string[] = ['⭐', '❗', '❓', '✅', '🔥']
+/** 节点填充色板：与分支配色同一套，整张图看起来是一家的 */
+const NODE_FILLS: string[] = ['#D2543F', '#3FA37A', '#3F76C4', '#8B5CD6', '#C99A2E', '#3E9EAE']
 
 @ComponentV2
 export struct StructurePage {
@@ -87,6 +92,10 @@ export struct StructurePage {
    */
   @Local summaryBoxes: OutlineSummaryBox[] = []
   @Local relationWires: OutlineRelationWire[] = []
+  /** 节点级样式（只存改过的段落）：渲染时按 paraId 查，查不到就用全局设置 */
+  @Local nodeStyles: OutlineNodeStyle[] = []
+  /** 连线在子节点那一端的样式（无 / 圆点 / 箭头） */
+  @Local endStyle: string = 'none'
   /** 多选：概要需要"一组兄弟主题"，所以选中不再是单值 */
   @Local selectedIds: string[] = []
   /**
@@ -186,6 +195,103 @@ export struct StructurePage {
     const extras: OutlineExtras = outlineService().currentExtras()
     this.summaryBoxes = outlineSummaryBoxes(this.placed, extras.summaries)
     this.relationWires = outlineRelationWires(this.placed, extras.relations)
+    this.nodeStyles = extras.nodeStyles
+  }
+
+  private styleOf(paraId: string): OutlineNodeStyle | undefined {
+    return findNodeStyle(this.nodeStyles, paraId)
+  }
+
+  /** 深色填充上用白字，浅色填充上用深字（否则彩色主题读不出字） */
+  private readableOn(fill: string): string {
+    if (fill.length < 7) {
+      return this.theme.text
+    }
+    const r: number = parseInt(fill.substring(1, 3), 16)
+    const g: number = parseInt(fill.substring(3, 5), 16)
+    const b: number = parseInt(fill.substring(5, 7), 16)
+    if (isNaN(r) || isNaN(g) || isNaN(b)) {
+      return this.theme.text
+    }
+    // 相对亮度（sRGB 近似）：0.299/0.587/0.114 的加权
+    const luma: number = (r * 0.299 + g * 0.587 + b * 0.114) / 255
+    return luma > 0.6 ? this.theme.text : this.theme.onBrand
+  }
+
+  /** 把选中节点的样式整份发下去（侧车，不碰正文） */
+  private pushNodeStyle(style: OutlineNodeStyle): void {
+    const command: OutlineExtraCommand = new OutlineExtraCommand(OUTLINE_EXTRA_SET_NODE_STYLE, '', '', '', '')
+    command.style = style
+    const next: OutlineExtras | null = outlineService().dispatchExtra(command)
+    if (next === null) {
+      this.toast('样式没存上（先在正文里保存一下再试）')
+      return
+    }
+    this.layoutRev = this.layoutRev + 1
+    this.refreshExtras()
+  }
+
+  /** 取选中节点"当前生效"的样式副本，供面板改一项后整体提交 */
+  private selectedStyleCopy(): OutlineNodeStyle {
+    return this.styleCopyOf(this.selectedParaId())
+  }
+
+  private styleCopyOf(paraId: string): OutlineNodeStyle {
+    const existing: OutlineNodeStyle | undefined = this.styleOf(paraId)
+    const style: OutlineNodeStyle = new OutlineNodeStyle(paraId)
+    if (existing !== undefined) {
+      style.shape = existing.shape
+      style.fill = existing.fill
+      style.bold = existing.bold
+      style.label = existing.label
+      for (let i: number = 0; i < existing.markers.length; i++) {
+        style.markers.push(existing.markers[i])
+      }
+    }
+    return style
+  }
+
+  private selectedShape(): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(this.selectedParaId())
+    return style === undefined ? '' : style.shape
+  }
+
+  private selectedFill(): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(this.selectedParaId())
+    return style === undefined ? '' : style.fill
+  }
+
+  private selectedBold(): boolean {
+    const style: OutlineNodeStyle | undefined = this.styleOf(this.selectedParaId())
+    return style === undefined ? false : style.bold
+  }
+
+  private selectedLabel(): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(this.selectedParaId())
+    return style === undefined ? '' : style.label
+  }
+
+  private selectedHasMarker(marker: string): boolean {
+    const style: OutlineNodeStyle | undefined = this.styleOf(this.selectedParaId())
+    if (style === undefined) {
+      return false
+    }
+    return style.markers.indexOf(marker) >= 0
+  }
+
+  private hasOneSelection(): boolean {
+    return this.selectedIds.length <= 1 && this.selectedParaId() !== ''
+  }
+
+  private markersText(style: OutlineNodeStyle | undefined): string {
+    if (style === undefined) {
+      return ''
+    }
+    let out: string = ''
+    for (let i: number = 0; i < style.markers.length; i++) {
+      out = out + style.markers[i]
+    }
+    return out
   }
 
   private isSelected(node: PlacedNode, index: number): boolean {
@@ -295,6 +401,15 @@ export struct StructurePage {
     const text: string = this.extraText
     const pending: string[] = this.extraPending
     this.cancelExtra()
+    if (mode === 'label') {
+      if (pending.length < 1) {
+        return
+      }
+      const style: OutlineNodeStyle = this.styleCopyOf(pending[0])
+      style.label = text.trim()
+      this.pushNodeStyle(style)
+      return
+    }
     if (pending.length < 2) {
       return
     }
@@ -411,18 +526,62 @@ export struct StructurePage {
     return list[index % list.length]
   }
 
+  /** 单个节点的形状：节点样式优先，其次全局设置 */
+  private chipRadius(n: PlacedNode): number {
+    const style: OutlineNodeStyle | undefined = this.styleOf(n.paraId)
+    const shape: string = style === undefined || style.shape === '' ? '' : style.shape
+    if (shape === OUTLINE_SHAPE_PILL) {
+      return OUTLINE_NODE_H * n.scale / 2
+    }
+    if (shape === OUTLINE_SHAPE_PLAIN || (shape === '' && this.nodeStyle === 'plain')) {
+      return 0
+    }
+    return 10
+  }
+
   private chipBg(n: PlacedNode): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(n.paraId)
+    if (style !== undefined && style.fill !== '') {
+      return style.fill
+    }
     if (n.depth === 0) {
       return this.theme.brand
     }
-    return this.nodeStyle === 'card' ? this.theme.card : '#00000000'
+    const shape: string = style === undefined ? '' : style.shape
+    if (shape === OUTLINE_SHAPE_PLAIN || (shape === '' && this.nodeStyle === 'plain')) {
+      return '#00000000'
+    }
+    return this.nodeStyle === 'card' || shape !== '' ? this.theme.card : '#00000000'
+  }
+
+  /** 文字颜色：自定义填充时按亮度自动取深/浅，保证读得清 */
+  private chipTextColor(n: PlacedNode): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(n.paraId)
+    if (style !== undefined && style.fill !== '') {
+      return this.readableOn(style.fill)
+    }
+    return n.depth === 0 ? this.theme.onBrand : this.theme.text
+  }
+
+  private chipBold(n: PlacedNode): boolean {
+    if (n.depth === 0) {
+      return true
+    }
+    const style: OutlineNodeStyle | undefined = this.styleOf(n.paraId)
+    return style === undefined ? false : style.bold
   }
 
   private chipBorderWidth(n: PlacedNode, index: number): number {
     if (this.isSelected(n, index)) {
       return 2
     }
-    if (n.depth === 0 || this.nodeStyle === 'plain') {
+    const style: OutlineNodeStyle | undefined = this.styleOf(n.paraId)
+    const shape: string = style === undefined ? '' : style.shape
+    if (n.depth === 0 || shape === OUTLINE_SHAPE_PLAIN ||
+      (shape === '' && this.nodeStyle === 'plain')) {
+      return 0
+    }
+    if (style !== undefined && style.fill !== '') {
       return 0
     }
     return 1
@@ -436,10 +595,15 @@ export struct StructurePage {
       // 多选里的次级选中：用分支色描边，和"当前节点"区分开
       return this.branchColor(n.branchIndex)
     }
-    if (this.nodeStyle === 'line') {
-      return this.branchColor(n.branchIndex)
+    const style: OutlineNodeStyle | undefined = this.styleOf(n.paraId)
+    const shape: string = style === undefined ? '' : style.shape
+    if (shape === '') {
+      if (this.nodeStyle === 'line') {
+        return this.branchColor(n.branchIndex)
+      }
+      return this.theme.divider
     }
-    return this.theme.divider
+    return shape === OUTLINE_SHAPE_PLAIN ? this.theme.divider : this.branchColor(n.branchIndex)
   }
 
   /** 适应窗口：按当前视口把整棵树缩到看得全 */
@@ -714,7 +878,9 @@ export struct StructurePage {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Text(this.topicCount.toString() + ' 个主题')
+      Text(this.selectedIds.length > 1
+        ? ('已选 ' + this.selectedIds.length.toString() + ' / ' + this.topicCount.toString() + ' 个主题')
+        : (this.topicCount.toString() + ' 个主题'))
         .fontSize(12).fontColor(this.theme.sub)
         .margin({ right: 12 })
 
@@ -819,8 +985,55 @@ export struct StructurePage {
       .accessibilityLevel('no')
   }
 
-  /**
-   * 折叠徽标：有子节点才出现；展开时显示「−」，折叠时显示子节点数量（幕布的做法）。
+  /** 连线终点样式：圆点 / 箭头（XMind 的"分支终点"） */
+  @Builder
+  wireTip(wire: OutlineWire) {
+    if (this.endStyle === 'dot') {
+      Circle()
+        .width(6)
+        .height(6)
+        .fill(this.branchColor(wire.branchIndex))
+        .position({ x: wire.endX - 3, y: wire.endY - 3 })
+        .hitTestBehavior(HitTestMode.None)
+        .accessibilityLevel('no')
+    } else if (this.endStyle === 'arrow') {
+      Polyline()
+        .width(18)
+        .height(18)
+        .position({ x: wire.endX - 9, y: wire.endY - 9 })
+        .points(this.arrowPoints(wire))
+        .fillOpacity(0)
+        .stroke(this.branchColor(wire.branchIndex))
+        .strokeWidth(1.4)
+        .strokeLineCap(LineCapStyle.Round)
+        .strokeLineJoin(LineJoinStyle.Round)
+        .hitTestBehavior(HitTestMode.None)
+        .accessibilityLevel('no')
+    }
+  }
+
+  /** 箭头三个点在 18×18 盒子里的坐标（盒子中心正对连线终点） */
+  private arrowPoints(wire: OutlineWire): number[][] {
+    const size: number = 7
+    const spread: number = 0.45
+    const out: number[][] = []
+    out.push([9 - size * Math.cos(wire.endAngle - spread), 9 - size * Math.sin(wire.endAngle - spread)])
+    out.push([9, 9])
+    out.push([9 - size * Math.cos(wire.endAngle + spread), 9 - size * Math.sin(wire.endAngle + spread)])
+    return out
+  }
+
+  private labelKeyOf(node: PlacedNode): string {
+    return this.nodeKey(node) + '|' + this.labelOf(node)
+  }
+
+  /** 节点标签（ForEach 的构建函数里不能写局部变量，所以查询单独成方法） */
+  private labelOf(node: PlacedNode): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(node.paraId)
+    return style === undefined ? '' : style.label
+  }
+
+  /** 折叠徽标：有子节点才出现；展开时显示「−」，折叠时显示子节点数量（幕布的做法）。
    * 独立组件压在节点层之上，点它不会误触「选中 / 双击回正文」。
    */
   @Builder
@@ -934,7 +1147,7 @@ export struct StructurePage {
   @Builder
   extraEditor() {
     Column() {
-      Text(this.extraMode === 'summary' ? '概要' : '关系标签')
+      Text(this.extraMode === 'summary' ? '概要' : (this.extraMode === 'label' ? '标签' : '关系标签'))
         .fontSize(11)
         .fontColor(this.theme.sub)
       TextInput({ text: this.extraText })
@@ -979,17 +1192,24 @@ export struct StructurePage {
   @Builder
   nodeChip(n: PlacedNode, index: number) {
     Row() {
+      if (this.markersText(this.styleOf(n.paraId)) !== '') {
+        Text(this.markersText(this.styleOf(n.paraId)))
+          .fontSize(Math.max(9, 11 * n.scale))
+          .margin({ right: 4 })
+          .maxLines(1)
+      }
       if (this.showNumbers && n.orderLabel !== '') {
         Text(n.orderLabel)
           .fontSize(Math.max(9, 11 * n.scale))
-          .fontColor(n.depth === 0 ? this.theme.onBrand : this.branchColor(n.branchIndex))
+          .fontColor(this.chipTextColor(n))
+          .opacity(0.75)
           .margin({ right: 6 })
           .maxLines(1)
       }
       Text(n.title)
         .fontSize(Math.max(9, (n.depth === 0 ? 13 : 12) * n.scale))
-        .fontWeight(n.depth === 0 ? FontWeight.Medium : FontWeight.Normal)
-        .fontColor(n.depth === 0 ? this.theme.onBrand : this.theme.text)
+        .fontWeight(this.chipBold(n) ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.chipTextColor(n))
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
@@ -999,7 +1219,7 @@ export struct StructurePage {
     .padding({ left: 10, right: 8 })
     .alignItems(VerticalAlign.Center)
     .backgroundColor(this.chipBg(n))
-    .borderRadius(this.nodeStyle === 'plain' ? 0 : 10)
+    .borderRadius(this.chipRadius(n))
     .border({ width: this.chipBorderWidth(n, index), color: this.chipBorderColor(n, index) })
     .position({ x: n.x, y: n.y })
     .hoverEffect(HoverEffect.Highlight)
@@ -1013,6 +1233,20 @@ export struct StructurePage {
       }
     })
     .gesture(TapGesture({ count: 2 }).onAction(() => { this.jumpTo(n.startOffset) }))
+  }
+
+  /** 标签：挂在节点下方的一行小字（XMind 的 label 位置） */
+  @Builder
+  nodeLabel(n: PlacedNode, text: string) {
+    Text(text)
+      .fontSize(9)
+      .fontColor(this.theme.sub)
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .width(OUTLINE_NODE_W * n.scale)
+      .position({ x: n.x, y: nodeLabelY(n) })
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityText('标签：' + text)
   }
 
   /** 就地改名浮层：压在节点原来的位置上 */
@@ -1065,6 +1299,11 @@ export struct StructurePage {
           ForEach(this.wires, (wire: OutlineWire, index: number) => {
             this.wireLine(wire)
           }, (wire: OutlineWire, index: number) => this.wireKey(wire, index))
+          if (this.endStyle !== 'none') {
+            ForEach(this.wires, (wire: OutlineWire, index: number) => {
+              this.wireTip(wire)
+            }, (wire: OutlineWire, index: number) => 'tip' + this.wireKey(wire, index))
+          }
           // 附加信息（概要括号 / 关系线）：和连线同一层，压在节点下面
           ForEach(this.summaryBoxes, (box: OutlineSummaryBox, index: number) => {
             this.summaryMark(box)
@@ -1077,6 +1316,12 @@ export struct StructurePage {
           ForEach(this.placed, (node: PlacedNode, index: number) => {
             this.nodeChip(node, index)
           }, (node: PlacedNode) => this.nodeKey(node))
+          // 标签：挂在节点下方（只画有标签的）
+          ForEach(this.placed, (node: PlacedNode) => {
+            if (this.labelOf(node) !== '') {
+              this.nodeLabel(node, this.labelOf(node))
+            }
+          }, (node: PlacedNode) => 'lb' + this.labelKeyOf(node))
           ForEach(this.placed, (node: PlacedNode) => {
             if (node.childCount > 0) {
               this.foldBadge(node)
@@ -1168,7 +1413,95 @@ export struct StructurePage {
     }
     if (tag === 'card' || tag === 'line' || tag === 'plain') {
       this.setNodeStyle(tag)
+      return
     }
+    if (tag === 'end-none') {
+      this.endStyle = 'none'
+      return
+    }
+    if (tag === 'end-dot') {
+      this.endStyle = 'dot'
+      return
+    }
+    if (tag === 'end-arrow') {
+      this.endStyle = 'arrow'
+      return
+    }
+    // 以下都作用在"当前选中的那一个主题"上（侧车，不改正文）
+    if (!this.hasOneSelection()) {
+      this.toast('先在图上选一个主题')
+      return
+    }
+    if (tag === 'shape-follow') {
+      const style: OutlineNodeStyle = this.selectedStyleCopy()
+      style.shape = ''
+      this.pushNodeStyle(style)
+      return
+    }
+    if (tag === 'shape-card' || tag === 'shape-pill' || tag === 'shape-plain') {
+      const style: OutlineNodeStyle = this.selectedStyleCopy()
+      style.shape = OUTLINE_SHAPE_CARD
+      if (tag === 'shape-pill') {
+        style.shape = OUTLINE_SHAPE_PILL
+      }
+      if (tag === 'shape-plain') {
+        style.shape = OUTLINE_SHAPE_PLAIN
+      }
+      this.pushNodeStyle(style)
+      return
+    }
+    if (tag === 'fill-follow') {
+      const style: OutlineNodeStyle = this.selectedStyleCopy()
+      style.fill = ''
+      this.pushNodeStyle(style)
+      return
+    }
+    if (tag.indexOf('fill:') === 0) {
+      const style: OutlineNodeStyle = this.selectedStyleCopy()
+      style.fill = tag.substring(5)
+      this.pushNodeStyle(style)
+      return
+    }
+    if (tag === 'bold') {
+      const style: OutlineNodeStyle = this.selectedStyleCopy()
+      style.bold = !style.bold
+      this.pushNodeStyle(style)
+      return
+    }
+    if (tag.indexOf('mark:') === 0) {
+      const marker: string = tag.substring(5)
+      const current: OutlineNodeStyle = this.selectedStyleCopy()
+      this.pushNodeStyle(toggleMarker(current, marker))
+      return
+    }
+    if (tag === 'label') {
+      const paraId: string = this.selectedParaId()
+      if (paraId === '') {
+        return
+      }
+      this.extraPending = [paraId]
+      this.extraMode = 'label'
+      this.extraText = this.selectedLabel()
+      const node: PlacedNode | undefined = this.selectedNode()
+      this.extraX = node === undefined ? 24 : node.x
+      this.extraY = node === undefined ? 24 : node.y + OUTLINE_NODE_H * this.zoom + 8
+      this.focusExtraInput()
+    }
+  }
+
+  /** 面板里的一块颜色：点一下把选中主题填成这个色 */
+  @Builder
+  colorChip(fill: string, active: boolean) {
+    Column()
+      .width(22)
+      .height(22)
+      .borderRadius(11)
+      .backgroundColor(fill)
+      .border({ width: active ? 2 : 1, color: active ? this.theme.text : this.theme.divider })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText('填充 ' + fill)
+      .onClick(() => { this.applyStyleTag('fill:' + fill) })
   }
 
   /** 右侧样式面板：只承载"看起来怎样"，没有一个开关会改正文 */
@@ -1203,11 +1536,50 @@ export struct StructurePage {
           this.panelChip('隐藏', !this.showNumbers, 'nonum')
         }
 
+        this.panelTitle('分支终点')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('无', this.endStyle === 'none', 'end-none')
+          this.panelChip('圆点', this.endStyle === 'dot', 'end-dot')
+          this.panelChip('箭头', this.endStyle === 'arrow', 'end-arrow')
+        }
+
         this.panelTitle('节点')
         Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
           this.panelChip('卡片', this.nodeStyle === 'card', 'card')
           this.panelChip('线框', this.nodeStyle === 'line', 'line')
           this.panelChip('无框', this.nodeStyle === 'plain', 'plain')
+        }
+
+        // 选中一个主题时，下面这些只作用于它（落侧车，不进正文）
+        if (this.hasOneSelection()) {
+          this.panelTitle('选中主题')
+          Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+            this.panelChip('默认', this.selectedShape() === '', 'shape-follow')
+            this.panelChip('卡片', this.selectedShape() === OUTLINE_SHAPE_CARD, 'shape-card')
+            this.panelChip('胶囊', this.selectedShape() === OUTLINE_SHAPE_PILL, 'shape-pill')
+            this.panelChip('无框', this.selectedShape() === OUTLINE_SHAPE_PLAIN, 'shape-plain')
+          }
+          Text('填充')
+            .fontSize(10).fontColor(this.theme.sub)
+            .margin({ top: 2, bottom: 6 })
+          Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+            this.panelChip('默认', this.selectedFill() === '', 'fill-follow')
+            ForEach(NODE_FILLS, (fill: string) => {
+              this.colorChip(fill, this.selectedFill() === fill)
+            }, (fill: string) => 'fill' + fill)
+          }
+          Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+            this.panelChip('加粗', this.selectedBold(), 'bold')
+            this.panelChip('标签', this.selectedLabel() !== '', 'label')
+          }
+          Text('标记')
+            .fontSize(10).fontColor(this.theme.sub)
+            .margin({ top: 2, bottom: 6 })
+          Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+            ForEach(NODE_MARKERS, (marker: string) => {
+              this.panelChip(marker, this.selectedHasMarker(marker), 'mark:' + marker)
+            }, (marker: string) => 'mk' + marker)
+          }
         }
 
         Text('这里只改变看法，不写进正文；结构改动仍然走命令回写。')

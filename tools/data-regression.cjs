@@ -31,7 +31,7 @@ class StoreDouble {
   constructor() {
     this.tables = new Map(['books', 'chapters', 'characters', 'world_settings', 'inspirations', 'relationships',
       'topics', 'topic_evidence', 'canvases', 'canvas_placements', 'canvas_links',
-      'doc_paragraphs', 'doc_runs', 'doc_map_summary', 'doc_map_relation', 'schema_meta']
+      'doc_paragraphs', 'doc_runs', 'doc_map_summary', 'doc_map_relation', 'doc_map_node', 'schema_meta']
       .map(name => [name, new Map()]));
     this.routes = []; this.activeTx = null; this.nextRowId = 1;
   }
@@ -178,6 +178,7 @@ for (const file of [
 ]) load(file + '.ets');
 const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES,' +
   ' runInTransaction, chapterRepo, canvasRepo, mapExtraRepo, OutlineExtras, OutlineSummary, OutlineRelation,' +
+  ' OutlineNodeStyle,' +
   ' CanvasCardKind, CanvasBoardScope, CanvasEvidenceKind, CanvasLinkKind,' +
   ' canvasFindPlacement, documentSession})', context);
 function chapter(id = 'a', bookId = 'book-a', content = 'previous saved text') {
@@ -959,6 +960,56 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.equal(payload.mapSummaries[0].chapterId, 'a');
     assert.equal(payload.mapRelations.length, 1);
     assert.equal(payload.mapRelations[0].label, '论证');
+  });
+
+  await check('map extra: 节点样式（形状/填充/加粗/标记/标签）来回读写', async () => {
+    fixture();
+    const extras = new api.OutlineExtras();
+    extras.docId = 'a';
+    const style = new api.OutlineNodeStyle('p2');
+    style.shape = 'pill';
+    style.fill = '#D2543F';
+    style.bold = true;
+    style.markers.push('⭐');
+    style.markers.push('✅');
+    style.label = '重点';
+    extras.nodeStyles.push(style);
+    await api.mapExtraRepo.replace('a', extras);
+    const loaded = await api.mapExtraRepo.load('a');
+    assert.equal(loaded.nodeStyles.length, 1);
+    assert.equal(loaded.nodeStyles[0].paraId, 'p2');
+    assert.equal(loaded.nodeStyles[0].shape, 'pill');
+    assert.equal(loaded.nodeStyles[0].fill, '#D2543F');
+    assert.equal(loaded.nodeStyles[0].bold, true, 'bold 存的是 0/1，读回来必须是布尔');
+    assert.deepEqual(JSON.parse(JSON.stringify(loaded.nodeStyles[0].markers)), ['⭐', '✅'],
+      '多个标记用逗号存，读回来要拆开');
+    assert.equal(loaded.nodeStyles[0].label, '重点');
+    // 整篇覆盖：清空样式后再写，旧行不能留
+    const empty = new api.OutlineExtras();
+    empty.docId = 'a';
+    await api.mapExtraRepo.replace('a', empty);
+    assert.equal((await api.mapExtraRepo.load('a')).nodeStyles.length, 0);
+  });
+
+  await check('map extra: 节点样式进备份、按新章节重映射', async () => {
+    fixture();
+    const extras = new api.OutlineExtras();
+    extras.docId = 'a';
+    const style = new api.OutlineNodeStyle('p3');
+    style.shape = 'plain';
+    style.markers.push('❗');
+    extras.nodeStyles.push(style);
+    await api.mapExtraRepo.replace('a', extras);
+    const bundle = await api.mapExtraRepo.exportByChapterIds(['a']);
+    assert.equal(bundle.nodeStyles.length, 1);
+    assert.equal(bundle.nodeStyles[0].chapterId, 'a');
+    assert.equal(bundle.nodeStyles[0].paraId, 'p3');
+    assert.deepEqual(JSON.parse(JSON.stringify(bundle.nodeStyles[0].markers)), ['❗']);
+    await api.mapExtraRepo.restoreRows({nodeStyles: bundle.nodeStyles}, new Map([['a', 'new-a']]));
+    const rows = [...store.tables.get('doc_map_node').values()].filter(row => row.chapter_id === 'new-a');
+    assert.equal(rows.length, 1, '恢复出来的样式挂到新章节 id');
+    assert.equal(rows[0].para_id, 'p3', '段落身份不变');
+    assert.equal(rows[0].shape, 'plain');
   });
 
   console.log('Data regression: ' + checks + ' checks passed');

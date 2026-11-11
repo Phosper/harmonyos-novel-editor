@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语流 · 导图对齐 XMind：功能清单与分期（2026-11）</title>
+<style>
+  :root{
+    --ink:#1c1c1e; --sub:#6e6e73; --line:#e6e6ea; --bg:#fff; --soft:#f7f7f9;
+    --done:#2f7d55; --doing:#b26a00; --next:#3f6fc4; --no:#9a9aa0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.85 -apple-system,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:980px;margin:0 auto;padding:48px 28px 96px}
+  h1{font-size:28px;line-height:1.4;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--sub);font-size:14px;margin-bottom:28px}
+  h2{font-size:19px;margin:44px 0 12px;padding-left:10px;border-left:3px solid var(--ink)}
+  h3{font-size:16px;margin:26px 0 8px}
+  p{margin:10px 0}
+  ul{margin:8px 0 8px 22px;padding:0}
+  li{margin:4px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{background:var(--soft);font-weight:600;font-size:13px;color:var(--sub)}
+  code{font-family:"JetBrains Mono",Menlo,Consolas,monospace;font-size:13px;
+    background:var(--soft);padding:1px 5px;border-radius:4px}
+  .tag{display:inline-block;font-size:11px;line-height:1.6;padding:0 7px;border-radius:10px;
+    border:1px solid currentColor;white-space:nowrap}
+  .t-done{color:var(--done)} .t-doing{color:var(--doing)} .t-next{color:var(--next)} .t-no{color:var(--no)}
+  .card{background:var(--soft);border-radius:12px;padding:16px 18px;margin:16px 0}
+  .card h3{margin-top:0}
+  .toc{background:var(--soft);border-radius:12px;padding:14px 20px;margin:24px 0 8px;
+    columns:2;column-gap:28px;font-size:14px}
+  .toc a{color:var(--ink);text-decoration:none;display:block;padding:3px 0}
+  .toc a:hover{text-decoration:underline}
+  .rule{border-left:3px solid var(--ink);padding:2px 0 2px 14px;color:var(--sub);font-size:14px;margin:14px 0}
+  @media print{.toc{columns:2} body{font-size:12pt} .wrap{padding:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>导图对齐 XMind：功能清单与分期</h1>
+<div class="sub">Weaver / 语流 · 2026-11 · 依据用户提供的 XMind 桌面版截图逐项对照 · 本文只讲“对齐到什么程度、下一批做什么”</div>
+
+<div class="toc">
+  <a href="#s1">一、结论先说</a>
+  <a href="#s2">二、逐项对照表</a>
+  <a href="#s3">三、为什么有些功能不做</a>
+  <a href="#s4">四、数据模型现状</a>
+  <a href="#s5">五、分期与验收</a>
+  <a href="#s6">六、已知视觉短板</a>
+</div>
+
+<h2 id="s1">一、结论先说</h2>
+<p>
+XMind 的功能可以分三类，我们的处理方式不一样：
+</p>
+<div class="card">
+  <h3>① 纯看法（不落任何数据）</h3>
+  <p>布局形态、连线画法、配送色、分支终点、缩放 —— <b>已经全部做完</b>，改成什么样都不影响正文。</p>
+  <h3>② 这一节长什么样（要落侧车）</h3>
+  <p>节点形状/填充/加粗/标记/标签、概要、关系线 —— <b>本轮之前做完了概要+关系线，本轮补上了节点样式</b>，都存在独立侧车表里，不进正文、不进版本号。</p>
+  <h3>③ 文章以外的节点（明确不做）</h3>
+  <p>自由主题、浮动主题、图片、附件、音频 —— 这些要求“图里有文章没有的东西”，与“正文是唯一真源”直接冲突，不做。</p>
+</div>
+<div class="rule">
+一条硬规则：<b>任何改变结构的操作，都必须能在正文里看到同样的结果，并且能一次撤销。</b>
+做不到的（概要、关系线、节点样式）就明确标成“图的附加信息”，单独存、单独删。
+</div>
+
+<h2 id="s2">二、逐项对照表</h2>
+
+<h3>2.1 右侧样式面板</h3>
+<table>
+  <thead><tr><th style="width:26%">XMind 面板项</th><th style="width:44%">我们的状态</th><th style="width:30%">说明</th></tr></thead>
+  <tbody>
+  <tr><td>结构（向右 / 左右…）</td><td><span class="tag t-done">已有</span> 左右均衡、一直向右</td><td>纯布局参数；组织架构/时间轴见 2.4</td></tr>
+  <tr><td>连线（曲线/折线）</td><td><span class="tag t-done">已有</span> 曲线 12 段采样、四点折线</td><td>布局输出图元，Polyline 直画</td></tr>
+  <tr><td>分支颜色</td><td><span class="tag t-done">已有</span> 按一级分支循环取色 / 单色</td><td>同一分支永远同色，折叠不串色</td></tr>
+  <tr><td>分支终点（箭头/圆点）</td><td><span class="tag t-done">本轮</span> 无 / 圆点 / 箭头</td><td>切线角由契约算好，页面只摆形状</td></tr>
+  <tr><td>形状（矩形/圆角/胶囊）</td><td><span class="tag t-done">本轮</span> 每节点：默认/卡片/胶囊/无框</td><td>全局三档 + 单节点覆盖</td></tr>
+  <tr><td>填充（色板 / 无）</td><td><span class="tag t-done">本轮</span> 6 色 + 跟随主题</td><td>文字颜色按亮度自动取深/浅，保证读得清</td></tr>
+  <tr><td>文本加粗</td><td><span class="tag t-done">本轮</span> 每节点开关</td><td>只改看相，标题层级不变</td></tr>
+  <tr><td>标记 / 图标</td><td><span class="tag t-done">本轮</span> 5 个标记，每节点最多 3 个</td><td>存字符，没有字体/图片依赖</td></tr>
+  <tr><td>标签（label）</td><td><span class="tag t-done">本轮</span> 挂在节点下方的一行小字</td><td>不占节点高度，避免撑高后连线错位</td></tr>
+  <tr><td>编号（1 / 1.1）</td><td><span class="tag t-done">已有</span> 显示/隐藏</td><td>按真实文档顺序算，折叠不改变</td></tr>
+  <tr><td>字体 / 字号</td><td><span class="tag t-next">下一轮</span> 全局字号档</td><td>现在字号跟缩放走；独立字号档要改布局的行高预算</td></tr>
+  <tr><td>文字颜色 / 对齐 / 删除线</td><td><span class="tag t-next">下一轮</span></td><td>填充已处理可读性，单独文字色价值不大，排在后面</td></tr>
+  <tr><td>备注（notes）</td><td><span class="tag t-next">下一轮</span></td><td>需要“看备注”的交互（悬浮/展开），不能只存不显</td></tr>
+  <tr><td>演说 / 画布（两个 tab）</td><td><span class="tag t-next">M8</span></td><td>按主题隐藏做分步演示；与导出联动才有意义</td></tr>
+  </tbody>
+</table>
+
+<h3>2.2 地图上的元素</h3>
+<table>
+  <thead><tr><th style="width:26%">元素</th><th style="width:44%">我们的状态</th><th style="width:30%">说明</th></tr></thead>
+  <tbody>
+  <tr><td>中心主题 / 分支主题 / 子主题</td><td><span class="tag t-done">已有</span></td><td>节点就是正文里的 H1–H3 段落（paraId）</td></tr>
+  <tr><td>折叠圆点</td><td><span class="tag t-done">已有</span> 徽标显示「−」/ 子节点数量</td><td>折叠是视图态，不动正文</td></tr>
+  <tr><td>概要（summary）</td><td><span class="tag t-done">已有</span> 多选同层主题 → 括号 + 文字</td><td>拖边改范围见 2.3</td></tr>
+  <tr><td>关系线（虚线 + 标签）</td><td><span class="tag t-done">已有</span></td><td>两端取朝向对方的那条边</td></tr>
+  <tr><td>边界（boundary）</td><td><span class="tag t-doing">下一批</span></td><td>和概要同一套“同层区间”判定，只差一个圆角矩形图元</td></tr>
+  <tr><td>自由主题 / 浮动主题</td><td><span class="tag t-no">不做</span></td><td>图里有文章没有的节点 → 破坏唯一真源</td></tr>
+  <tr><td>图片 / 附件 / 音频</td><td><span class="tag t-no">不做</span></td><td>同上；写作场景的价值也低</td></tr>
+  </tbody>
+</table>
+
+<h3>2.3 交互</h3>
+<table>
+  <thead><tr><th style="width:26%">操作</th><th style="width:44%">我们的状态</th><th style="width:30%">说明</th></tr></thead>
+  <tbody>
+  <tr><td>Enter / Tab / Shift+Tab</td><td><span class="tag t-done">已有</span> 同级 / 子级 / 升降级</td><td>全部走命令回写正文，可一次撤销</td></tr>
+  <tr><td>F2 / 双击改名</td><td><span class="tag t-done">已有</span></td><td>就地浮层，回车提交</td></tr>
+  <tr><td>删除整节</td><td><span class="tag t-done">已有</span> 二次确认</td><td>正文里可撤销</td></tr>
+  <tr><td>Alt+↑↓ 搬整节</td><td><span class="tag t-done">已有</span></td><td>正文跟着走</td></tr>
+  <tr><td>空格折叠</td><td><span class="tag t-done">已有</span></td><td></td></tr>
+  <tr><td>方向键导航 / 回车回正文</td><td><span class="tag t-done">已有</span></td><td>双击也可回正文</td></tr>
+  <tr><td>多选（Ctrl / 多选开关）</td><td><span class="tag t-done">已有</span></td><td>触屏没有修饰键，所以加了开关兜底</td></tr>
+  <tr><td>拖拽重排（上/中/下三区）</td><td><span class="tag t-doing">下一批</span></td><td>要和外层滚动、节点手势竞争，必须在设备上调</td></tr>
+  <tr><td>概要拖边改范围</td><td><span class="tag t-doing">下一批</span></td><td>与拖拽重排一起做</td></tr>
+  <tr><td>撤销 / 重做按钮</td><td><span class="tag t-next">下一轮</span></td><td>结构编辑已进正文撤销栈，缺的是图上的按钮与状态</td></tr>
+  <tr><td>框选 / 缩放快捷键</td><td><span class="tag t-next">下一轮</span></td><td>Ctrl+滚轮、Ctrl+0</td></tr>
+  </tbody>
+</table>
+
+<h3>2.4 布局与视图</h3>
+<table>
+  <thead><tr><th style="width:26%">能力</th><th style="width:44%">我们的状态</th><th style="width:30%">说明</th></tr></thead>
+  <tbody>
+  <tr><td>左右均衡（思维导图）</td><td><span class="tag t-done">已有</span></td><td>按叶子权重分左右，左侧按根中心镜像</td></tr>
+  <tr><td>逻辑图（一直向右）</td><td><span class="tag t-done">已有</span></td><td></td></tr>
+  <tr><td>组织架构 / 时间轴 / 鱼骨</td><td><span class="tag t-next">M7</span></td><td>都是纯布局函数，可回归；先做组织架构（自上而下）</td></tr>
+  <tr><td>缩放 / 适应窗口</td><td><span class="tag t-done">已有</span></td><td>按档位重排，不缩容器（避免文字糊）</td></tr>
+  <tr><td>主题计数 / 选中序号</td><td><span class="tag t-done">本轮</span> “已选 3 / 168 个主题”</td><td>多选时显示已选数</td></tr>
+  <tr><td>缩略图 / 全屏</td><td><span class="tag t-next">M7</span></td><td>缩略图要整张图离屏渲染一次，成本在绘制预算里</td></tr>
+  <tr><td>视口裁剪 / 增量重绘</td><td><span class="tag t-next">M7</span></td><td>200+ 标题才需要；现在全量实例化</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s3">三、为什么有些功能不做</h2>
+<p>在 XMind 里，“树是唯一真源”，所以节点可以随便加、可以放图片。我们的方向反过来：</p>
+<ul>
+  <li><b>正文是唯一真源</b>（ADR-002）：导图的节点 = 正文里的标题段落，改图 = 改正文。</li>
+  <li>一旦允许“图里放文章没有的节点”，就要回答：这些节点存在哪、怎么进文章、删了正文怎么办 —— 复杂度和数据漂移风险都上一个台阶。</li>
+  <li>写作场景真正需要的是“把已有结构看清、改对”，不是自由画布；自由布置的需求属于<b>思路板</b>（已经有了），不该塞进文稿导图。</li>
+</ul>
+
+<h2 id="s4">四、数据模型现状</h2>
+<p>四张侧车表，全部不参与正文版本号、随文稿级联删除、随整本备份一起走：</p>
+<table>
+  <thead><tr><th style="width:28%">表</th><th>存什么</th></tr></thead>
+  <tbody>
+  <tr><td><code>doc_map_summary</code></td><td>概要：起始/结束段落 id + 文字</td></tr>
+  <tr><td><code>doc_map_relation</code></td><td>关系线：起止段落 id + 标签 + 类型</td></tr>
+  <tr><td><code>doc_map_node</code></td><td>节点样式：形状、填充、加粗、标记、标签（只存改过的段落）</td></tr>
+  <tr><td><code>doc_paragraphs</code> / <code>doc_runs</code></td><td>正文段落身份与行内样式（P5，已有）</td></tr>
+  </tbody>
+</table>
+<p>读写路径：导图页只发命令 → <code>core_runtime.OutlineService</code> 中转 → 宿主改内存副本（UI 立刻可见）→ 串行写链落库。<b>附加信息命令永远不触发正文写入</b>。</p>
+
+<h2 id="s5">五、分期与验收</h2>
+<table>
+  <thead><tr><th style="width:14%">期</th><th style="width:44%">内容</th><th style="width:42%">验收（用户可感知）</th></tr></thead>
+  <tbody>
+  <tr><td>M6（本轮）</td><td>节点样式（形状/填充/加粗/标记/标签）、分支终点、已选计数</td><td>选中一个主题，改颜色/加标记/写标签，关掉再打开还在；正文一个字没动</td></tr>
+  <tr><td>M7</td><td>边界（boundary）、组织架构布局、视口裁剪、缩略图</td><td>能给一组主题套个框并命名；同一篇文章能换“自上而下”看</td></tr>
+  <tr><td>M8</td><td>备注、字号档、撤销/重做按钮、缩放快捷键</td><td>图上能写备注并看到；Ctrl+Z 一次回到改结构之前</td></tr>
+  <tr><td>M9</td><td>拖拽重排（含概要拖边）、演示模式、md/opml/xmind 导入导出</td><td>拖一个主题到别处，正文整节跟着走；结构能带出去</td></tr>
+  </tbody>
+</table>
+<div class="rule">
+M6 已完成并本地验证（476 项回归全绿、构建 0 error）。设备侧（触控板点击热区、彩色填充的可读性、标签与下一行节点的间距）仍需真机确认。
+</div>
+
+<h2 id="s6">六、已知视觉短板</h2>
+<ul>
+  <li><b>概要文字会压到下一列</b>：成员下面还有子节点时，括号外侧容不下 110vp 的文字。已给文字加底色保证可读，彻底解决要把概要宽度算进布局预算（M7）。</li>
+  <li><b>标签挤在行间</b>：节点高 38vp、行距 52vp，标签只有 14vp 的空间；放大到 120% 以上会比较从容。</li>
+  <li><b>标记最多 3 个</b>：再多会把标题挤到换行，属于刻意的限制。</li>
+  <li><b>彩色填充的对比度</b>：按亮度自动切深/浅字，极端颜色（中间亮度）可能不够醒目，真机上再看。</li>
+</ul>
+
+</div>
+</body>
+</html>

@@ -9,9 +9,10 @@
 import { app } from '../store/AppStores'
 import { mapExtraRepo } from '../store/Repos'
 import {
-  OutlineExtras, OutlineExtraCommand, OutlineSummary, OutlineRelation,
+  OutlineExtras, OutlineExtraCommand, OutlineSummary, OutlineRelation, OutlineNodeStyle,
   OUTLINE_EXTRA_ADD_SUMMARY, OUTLINE_EXTRA_REMOVE_SUMMARY,
-  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION
+  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION, OUTLINE_EXTRA_SET_NODE_STYLE,
+  isBlankNodeStyle
 } from 'feature_contracts'
 import { IdGenerator } from '../utils/IdGenerator'
 import { Logger } from '../utils/Logger'
@@ -32,7 +33,37 @@ function copyExtras(source: OutlineExtras): OutlineExtras {
     const r: OutlineRelation = source.relations[i]
     out.relations.push(new OutlineRelation(r.id, r.fromParaId, r.toParaId, r.label))
   }
+  for (let i: number = 0; i < source.nodeStyles.length; i++) {
+    out.nodeStyles.push(copyNodeStyle(source.nodeStyles[i]))
+  }
   return out
+}
+
+function copyNodeStyle(style: OutlineNodeStyle): OutlineNodeStyle {
+  const out: OutlineNodeStyle = new OutlineNodeStyle(style.paraId)
+  out.shape = style.shape
+  out.fill = style.fill
+  out.bold = style.bold
+  out.label = style.label
+  for (let i: number = 0; i < style.markers.length; i++) {
+    out.markers.push(style.markers[i])
+  }
+  return out
+}
+
+/** 写入或删除一个段落的样式：整份替换（页面给的是最新的一份） */
+function putNodeStyle(style: OutlineNodeStyle): void {
+  const kept: OutlineNodeStyle[] = []
+  for (let i: number = 0; i < current.nodeStyles.length; i++) {
+    if (current.nodeStyles[i].paraId !== style.paraId) {
+      kept.push(current.nodeStyles[i])
+    }
+  }
+  // 回到"什么都没改"就不留行，避免侧车里堆空记录
+  if (!isBlankNodeStyle(style)) {
+    kept.push(copyNodeStyle(style))
+  }
+  current.nodeStyles = kept
 }
 
 function enqueueSave(chapterId: string, extras: OutlineExtras): void {
@@ -139,6 +170,16 @@ export function applyMapExtraCommand(command: OutlineExtraCommand): OutlineExtra
     if (!removeRelation(command.extraId)) {
       return null
     }
+    enqueueSave(chapterId, current)
+    return copyExtras(current)
+  }
+
+  if (command.kind === OUTLINE_EXTRA_SET_NODE_STYLE) {
+    const style: OutlineNodeStyle | null = command.style
+    if (style === null || style.paraId === '') {
+      return null
+    }
+    putNodeStyle(style)
     enqueueSave(chapterId, current)
     return copyExtras(current)
   }

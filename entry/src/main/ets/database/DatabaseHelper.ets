@@ -269,6 +269,20 @@ export class DatabaseHelper {
         'PRIMARY KEY (chapter_id, relation_id),' +
         'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +
         ')',
+      // M6：单个主题的样式（形状/填充/加粗/标记/标签）。只存"改过"的段落，
+      // 没改过的跟随全局设置，所以这张表通常很小。
+      'CREATE TABLE IF NOT EXISTS doc_map_node (' +
+        'chapter_id TEXT NOT NULL,' +
+        'para_id TEXT NOT NULL,' +
+        "shape TEXT NOT NULL DEFAULT ''," +
+        "fill TEXT NOT NULL DEFAULT ''," +
+        'bold INTEGER NOT NULL DEFAULT 0,' +
+        "markers TEXT NOT NULL DEFAULT ''," +
+        "label TEXT NOT NULL DEFAULT ''," +
+        'updated_at INTEGER NOT NULL,' +
+        'PRIMARY KEY (chapter_id, para_id),' +
+        'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +
+        ')',
       'CREATE INDEX IF NOT EXISTS idx_canvas_book ON canvases(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_topics_book ON topics(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_evidence_topic ON topic_evidence(topic_id)',
@@ -278,7 +292,8 @@ export class DatabaseHelper {
       'CREATE INDEX IF NOT EXISTS idx_doc_paragraphs_order ON doc_paragraphs(doc_id, ordinal)',
       'CREATE INDEX IF NOT EXISTS idx_doc_runs_para ON doc_runs(doc_id, para_id)',
       'CREATE INDEX IF NOT EXISTS idx_map_summary_doc ON doc_map_summary(chapter_id)',
-      'CREATE INDEX IF NOT EXISTS idx_map_relation_doc ON doc_map_relation(chapter_id)'
+      'CREATE INDEX IF NOT EXISTS idx_map_relation_doc ON doc_map_relation(chapter_id)',
+      'CREATE INDEX IF NOT EXISTS idx_map_node_doc ON doc_map_node(chapter_id)'
     ]
     for (const sql of sqls) {
       try {

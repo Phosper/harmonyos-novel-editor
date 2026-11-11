@@ -34,7 +34,7 @@ const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutli
   ' outlineConnectors, outlineWires, OUTLINE_WIRE_PAD, OUTLINE_WIRE_STEPS,'+
   ' OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,'+
   ' OutlineSummary, OutlineRelation, outlineSummaryBoxes, outlineRelationWires, summaryRangeOf,'+
-  ' OUTLINE_SUMMARY_GAP,'+
+  ' OUTLINE_SUMMARY_GAP, OutlineNodeStyle, isBlankNodeStyle, findNodeStyle, toggleMarker, nodeLabelY,'+
   ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED })', context);
 
 let pass = 0;
@@ -450,6 +450,75 @@ check('多选 → 概要端点：同父才算数，顺序取文档先后', () =>
     '只选一个不够');
   assert.deepEqual(JSON.parse(JSON.stringify(api.summaryRangeOf(layout.nodes, ['p2', 'gone']))), [],
     '未知端点不算');
+});
+
+check('节点样式：空白判定、标记上限三个、标签挂在节点下方', () => {
+  const blank = new api.OutlineNodeStyle('p1');
+  assert.equal(api.isBlankNodeStyle(blank), true, '新样式就是"什么都没改"');
+  const shaped = new api.OutlineNodeStyle('p1');
+  shaped.shape = 'pill';
+  assert.equal(api.isBlankNodeStyle(shaped), false);
+  const labeled = new api.OutlineNodeStyle('p2');
+  labeled.label = '重点';
+  assert.equal(api.isBlankNodeStyle(labeled), false);
+
+  // 标记：点一下加、再点一下删，最多三个（第四个别把标题挤没）
+  let style = new api.OutlineNodeStyle('p3');
+  style = api.toggleMarker(style, '⭐');
+  style = api.toggleMarker(style, '✅');
+  style = api.toggleMarker(style, '🔥');
+  style = api.toggleMarker(style, '❗');
+  assert.deepEqual(JSON.parse(JSON.stringify(style.markers)), ['⭐', '✅', '🔥'], '最多三个');
+  style = api.toggleMarker(style, '✅');
+  assert.deepEqual(JSON.parse(JSON.stringify(style.markers)), ['⭐', '🔥'], '再点一次就删掉');
+  // 切换标记不能把别的字段弄丢
+  const rich = new api.OutlineNodeStyle('p4');
+  rich.shape = 'pill';
+  rich.fill = '#D2543F';
+  rich.bold = true;
+  rich.label = '重点';
+  const toggled = api.toggleMarker(rich, '⭐');
+  assert.equal(toggled.shape, 'pill');
+  assert.equal(toggled.fill, '#D2543F');
+  assert.equal(toggled.bold, true);
+  assert.equal(toggled.label, '重点');
+
+  // 按 paraId 找样式；找不到返回 undefined（渲染层据此用全局设置）
+  const list = [api.toggleMarker(new api.OutlineNodeStyle('p5'), '⭐')];
+  assert.equal(api.findNodeStyle(list, 'p5') !== undefined, true);
+  assert.equal(api.findNodeStyle(list, 'p6'), undefined);
+  assert.equal(api.findNodeStyle(list, ''), undefined, '空身份不该命中');
+
+  const nodes = api.buildOutlineFromParagraphs('书', [{ id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 }]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const node = layout.nodes[1];
+  assert.equal(api.nodeLabelY(node), node.y + api.OUTLINE_NODE_H + 2, '标签贴在节点下沿');
+});
+
+check('连线终点：曲线末端切线朝下/朝右，箭头能照它摆正', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const links = api.outlineConnectors(layout.nodes);
+  const wires = api.outlineWires(links);
+  for (let i = 0; i < wires.length; i++) {
+    // 终点必须落在子节点那一侧的边上
+    assert.ok(Math.abs(wires[i].endX - links[i].toX) < 0.001, '终点 x 与连线端点一致');
+    assert.ok(Math.abs(wires[i].endY - links[i].toY) < 0.001, '终点 y 与连线端点一致');
+  }
+  // 父在上、子在下 → 末段切线的 y 分量朝下（sin > 0）
+  const down = wires.find(w => w.endY > links[0].toY + 1);
+  if (down !== undefined) {
+    assert.ok(Math.sin(down.endAngle) > 0, '朝下走的线，箭头该向下');
+  }
+  // 折线的末段是竖直的
+  const elbows = api.outlineWires(links, api.OUTLINE_WIRE_STEPS, api.OUTLINE_WIRE_ELBOW);
+  for (const w of elbows) {
+    assert.ok(Math.abs(Math.abs(Math.sin(w.endAngle)) - 1) < 0.001, '折线末段竖直，切线是 ±90°');
+  }
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

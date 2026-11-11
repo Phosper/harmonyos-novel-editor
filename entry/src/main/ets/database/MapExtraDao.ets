@@ -2,7 +2,30 @@
 // 随 chapters 级联删除（DatabaseHelper 已开 PRAGMA foreign_keys = ON）。
 import { relationalStore } from '@kit.ArkData'
 import { BaseDao } from './BaseDao'
-import { OutlineSummary, OutlineRelation } from 'feature_contracts'
+import { OutlineSummary, OutlineRelation, OutlineNodeStyle } from 'feature_contracts'
+
+/** 标记列表在库里存成逗号分隔：图标本身不含逗号，够用且可读 */
+function joinMarkers(markers: string[]): string {
+  let out: string = ''
+  for (let i: number = 0; i < markers.length; i++) {
+    out = i === 0 ? markers[i] : out + ',' + markers[i]
+  }
+  return out
+}
+
+function splitMarkers(text: string): string[] {
+  const out: string[] = []
+  if (text === '') {
+    return out
+  }
+  const parts: string[] = text.split(',')
+  for (let i: number = 0; i < parts.length; i++) {
+    if (parts[i] !== '') {
+      out.push(parts[i])
+    }
+  }
+  return out
+}
 
 export class MapSummaryDao extends BaseDao<OutlineSummary> {
   protected getTableName(): string {
@@ -87,6 +110,48 @@ export class MapRelationDao extends BaseDao<OutlineRelation> {
     predicates.equalTo('chapter_id', chapterId)
     predicates.equalTo('relation_id', relationId)
     await this.deleteRow(predicates)
+  }
+
+  async deleteByDoc(chapterId: string): Promise<void> {
+    const predicates: relationalStore.RdbPredicates = this.newPredicates()
+    predicates.equalTo('chapter_id', chapterId)
+    await this.deleteRow(predicates)
+  }
+}
+
+/** 节点级样式：一个段落在库里最多一行 */
+export class MapNodeDao extends BaseDao<OutlineNodeStyle> {
+  protected getTableName(): string {
+    return 'doc_map_node'
+  }
+
+  protected rowToModel(rs: relationalStore.ResultSet): OutlineNodeStyle {
+    const style: OutlineNodeStyle = new OutlineNodeStyle(this.safeGetString(rs, 'para_id'))
+    style.shape = this.safeGetString(rs, 'shape')
+    style.fill = this.safeGetString(rs, 'fill')
+    style.bold = this.safeGetBool(rs, 'bold')
+    style.markers = splitMarkers(this.safeGetString(rs, 'markers'))
+    style.label = this.safeGetString(rs, 'label')
+    return style
+  }
+
+  async listByDoc(chapterId: string): Promise<OutlineNodeStyle[]> {
+    const predicates: relationalStore.RdbPredicates = this.newPredicates()
+    predicates.equalTo('chapter_id', chapterId)
+    return this.queryRows(predicates)
+  }
+
+  async insertStyle(chapterId: string, style: OutlineNodeStyle, updatedAt: number): Promise<void> {
+    await this.insertRow({
+      chapter_id: chapterId,
+      para_id: style.paraId,
+      shape: style.shape,
+      fill: style.fill,
+      bold: style.bold ? 1 : 0,
+      markers: joinMarkers(style.markers),
+      label: style.label,
+      updated_at: updatedAt
+    })
   }
 
   async deleteByDoc(chapterId: string): Promise<void> {
