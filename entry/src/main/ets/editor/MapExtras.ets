@@ -50,6 +50,7 @@ function copyNodeStyle(style: OutlineNodeStyle): OutlineNodeStyle {
   out.fill = style.fill
   out.bold = style.bold
   out.label = style.label
+  out.note = style.note
   for (let i: number = 0; i < style.markers.length; i++) {
     out.markers.push(style.markers[i])
   }

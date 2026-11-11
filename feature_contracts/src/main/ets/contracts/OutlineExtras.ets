@@ -84,6 +84,8 @@ export class OutlineNodeStyle {
   markers: string[] = []
   /** 标签：挂在节点下方的一行小字 */
   label: string = ''
+  /** 备注：这一节要补充的长文本（图上只显示一个角标，点开看） */
+  note: string = ''
 
   constructor(paraId: string = '') {
     this.paraId = paraId
@@ -126,7 +128,7 @@ export const OUTLINE_SHAPE_PLAIN: string = 'plain'
 /** 节点样式是否等于"什么都没改"——是的话侧车不留行 */
 export function isBlankNodeStyle(style: OutlineNodeStyle): boolean {
   return style.shape === '' && style.fill === '' && !style.bold &&
-    style.markers.length === 0 && style.label === ''
+    style.markers.length === 0 && style.label === '' && style.note === ''
 }
 
 /** 按 paraId 找样式；没有返回 undefined（渲染层据此用全局设置） */
@@ -149,6 +151,7 @@ export function toggleMarker(style: OutlineNodeStyle, marker: string): OutlineNo
   next.fill = style.fill
   next.bold = style.bold
   next.label = style.label
+  next.note = style.note
   let found: boolean = false
   for (let i: number = 0; i < style.markers.length; i++) {
     if (style.markers[i] === marker) {

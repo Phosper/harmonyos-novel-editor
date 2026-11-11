@@ -11,7 +11,9 @@ const DB_VERSION: number = 2
 const EXPECTED_COLUMNS: string[][] = [
   ['chapters', "format TEXT NOT NULL DEFAULT 'txt'"],
   ['chapters', 'caret_offset INTEGER NOT NULL DEFAULT 0'],
-  ['chapters', "format_runs TEXT NOT NULL DEFAULT ''"]
+  ['chapters', "format_runs TEXT NOT NULL DEFAULT ''"],
+  // X2：备注挂在节点样式行上（老库靠这里补列，新建库由建表语句直接带上）
+  ['doc_map_node', "note TEXT NOT NULL DEFAULT ''"]
 ]
 
 export class DatabaseHelper {
@@ -279,6 +281,7 @@ export class DatabaseHelper {
         'bold INTEGER NOT NULL DEFAULT 0,' +
         "markers TEXT NOT NULL DEFAULT ''," +
         "label TEXT NOT NULL DEFAULT ''," +
+        "note TEXT NOT NULL DEFAULT ''," +
         'updated_at INTEGER NOT NULL,' +
         'PRIMARY KEY (chapter_id, para_id),' +
         'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +

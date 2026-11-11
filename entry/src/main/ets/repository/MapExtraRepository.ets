@@ -48,6 +48,7 @@ export interface MapNodeStyleBackupRow {
   bold: boolean
   markers: string[]
   label: string
+  note: string
 }
 
 export interface MapExtraBackupBundle {
@@ -196,7 +197,8 @@ export class MapExtraRepository {
           fill: n.fill,
           bold: n.bold,
           markers: n.markers,
-          label: n.label
+          label: n.label,
+          note: n.note
         })
       }
     }
@@ -252,6 +254,7 @@ export class MapExtraRepository {
       style.bold = row.bold
       style.markers = row.markers
       style.label = row.label
+      style.note = row.note ?? ''
       await this.nodeDao().insertStyle(mapped, style, now + i)
     }
   }

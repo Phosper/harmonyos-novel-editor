@@ -47,6 +47,7 @@ const KEY_DPAD_DOWN: number = 2013
 const KEY_F2: number = 2092
 const RENAME_INPUT_ID: string = 'structure-rename-input'
 const EXTRA_INPUT_ID: string = 'structure-extra-input'
+const NOTE_INPUT_ID: string = 'structure-note-input'
 /** 可选的节点标记（图标）：直接存字符，没有字体/图片依赖 */
 const NODE_MARKERS: string[] = ['⭐', '❗', '❓', '✅', '🔥']
 /** 节点填充色板：与分支配色同一套，整张图看起来是一家的 */
@@ -109,6 +110,9 @@ export struct StructurePage {
    * 这一个开关保证「概要」在任何输入方式下都用得了。
    */
   @Local multiSelect: boolean = false
+  /** 备注抽屉：正在看/写哪一节的备注（'' = 关） */
+  @Local noteParaId: string = ''
+  @Local noteText: string = ''
   /** 概要/关系线的文字输入浮层：'' = 关，'summary' / 'relation' = 开 */
   @Local extraMode: string = ''
   @Local extraText: string = ''
@@ -451,6 +455,46 @@ export struct StructurePage {
     this.selectedIds = []
     this.layoutRev = this.layoutRev + 1
     this.refreshExtras()
+  }
+
+  /** 打开备注抽屉：直接读侧车里的当前内容 */
+  private openNote(paraId: string): void {
+    if (paraId === '') {
+      return
+    }
+    const style: OutlineNodeStyle | undefined = this.styleOf(paraId)
+    this.noteParaId = paraId
+    this.noteText = style === undefined ? '' : style.note
+    setTimeout(() => {
+      try {
+        this.getUIContext().getFocusController().requestFocus(NOTE_INPUT_ID)
+      } catch (e) {
+        // 拿不到焦点不影响写（点「保存」也行）
+      }
+    }, 40)
+  }
+
+  private closeNote(): void {
+    this.noteParaId = ''
+    this.noteText = ''
+  }
+
+  /** 保存备注：走节点样式那条侧车通道（备注就是这一节的一部分"备注信息"） */
+  private saveNote(): void {
+    const paraId: string = this.noteParaId
+    if (paraId === '') {
+      return
+    }
+    const style: OutlineNodeStyle = this.styleCopyOf(paraId)
+    style.note = this.noteText.trim()
+    this.closeNote()
+    this.pushNodeStyle(style)
+  }
+
+  /** 节点上有没有备注（决定要不要画角标） */
+  private noteOf(node: PlacedNode): string {
+    const style: OutlineNodeStyle | undefined = this.styleOf(node.paraId)
+    return style === undefined ? '' : style.note
   }
 
   private removeExtra(kind: string, id: string): void {
@@ -1088,6 +1132,21 @@ export struct StructurePage {
     return style === undefined ? '' : style.label
   }
 
+  /** 备注角标：节点右侧留白处的小方块，点开抽屉看/写（图上不显示正文，避免撑高节点） */
+  @Builder
+  noteBadge(n: PlacedNode) {
+    Text('❏')
+      .fontSize(10)
+      .fontColor(this.theme.sub)
+      .width(14)
+      .height(14)
+      .textAlign(TextAlign.Center)
+      .position({ x: n.x + OUTLINE_NODE_W * n.scale - 18, y: n.y + OUTLINE_NODE_H * n.scale / 2 - 7 })
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText('查看备注')
+      .onClick(() => { this.openNote(n.paraId) })
+  }
+
   /** 折叠徽标：有子节点才出现；展开时显示「−」，折叠时显示子节点数量（幕布的做法）。
    * 独立组件压在节点层之上，点它不会误触「选中 / 双击回正文」。
    */
@@ -1307,7 +1366,7 @@ export struct StructurePage {
     }
     .width(OUTLINE_NODE_W * n.scale)
     .height(OUTLINE_NODE_H * n.scale)
-    .padding({ left: 10, right: 8 })
+    .padding({ left: 10, right: this.noteOf(n) !== '' ? 22 : 8 })
     .alignItems(VerticalAlign.Center)
     .backgroundColor(this.chipBg(n))
     .borderRadius(this.chipRadius(n))
@@ -1423,6 +1482,11 @@ export struct StructurePage {
               this.foldBadge(node)
             }
           }, (node: PlacedNode) => 'fold' + this.nodeKey(node) + (node.collapsed ? 'c' : 'e'))
+          ForEach(this.placed, (node: PlacedNode) => {
+            if (this.noteOf(node) !== '') {
+              this.noteBadge(node)
+            }
+          }, (node: PlacedNode) => 'note' + this.nodeKey(node))
           if (this.renaming && this.selectedIndex >= 0) {
             this.renameOverlay()
           }
@@ -1702,30 +1766,111 @@ export struct StructurePage {
     .border({ width: { left: 1 }, color: this.theme.divider })
   }
 
-  build() {
+  /** 备注抽屉：从右侧浮出，不占地图布局（浮层关掉后地图位置不变） */
+  @Builder
+  noteDrawer() {
     Column() {
-      this.header()
-      if (this.empty) {
-        this.emptyView()
-      } else {
-        Row() {
-          this.mapView()
-          if (this.styleOpen) {
-            this.stylePanel()
-          }
-        }
+      Row() {
+        Text('备注')
+          .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.theme.text)
+        Blank()
+        Text('×')
+          .fontSize(13).fontColor(this.theme.sub)
+          .width(20).height(20).textAlign(TextAlign.Center)
+          .onClick(() => { this.closeNote() })
+      }
+      .width('100%')
+
+      Text(this.noteTitle())
+        .fontSize(11).fontColor(this.theme.sub)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .margin({ top: 4, bottom: 8 })
         .width('100%')
-        .layoutWeight(1)
+
+      TextArea({ text: this.noteText, placeholder: '这一节要补充的说明（不进正文）' })
+        .id(NOTE_INPUT_ID)
+        .width('100%')
+        .height(170)
+        .fontSize(12)
+        .backgroundColor(this.theme.bg)
+        .borderRadius(8)
+        .border({ width: 1, color: this.theme.divider })
+        .onChange((value: string) => { this.noteText = value })
+
+      Row() {
+        Text('清空')
+          .fontSize(11).fontColor(this.theme.danger)
+          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+          .onClick(() => {
+            this.noteText = ''
+            this.saveNote()
+          })
+        Blank()
+        Text('取消')
+          .fontSize(11).fontColor(this.theme.sub)
+          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+          .onClick(() => { this.closeNote() })
+        Text('保存')
+          .fontSize(11).fontColor(this.theme.onBrand)
+          .backgroundColor(this.theme.brand)
+          .borderRadius(4)
+          .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+          .margin({ left: 8 })
+          .onClick(() => { this.saveNote() })
+      }
+      .width('100%')
+      .margin({ top: 10 })
+    }
+    .width(340)
+    .padding(16)
+    .margin({ top: 72, right: 16 })
+    .backgroundColor(this.theme.bg)
+    .borderRadius(12)
+    .border({ width: 1, color: this.theme.divider })
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 抽屉顶部的上下文标题：正在给哪一节写备注 */
+  private noteTitle(): string {
+    for (let i: number = 0; i < this.placed.length; i++) {
+      if (this.placed[i].paraId === this.noteParaId) {
+        return '「' + this.placed[i].title + '」'
+      }
+    }
+    return ''
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Column() {
+        this.header()
+        if (this.empty) {
+          this.emptyView()
+        } else {
+          Row() {
+            this.mapView()
+            if (this.styleOpen) {
+              this.stylePanel()
+            }
+          }
+          .width('100%')
+          .layoutWeight(1)
+        }
+      }
+      .width('100%').height('100%')
+      .backgroundColor(this.theme.bg)
+      .focusable(true)
+      .defaultFocus(true)
+      .onKeyEvent((event: KeyEvent) => this.handleKey(event))
+      .onAreaChange((_old: Area, now: Area) => {
+        this.viewW = Number(now.width)
+        this.viewH = Number(now.height)
+      })
+
+      if (this.noteParaId !== '') {
+        this.noteDrawer()
       }
     }
     .width('100%').height('100%')
-    .backgroundColor(this.theme.bg)
-    .focusable(true)
-    .defaultFocus(true)
-    .onKeyEvent((event: KeyEvent) => this.handleKey(event))
-    .onAreaChange((_old: Area, now: Area) => {
-      this.viewW = Number(now.width)
-      this.viewH = Number(now.height)
-    })
   }
 }

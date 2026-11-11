@@ -464,6 +464,10 @@ check('节点样式：空白判定、标记上限三个、标签挂在节点下�
   const labeled = new api.OutlineNodeStyle('p2');
   labeled.label = '重点';
   assert.equal(api.isBlankNodeStyle(labeled), false);
+  // 只有备注也必须落库（否则写了备注会被当成"没改过"丢掉）
+  const noted = new api.OutlineNodeStyle('p2');
+  noted.note = '这一节要补一段';
+  assert.equal(api.isBlankNodeStyle(noted), false);
 
   // 标记：点一下加、再点一下删，最多三个（第四个别把标题挤没）
   let style = new api.OutlineNodeStyle('p3');
@@ -485,6 +489,8 @@ check('节点样式：空白判定、标记上限三个、标签挂在节点下�
   assert.equal(toggled.fill, '#D2543F');
   assert.equal(toggled.bold, true);
   assert.equal(toggled.label, '重点');
+  rich.note = '补充说明';
+  assert.equal(api.toggleMarker(rich, '❓').note, '补充说明', '加标记不能把备注丢了');
 
   // 按 paraId 找样式；找不到返回 undefined（渲染层据此用全局设置）
   const list = [api.toggleMarker(new api.OutlineNodeStyle('p5'), '⭐')];

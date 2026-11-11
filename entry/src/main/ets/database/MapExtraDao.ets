@@ -132,6 +132,7 @@ export class MapNodeDao extends BaseDao<OutlineNodeStyle> {
     style.bold = this.safeGetBool(rs, 'bold')
     style.markers = splitMarkers(this.safeGetString(rs, 'markers'))
     style.label = this.safeGetString(rs, 'label')
+    style.note = this.safeGetString(rs, 'note')
     return style
   }
 
@@ -150,6 +151,7 @@ export class MapNodeDao extends BaseDao<OutlineNodeStyle> {
       bold: style.bold ? 1 : 0,
       markers: joinMarkers(style.markers),
       label: style.label,
+      note: style.note,
       updated_at: updatedAt
     })
   }

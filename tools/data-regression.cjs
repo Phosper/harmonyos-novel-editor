@@ -998,6 +998,7 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     style.markers.push('⭐');
     style.markers.push('✅');
     style.label = '重点';
+    style.note = '这一节要补一段';
     extras.nodeStyles.push(style);
     await api.mapExtraRepo.replace('a', extras);
     const loaded = await api.mapExtraRepo.load('a');
@@ -1009,6 +1010,7 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.deepEqual(JSON.parse(JSON.stringify(loaded.nodeStyles[0].markers)), ['⭐', '✅'],
       '多个标记用逗号存，读回来要拆开');
     assert.equal(loaded.nodeStyles[0].label, '重点');
+    assert.equal(loaded.nodeStyles[0].note, '这一节要补一段', '备注跟节点样式一起存');
     // 整篇覆盖：清空样式后再写，旧行不能留
     const empty = new api.OutlineExtras();
     empty.docId = 'a';
