@@ -528,6 +528,9 @@ export class OutlineConnector {
   branchIndex: number = -1
   /** 子节点深度（1 起）：渲染层据此做"线条渐细" */
   depth: number = 1
+  /** 两端的段落身份：专注模式据此判断"这条线在不在当前分支里" */
+  fromParaId: string = ''
+  toParaId: string = ''
 }
 
 /**
@@ -548,6 +551,8 @@ export function outlineConnectors(nodes: PlacedNode[]): OutlineConnector[] {
     connector.axis = to.axis
     connector.depth = to.depth
     connector.branchIndex = to.branchIndex
+    connector.fromParaId = from.paraId
+    connector.toParaId = to.paraId
     if (to.axis === OUTLINE_AXIS_Y) {
       // 上下展开：父下沿中点 → 子上沿中点
       connector.fromX = from.x + OUTLINE_NODE_W * from.scale / 2
@@ -597,6 +602,8 @@ export class OutlineWire {
   branchIndex: number = -1
   /** 子节点深度（1 起）：线条渐细按它算粗细 */
   depth: number = 1
+  /** 子节点的段落身份：专注模式据此淡化不属于当前分支的线 */
+  toParaId: string = ''
   /** 连线在子节点那一端的绝对坐标与切线角（弧度）：画箭头/圆点用 */
   endX: number = 0
   endY: number = 0
@@ -634,6 +641,7 @@ export function outlineWires(connectors: OutlineConnector[], steps: number = OUT
     const wire: OutlineWire = new OutlineWire()
     wire.branchIndex = c.branchIndex
     wire.depth = c.depth
+    wire.toParaId = c.toParaId
     wire.originX = minX - OUTLINE_WIRE_PAD
     wire.originY = minY - OUTLINE_WIRE_PAD
     wire.width = Math.max(1, maxX - minX + OUTLINE_WIRE_PAD * 2)

@@ -110,6 +110,16 @@ export struct StructurePage {
    * 这一个开关保证「概要」在任何输入方式下都用得了。
    */
   @Local multiSelect: boolean = false
+  /** 专注模式（ZEN）：只突出当前分支，其余淡化；纯视图 */
+  @Local zenMode: boolean = false
+  /** 专注的段落身份（'' = 还没选，按根算） */
+  private focusParaId: string = ''
+  /** 当前分支里的段落集合（数组判存，避免 Set 的可观测问题） */
+  @Local focusIds: string[] = []
+  /** 分屏裁剪：滚动位置（只在主题很多时才用来过滤渲染） */
+  @Local scrollTop: number = 0
+  private hScroller: Scroller = new Scroller()
+  private vScroller: Scroller = new Scroller()
   /** 备注抽屉：正在看/写哪一节的备注（'' = 关） */
   @Local noteParaId: string = ''
   @Local noteText: string = ''
@@ -182,6 +192,7 @@ export struct StructurePage {
     this.layoutRev = this.layoutRev + 1
     this.empty = false
     this.refreshExtras()
+    this.rebuildFocus()
     // 命令后重建时尽量把选中保持在同一个节点上（段落身份不变，索引会变）
     if (selectedParaId !== '') {
       let kept: number = -1
@@ -207,6 +218,79 @@ export struct StructurePage {
     this.relationWires = outlineRelationWires(this.placed, extras.relations)
     this.boundaryBoxes = outlineBoundaryBoxes(this.placed, extras.boundaries)
     this.nodeStyles = extras.nodeStyles
+  }
+
+  /**
+   * 重算"当前分支"：专注节点 + 它的祖先链 + 它的整棵子树。
+   * 纯视图，不进快照、不改正文。
+   */
+  private rebuildFocus(): void {
+    if (!this.zenMode) {
+      this.focusIds = []
+      return
+    }
+    let anchor: number = -1
+    for (let i: number = 0; i < this.placed.length; i++) {
+      if (this.placed[i].paraId === this.focusParaId) {
+        anchor = i
+        break
+      }
+    }
+    if (anchor < 0) {
+      // 专注目标没了（被删/被折叠）：退回根，别把整张图淡成看不见
+      this.focusParaId = ''
+      anchor = 0
+    }
+    const keep: string[] = []
+    const push = (index: number): void => {
+      if (index < 0 || index >= this.placed.length) {
+        return
+      }
+      const id: string = this.placed[index].paraId
+      if (id !== '' && keep.indexOf(id) < 0) {
+        keep.push(id)
+      }
+    }
+    // 祖先链
+    let cursor: number = anchor
+    let guard: number = 0
+    while (cursor >= 0 && guard < 256) {
+      push(cursor)
+      cursor = this.placed[cursor].parentIndex
+      guard++
+    }
+    // 子树（placed 里只有可见节点，被折叠的自然不在其中）
+    const collect = (index: number): void => {
+      push(index)
+      for (let i: number = 0; i < this.placed.length; i++) {
+        if (this.placed[i].parentIndex === index) {
+          collect(i)
+        }
+      }
+    }
+    collect(anchor)
+    this.focusIds = keep
+  }
+
+  /** 一个节点在当前视图里的不透明度：专注模式下，分支外的一律淡化 */
+  private focusOpacity(paraId: string): number {
+    if (!this.zenMode || paraId === '') {
+      return 1
+    }
+    return this.focusIds.indexOf(paraId) >= 0 ? 1 : 0.18
+  }
+
+  /** 进入/退出专注：进入时以当前选中（否则根）为焦点，并收起样式面板 */
+  private toggleZen(): void {
+    this.zenMode = !this.zenMode
+    if (this.zenMode) {
+      this.focusParaId = this.selectedParaId()
+      this.styleOpen = false
+    } else {
+      this.focusParaId = ''
+    }
+    this.rebuildFocus()
+    this.layoutRev = this.layoutRev + 1
   }
 
   private styleOf(paraId: string): OutlineNodeStyle | undefined {
@@ -858,6 +942,18 @@ export struct StructurePage {
       }
       return false
     }
+    if (this.noteParaId !== '') {
+      if (event.keyCode === KEY_ESCAPE) {
+        this.closeNote()
+        return true
+      }
+      return false
+    }
+    if (this.zenMode && event.keyCode === KEY_ESCAPE) {
+      // 专注模式先退专注：Esc 不该直接把导图关掉
+      this.toggleZen()
+      return true
+    }
     const code: number = event.keyCode
     if (code === KEY_ESCAPE) {
       this.onClose()
@@ -977,14 +1073,25 @@ export struct StructurePage {
           .onClick(() => { this.expandAll() })
       }
 
-      // 附加信息：概要在"同层多选"可用，关系线在"正好两节"可用
-      Text('多选')
-        .fontSize(12).fontColor(this.multiSelect ? this.theme.text : this.theme.sub)
-        .backgroundColor(this.multiSelect ? this.theme.divider : '#00000000')
+      // 专注（ZEN）：进入后只留「退出专注」和缩放，别的控件都收起来
+      Text(this.zenMode ? '专注中' : '专注')
+        .fontSize(12).fontColor(this.zenMode ? this.theme.text : this.theme.sub)
+        .backgroundColor(this.zenMode ? this.theme.divider : '#00000000')
         .borderRadius(6)
         .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-        .accessibilityText(this.multiSelect ? '退出多选' : '进入多选（点节点逐个加选）')
-        .onClick(() => { this.toggleMultiSelect() })
+        .accessibilityText(this.zenMode ? '退出专注' : '只突出当前分支（专注模式）')
+        .onClick(() => { this.toggleZen() })
+
+      // 附加信息：概要在"同层多选"可用，关系线在"正好两节"可用
+      if (!this.zenMode) {
+        Text('多选')
+          .fontSize(12).fontColor(this.multiSelect ? this.theme.text : this.theme.sub)
+          .backgroundColor(this.multiSelect ? this.theme.divider : '#00000000')
+          .borderRadius(6)
+          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+          .accessibilityText(this.multiSelect ? '退出多选' : '进入多选（点节点逐个加选）')
+          .onClick(() => { this.toggleMultiSelect() })
+      }
       Text('概要')
         .fontSize(12)
         .fontColor(this.summaryReady() ? this.theme.text : this.theme.sub)
@@ -1068,6 +1175,7 @@ export struct StructurePage {
       .position({ x: wire.originX, y: wire.originY })
       .points(wire.points)
       .fillOpacity(0)
+      .opacity(this.focusOpacity(wire.toParaId))
       .stroke(this.branchColor(wire.branchIndex))
       .strokeWidth(this.wireWidth(wire))
       .strokeLineCap(LineCapStyle.Round)
@@ -1102,6 +1210,7 @@ export struct StructurePage {
         .position({ x: wire.endX - 9, y: wire.endY - 9 })
         .points(this.arrowPoints(wire))
         .fillOpacity(0)
+        .opacity(this.focusOpacity(wire.toParaId))
         .stroke(this.branchColor(wire.branchIndex))
         .strokeWidth(this.wireWidth(wire))
         .strokeLineCap(LineCapStyle.Round)
@@ -1142,6 +1251,7 @@ export struct StructurePage {
       .height(14)
       .textAlign(TextAlign.Center)
       .position({ x: n.x + OUTLINE_NODE_W * n.scale - 18, y: n.y + OUTLINE_NODE_H * n.scale / 2 - 7 })
+      .opacity(this.focusOpacity(n.paraId))
       .hoverEffect(HoverEffect.Highlight)
       .accessibilityText('查看备注')
       .onClick(() => { this.openNote(n.paraId) })
@@ -1162,6 +1272,7 @@ export struct StructurePage {
       .borderRadius(8)
       .border({ width: 1, color: this.theme.divider })
       .position({ x: this.badgeX(n), y: this.badgeY(n) })
+      .opacity(this.focusOpacity(n.paraId))
       .hoverEffect(HoverEffect.Highlight)
       .accessibilityText(n.collapsed ? ('展开这一节，共 ' + n.childCount.toString() + ' 项') : '折叠这一节')
       .onClick(() => { this.toggleFold(n.paraId) })
@@ -1369,6 +1480,7 @@ export struct StructurePage {
     .padding({ left: 10, right: this.noteOf(n) !== '' ? 22 : 8 })
     .alignItems(VerticalAlign.Center)
     .backgroundColor(this.chipBg(n))
+    .opacity(this.focusOpacity(n.paraId))
     .borderRadius(this.chipRadius(n))
     .border({ width: this.chipBorderWidth(n, index), color: this.chipBorderColor(n, index) })
     .position({ x: n.x, y: n.y })
@@ -1395,6 +1507,7 @@ export struct StructurePage {
       .textOverflow({ overflow: TextOverflow.Ellipsis })
       .width(OUTLINE_NODE_W * n.scale)
       .position({ x: n.x, y: nodeLabelY(n) })
+      .opacity(this.focusOpacity(n.paraId))
       .hitTestBehavior(HitTestMode.None)
       .accessibilityText('标签：' + text)
   }
