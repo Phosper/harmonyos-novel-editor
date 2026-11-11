@@ -42,6 +42,8 @@ const KEY_NUMPAD_ENTER: number = 2116
 const KEY_TAB: number = 2049
 const KEY_SPACE: number = 2050
 const KEY_FORWARD_DEL: number = 2071
+const KEY_DPAD_LEFT: number = 2014
+const KEY_DPAD_RIGHT: number = 2015
 const KEY_DPAD_UP: number = 2012
 const KEY_DPAD_DOWN: number = 2013
 const KEY_F2: number = 2092
@@ -124,6 +126,12 @@ export struct StructurePage {
   @Local focusIds: string[] = []
   /** 缩略图（右下角小窗）：整张图的形状一眼可见 */
   @Local showMinimap: boolean = false
+  /** 演说模式：按主题顺序逐个聚焦 */
+  @Local presentMode: boolean = false
+  @Local presentIndex: number = 0
+  /** 滚动控制器：演说要能把当前主题滚到视口中间 */
+  private hScroller: Scroller = new Scroller()
+  private vScroller: Scroller = new Scroller()
   /** 备注抽屉：正在看/写哪一节的备注（'' = 关） */
   @Local noteParaId: string = ''
   @Local noteText: string = ''
@@ -306,6 +314,100 @@ export struct StructurePage {
     }
     this.selectedIds = []
     this.applySnapshot(next)
+  }
+
+  /** 演说步骤：先根、再按文档顺序深度优先走一遍（和"讲一遍结构"的顺序一致） */
+  private presentSteps(): string[] {
+    const out: string[] = []
+    const walk = (index: number): void => {
+      out.push(this.placed[index].paraId)
+      for (let i: number = 0; i < this.placed.length; i++) {
+        if (this.placed[i].parentIndex === index) {
+          walk(i)
+        }
+      }
+    }
+    if (this.placed.length > 0) {
+      walk(0)
+    }
+    return out
+  }
+
+  private enterPresent(): void {
+    if (this.placed.length <= 1) {
+      this.toast('先写几个标题再来演说')
+      return
+    }
+    this.presentMode = true
+    this.styleOpen = false
+    this.zenMode = true
+    this.presentIndex = 0
+    this.goToStep(0)
+  }
+
+  private exitPresent(): void {
+    this.presentMode = false
+    this.zenMode = false
+    this.focusParaId = ''
+    this.rebuildFocus()
+    this.layoutRev = this.layoutRev + 1
+  }
+
+  /** 走到第 n 步：聚焦它、重排（淡化其余），等布局落定再把镜头挪过去 */
+  private goToStep(index: number): void {
+    const steps: string[] = this.presentSteps()
+    if (steps.length === 0) {
+      return
+    }
+    this.presentIndex = Math.max(0, Math.min(steps.length - 1, index))
+    const paraId: string = steps[this.presentIndex]
+    this.focusParaId = paraId
+    this.selectedIndex = -1
+    this.selectedIds = paraId === '' ? [] : [paraId]
+    this.rebuildFocus()
+    this.layoutRev = this.layoutRev + 1
+    // 布局（缩放/淡化）落定后才好算偏移；40ms 足够一帧
+    setTimeout(() => {
+      this.centerOn(paraId)
+    }, 40)
+  }
+
+  /** 把某个主题滚到视口中间（内容坐标与滚动偏移同一套 vp） */
+  private centerOn(paraId: string): void {
+    let node: PlacedNode | undefined = undefined
+    for (let i: number = 0; i < this.placed.length; i++) {
+      if (this.placed[i].paraId === paraId) {
+        node = this.placed[i]
+        break
+      }
+    }
+    if (node === undefined && this.placed.length > 0) {
+      node = this.placed[0]
+    }
+    if (node === undefined) {
+      return
+    }
+    const headerH: number = 64
+    const viewportW: number = this.viewW > 0 ? this.viewW : 800
+    const viewportH: number = (this.viewH > 0 ? this.viewH : 600) - headerH
+    const centerX: number = node.x + OUTLINE_NODE_W * node.scale / 2
+    const centerY: number = node.y + OUTLINE_NODE_H * node.scale / 2
+    const maxX: number = Math.max(0, this.mapW - viewportW)
+    const maxY: number = Math.max(0, this.mapH - viewportH)
+    try {
+      this.hScroller.scrollTo({
+        xOffset: Math.max(0, Math.min(maxX, centerX - viewportW / 2)),
+        yOffset: 0,
+        animation: true
+      })
+      this.vScroller.scrollTo({
+        xOffset: 0,
+        yOffset: Math.max(0, Math.min(maxY, centerY - viewportH / 2)),
+        animation: true
+      })
+    } catch (e) {
+      // 滚动失败不影响演说（镜头不动而已）
+    }
   }
 
   /** 缩略图缩放比：整张图塞进 150×104 的小窗 */
@@ -978,6 +1080,22 @@ export struct StructurePage {
       return true
     }
     const code: number = event.keyCode
+    if (this.presentMode) {
+      // 演说模式：先把这几种键接管，别让它们触发结构编辑
+      if (code === KEY_ESCAPE) {
+        this.exitPresent()
+        return true
+      }
+      if (code === KEY_DPAD_RIGHT || code === KEY_SPACE || code === KEY_ENTER) {
+        this.goToStep(this.presentIndex + 1)
+        return true
+      }
+      if (code === KEY_DPAD_LEFT) {
+        this.goToStep(this.presentIndex - 1)
+        return true
+      }
+      return false
+    }
     if (code === KEY_ESCAPE) {
       this.onClose()
       return true
@@ -1125,7 +1243,7 @@ export struct StructurePage {
         .onClick(() => { this.toggleZen() })
 
       // 附加信息：概要在"同层多选"可用，关系线在"正好两节"可用
-      if (!this.zenMode) {
+      if (!this.zenMode && !this.presentMode) {
         Text('多选')
           .fontSize(12).fontColor(this.multiSelect ? this.theme.text : this.theme.sub)
           .backgroundColor(this.multiSelect ? this.theme.divider : '#00000000')
@@ -1621,8 +1739,8 @@ export struct StructurePage {
   /** 地图本体：外层横向 + 内层纵向（ScrollDirection.Free 已废弃） */
   @Builder
   mapView() {
-    Scroll() {
-      Scroll() {
+    Scroll(this.hScroller) {
+      Scroll(this.vScroller) {
         Stack({ alignContent: Alignment.TopStart }) {
           // 外框最底层：它是个大矩形，压在连线和节点下面才不会盖住内容
           ForEach(this.boundaryBoxes, (box: OutlineBoundaryBox, index: number) => {
