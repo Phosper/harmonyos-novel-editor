@@ -7,8 +7,8 @@
 //    本地回归的库替身也能覆盖到。
 import { relationalStore } from '@kit.ArkData'
 import { dbHelper } from '../database/DatabaseHelper'
-import { MapSummaryDao, MapRelationDao, MapNodeDao } from '../database/MapExtraDao'
-import { OutlineExtras, OutlineSummary, OutlineRelation, OutlineNodeStyle } from 'feature_contracts'
+import { MapSummaryDao, MapRelationDao, MapNodeDao, MapBoundaryDao } from '../database/MapExtraDao'
+import { OutlineExtras, OutlineSummary, OutlineRelation, OutlineNodeStyle, OutlineBoundary } from 'feature_contracts'
 import { Logger } from '../utils/Logger'
 import { IdGenerator } from '../utils/IdGenerator'
 
@@ -30,6 +30,15 @@ export interface MapRelationBackupRow {
   label: string
 }
 
+/** 备份里的一行外框 */
+export interface MapBoundaryBackupRow {
+  chapterId: string
+  id: string
+  startParaId: string
+  endParaId: string
+  text: string
+}
+
 /** 备份里的一行节点样式 */
 export interface MapNodeStyleBackupRow {
   chapterId: string
@@ -44,12 +53,14 @@ export interface MapNodeStyleBackupRow {
 export interface MapExtraBackupBundle {
   summaries: MapSummaryBackupRow[]
   relations: MapRelationBackupRow[]
+  boundaries: MapBoundaryBackupRow[]
   nodeStyles: MapNodeStyleBackupRow[]
 }
 
 export interface MapExtraBackupLoose {
   summaries?: MapSummaryBackupRow[]
   relations?: MapRelationBackupRow[]
+  boundaries?: MapBoundaryBackupRow[]
   nodeStyles?: MapNodeStyleBackupRow[]
 }
 
@@ -72,6 +83,10 @@ export class MapExtraRepository {
     return new MapNodeDao(this.tx)
   }
 
+  private boundaryDao(): MapBoundaryDao {
+    return new MapBoundaryDao(this.tx)
+  }
+
   /** 读一篇文稿的附加信息；没有就是空对象（导图页照常渲染） */
   async load(chapterId: string): Promise<OutlineExtras> {
     const extras: OutlineExtras = new OutlineExtras()
@@ -81,6 +96,7 @@ export class MapExtraRepository {
     }
     extras.summaries = await this.summaryDao().listByDoc(chapterId)
     extras.relations = await this.relationDao().listByDoc(chapterId)
+    extras.boundaries = await this.boundaryDao().listByDoc(chapterId)
     extras.nodeStyles = await this.nodeDao().listByDoc(chapterId)
     return extras
   }
@@ -112,15 +128,20 @@ export class MapExtraRepository {
     const summaryDao: MapSummaryDao = this.summaryDao()
     const relationDao: MapRelationDao = this.relationDao()
     const nodeDao: MapNodeDao = this.nodeDao()
+    const boundaryDao: MapBoundaryDao = this.boundaryDao()
     await summaryDao.deleteByDoc(chapterId)
     await relationDao.deleteByDoc(chapterId)
     await nodeDao.deleteByDoc(chapterId)
+    await boundaryDao.deleteByDoc(chapterId)
     const now: number = Date.now()
     for (let i: number = 0; i < extras.summaries.length; i++) {
       await summaryDao.insertSummary(chapterId, extras.summaries[i], now + i)
     }
     for (let i: number = 0; i < extras.relations.length; i++) {
       await relationDao.insertRelation(chapterId, extras.relations[i], now + i)
+    }
+    for (let i: number = 0; i < extras.boundaries.length; i++) {
+      await boundaryDao.insertBoundary(chapterId, extras.boundaries[i], now + i)
     }
     for (let i: number = 0; i < extras.nodeStyles.length; i++) {
       await nodeDao.insertStyle(chapterId, extras.nodeStyles[i], now + i)
@@ -131,6 +152,7 @@ export class MapExtraRepository {
   async exportByChapterIds(chapterIds: string[]): Promise<MapExtraBackupBundle> {
     const summaries: MapSummaryBackupRow[] = []
     const relations: MapRelationBackupRow[] = []
+    const boundaries: MapBoundaryBackupRow[] = []
     const nodeStyles: MapNodeStyleBackupRow[] = []
     for (let i: number = 0; i < chapterIds.length; i++) {
       const chapterId: string = chapterIds[i]
@@ -155,6 +177,16 @@ export class MapExtraRepository {
           label: r.label
         })
       }
+      for (let k: number = 0; k < one.boundaries.length; k++) {
+        const b: OutlineBoundary = one.boundaries[k]
+        boundaries.push({
+          chapterId: chapterId,
+          id: b.id,
+          startParaId: b.startParaId,
+          endParaId: b.endParaId,
+          text: b.text
+        })
+      }
       for (let k: number = 0; k < one.nodeStyles.length; k++) {
         const n: OutlineNodeStyle = one.nodeStyles[k]
         nodeStyles.push({
@@ -168,7 +200,7 @@ export class MapExtraRepository {
         })
       }
     }
-    return { summaries: summaries, relations: relations, nodeStyles: nodeStyles }
+    return { summaries: summaries, relations: relations, boundaries: boundaries, nodeStyles: nodeStyles }
   }
 
   /**
@@ -178,6 +210,7 @@ export class MapExtraRepository {
   async restoreRows(input: MapExtraBackupLoose, chapterIdMap: Map<string, string>): Promise<void> {
     const summaries: MapSummaryBackupRow[] = input.summaries ?? []
     const relations: MapRelationBackupRow[] = input.relations ?? []
+    const boundaries: MapBoundaryBackupRow[] = input.boundaries ?? []
     const nodeStyles: MapNodeStyleBackupRow[] = input.nodeStyles ?? []
     const now: number = Date.now()
     for (let i: number = 0; i < summaries.length; i++) {
@@ -197,6 +230,15 @@ export class MapExtraRepository {
       }
       await this.relationDao().insertRelation(mapped,
         new OutlineRelation(IdGenerator.generate(), row.fromParaId, row.toParaId, row.label), now + i)
+    }
+    for (let i: number = 0; i < boundaries.length; i++) {
+      const row: MapBoundaryBackupRow = boundaries[i]
+      const mapped: string | undefined = chapterIdMap.get(row.chapterId)
+      if (mapped === undefined || mapped === '') {
+        continue
+      }
+      await this.boundaryDao().insertBoundary(mapped,
+        new OutlineBoundary(IdGenerator.generate(), row.startParaId, row.endParaId, row.text), now + i)
     }
     for (let i: number = 0; i < nodeStyles.length; i++) {
       const row: MapNodeStyleBackupRow = nodeStyles[i]

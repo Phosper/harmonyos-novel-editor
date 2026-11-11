@@ -38,11 +38,31 @@ export class OutlineRelation {
   }
 }
 
+/**
+ * 一个外框（boundary）：把同一层的一段主题圈起来，可选一句标题。
+ * XMind 用它表达"这几节是一组"，与概要的区别是——概要在分支外侧挂结论，
+ * 外框直接把成员圈在里面（更强调"范围"）。
+ */
+export class OutlineBoundary {
+  id: string = ''
+  startParaId: string = ''
+  endParaId: string = ''
+  text: string = ''
+
+  constructor(id: string = '', startParaId: string = '', endParaId: string = '', text: string = '') {
+    this.id = id
+    this.startParaId = startParaId
+    this.endParaId = endParaId
+    this.text = text
+  }
+}
+
 /** 一篇文稿的全部附加信息（宿主发布给导图页的只读副本） */
 export class OutlineExtras {
   docId: string = ''
   summaries: OutlineSummary[] = []
   relations: OutlineRelation[] = []
+  boundaries: OutlineBoundary[] = []
   /** 节点级样式（只存"改过"的那些，没改的跟随全局设置） */
   nodeStyles: OutlineNodeStyle[] = []
 }
@@ -94,6 +114,8 @@ export const OUTLINE_EXTRA_ADD_SUMMARY: string = 'add-summary'
 export const OUTLINE_EXTRA_REMOVE_SUMMARY: string = 'remove-summary'
 export const OUTLINE_EXTRA_ADD_RELATION: string = 'add-relation'
 export const OUTLINE_EXTRA_REMOVE_RELATION: string = 'remove-relation'
+export const OUTLINE_EXTRA_ADD_BOUNDARY: string = 'add-boundary'
+export const OUTLINE_EXTRA_REMOVE_BOUNDARY: string = 'remove-boundary'
 export const OUTLINE_EXTRA_SET_NODE_STYLE: string = 'set-node-style'
 
 /** 可选的节点形状（'' = 跟随全局） */
@@ -427,4 +449,93 @@ export function summaryRangeOf(nodes: PlacedNode[], paraIds: string[]): string[]
     return []
   }
   return [nodes[first].paraId, nodes[last].paraId]
+}
+
+/** 外框的渲染图元：圆角矩形 + 标题锚点 + 删除按钮锚点（全部 vp） */
+export class OutlineBoundaryBox {
+  boundaryId: string = ''
+  text: string = ''
+  x: number = 0
+  y: number = 0
+  width: number = 1
+  height: number = 1
+  textX: number = 0
+  textY: number = 0
+  closeX: number = 0
+  closeY: number = 0
+}
+
+/** 外框离成员的距离；标题与小按钮压在框内左上/右上（不会跑到画布外） */
+export const OUTLINE_BOUNDARY_PAD: number = 12
+
+/**
+ * 外框 → 圆角矩形图元。
+ * 成员判定与概要完全一致（同父 + 落在两个端点之间），所以折叠/删除后端点缺失就整条不画；
+ * 区别只在外形：概要是外侧的括号，外框把成员圈在里面。
+ */
+export function outlineBoundaryBoxes(nodes: PlacedNode[],
+  boundaries: OutlineBoundary[]): OutlineBoundaryBox[] {
+  const out: OutlineBoundaryBox[] = []
+  if (nodes.length === 0 || boundaries.length === 0) {
+    return out
+  }
+  const index: Map<string, number> = indexByParaId(nodes)
+  for (let b: number = 0; b < boundaries.length; b++) {
+    const boundary: OutlineBoundary = boundaries[b]
+    const i0: number | undefined = index.get(boundary.startParaId)
+    const i1: number | undefined = index.get(boundary.endParaId)
+    if (i0 === undefined || i1 === undefined) {
+      continue
+    }
+    const from: number = Math.min(i0, i1)
+    const to: number = Math.max(i0, i1)
+    const parent: number = nodes[from].parentIndex
+    if (nodes[to].parentIndex !== parent || parent < 0) {
+      continue
+    }
+    let minX: number = 0
+    let maxX: number = 0
+    let minY: number = 0
+    let maxY: number = 0
+    let count: number = 0
+    for (let i: number = from; i <= to; i++) {
+      const node: PlacedNode = nodes[i]
+      if (node.parentIndex !== parent) {
+        continue
+      }
+      const left: number = node.x
+      const right: number = node.x + OUTLINE_NODE_W * node.scale
+      const top: number = node.y
+      const bottom: number = node.y + OUTLINE_NODE_H * node.scale
+      if (count === 0 || left < minX) {
+        minX = left
+      }
+      if (count === 0 || right > maxX) {
+        maxX = right
+      }
+      if (count === 0 || top < minY) {
+        minY = top
+      }
+      if (count === 0 || bottom > maxY) {
+        maxY = bottom
+      }
+      count++
+    }
+    if (count < 2) {
+      continue
+    }
+    const box: OutlineBoundaryBox = new OutlineBoundaryBox()
+    box.boundaryId = boundary.id
+    box.text = boundary.text
+    box.x = minX - OUTLINE_BOUNDARY_PAD
+    box.y = minY - OUTLINE_BOUNDARY_PAD
+    box.width = maxX - minX + OUTLINE_BOUNDARY_PAD * 2
+    box.height = maxY - minY + OUTLINE_BOUNDARY_PAD * 2
+    box.textX = box.x + 8
+    box.textY = box.y + 2
+    box.closeX = box.x + box.width - 20
+    box.closeY = box.y + 2
+    out.push(box)
+  }
+  return out
 }

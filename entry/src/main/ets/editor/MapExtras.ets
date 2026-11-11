@@ -9,9 +9,10 @@
 import { app } from '../store/AppStores'
 import { mapExtraRepo } from '../store/Repos'
 import {
-  OutlineExtras, OutlineExtraCommand, OutlineSummary, OutlineRelation, OutlineNodeStyle,
+  OutlineExtras, OutlineExtraCommand, OutlineSummary, OutlineRelation, OutlineNodeStyle, OutlineBoundary,
   OUTLINE_EXTRA_ADD_SUMMARY, OUTLINE_EXTRA_REMOVE_SUMMARY,
-  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION, OUTLINE_EXTRA_SET_NODE_STYLE,
+  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION,
+  OUTLINE_EXTRA_ADD_BOUNDARY, OUTLINE_EXTRA_REMOVE_BOUNDARY, OUTLINE_EXTRA_SET_NODE_STYLE,
   isBlankNodeStyle
 } from 'feature_contracts'
 import { IdGenerator } from '../utils/IdGenerator'
@@ -32,6 +33,10 @@ function copyExtras(source: OutlineExtras): OutlineExtras {
   for (let i: number = 0; i < source.relations.length; i++) {
     const r: OutlineRelation = source.relations[i]
     out.relations.push(new OutlineRelation(r.id, r.fromParaId, r.toParaId, r.label))
+  }
+  for (let i: number = 0; i < source.boundaries.length; i++) {
+    const b: OutlineBoundary = source.boundaries[i]
+    out.boundaries.push(new OutlineBoundary(b.id, b.startParaId, b.endParaId, b.text))
   }
   for (let i: number = 0; i < source.nodeStyles.length; i++) {
     out.nodeStyles.push(copyNodeStyle(source.nodeStyles[i]))
@@ -110,6 +115,20 @@ function removeSummary(summaryId: string): boolean {
   return removed
 }
 
+function removeBoundary(boundaryId: string): boolean {
+  const kept: OutlineBoundary[] = []
+  let removed: boolean = false
+  for (let i: number = 0; i < current.boundaries.length; i++) {
+    if (current.boundaries[i].id === boundaryId) {
+      removed = true
+    } else {
+      kept.push(current.boundaries[i])
+    }
+  }
+  current.boundaries = kept
+  return removed
+}
+
 function removeRelation(relationId: string): boolean {
   const kept: OutlineRelation[] = []
   let removed: boolean = false
@@ -168,6 +187,24 @@ export function applyMapExtraCommand(command: OutlineExtraCommand): OutlineExtra
 
   if (command.kind === OUTLINE_EXTRA_REMOVE_RELATION) {
     if (!removeRelation(command.extraId)) {
+      return null
+    }
+    enqueueSave(chapterId, current)
+    return copyExtras(current)
+  }
+
+  if (command.kind === OUTLINE_EXTRA_ADD_BOUNDARY) {
+    if (command.fromId === '' || command.toId === '') {
+      return null
+    }
+    current.boundaries.push(new OutlineBoundary(IdGenerator.generate(), command.fromId, command.toId,
+      command.text.trim()))
+    enqueueSave(chapterId, current)
+    return copyExtras(current)
+  }
+
+  if (command.kind === OUTLINE_EXTRA_REMOVE_BOUNDARY) {
+    if (!removeBoundary(command.extraId)) {
       return null
     }
     enqueueSave(chapterId, current)

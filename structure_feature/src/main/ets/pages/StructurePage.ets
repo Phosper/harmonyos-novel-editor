@@ -10,8 +10,10 @@ import {
   OUTLINE_WIRE_STEPS, OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,
   layoutOutline, outlineConnectors, outlineWires,
   OutlineExtras, OutlineExtraCommand, OutlineSummaryBox, OutlineRelationWire, OutlineNodeStyle,
+  OutlineBoundaryBox, outlineBoundaryBoxes,
   OUTLINE_EXTRA_ADD_SUMMARY, OUTLINE_EXTRA_REMOVE_SUMMARY,
-  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION, OUTLINE_EXTRA_SET_NODE_STYLE,
+  OUTLINE_EXTRA_ADD_RELATION, OUTLINE_EXTRA_REMOVE_RELATION,
+  OUTLINE_EXTRA_ADD_BOUNDARY, OUTLINE_EXTRA_REMOVE_BOUNDARY, OUTLINE_EXTRA_SET_NODE_STYLE,
   OUTLINE_SHAPE_CARD, OUTLINE_SHAPE_PILL, OUTLINE_SHAPE_PLAIN,
   OUTLINE_SUMMARY_TEXT_W, findNodeStyle, isBlankNodeStyle, toggleMarker, nodeLabelY,
   outlineSummaryBoxes, outlineRelationWires, summaryRangeOf
@@ -95,6 +97,7 @@ export struct StructurePage {
    */
   @Local summaryBoxes: OutlineSummaryBox[] = []
   @Local relationWires: OutlineRelationWire[] = []
+  @Local boundaryBoxes: OutlineBoundaryBox[] = []
   /** 节点级样式（只存改过的段落）：渲染时按 paraId 查，查不到就用全局设置 */
   @Local nodeStyles: OutlineNodeStyle[] = []
   /** 连线在子节点那一端的样式（无 / 圆点 / 箭头） */
@@ -153,6 +156,7 @@ export struct StructurePage {
       this.wires = []
       this.summaryBoxes = []
       this.relationWires = []
+      this.boundaryBoxes = []
       this.selectedIds = []
       this.mapW = 0
       this.mapH = 0
@@ -197,6 +201,7 @@ export struct StructurePage {
     const extras: OutlineExtras = outlineService().currentExtras()
     this.summaryBoxes = outlineSummaryBoxes(this.placed, extras.summaries)
     this.relationWires = outlineRelationWires(this.placed, extras.relations)
+    this.boundaryBoxes = outlineBoundaryBoxes(this.placed, extras.boundaries)
     this.nodeStyles = extras.nodeStyles
   }
 
@@ -363,6 +368,22 @@ export struct StructurePage {
     this.focusExtraInput()
   }
 
+  /** 打开"新建外框"浮层：端点与概要一致（同层的一段），标题可留空 */
+  private openBoundaryEditor(): void {
+    const range: string[] = summaryRangeOf(this.placed, this.selectedIds)
+    if (range.length !== 2) {
+      this.toast('外框要圈住同一层里的两节以上')
+      return
+    }
+    this.extraPending = range
+    this.extraMode = 'boundary'
+    this.extraText = ''
+    const anchor: PlacedNode | undefined = this.selectedNode()
+    this.extraX = anchor === undefined ? 24 : anchor.x
+    this.extraY = anchor === undefined ? 24 : anchor.y + OUTLINE_NODE_H * this.zoom + 8
+    this.focusExtraInput()
+  }
+
   private openRelationEditor(): void {
     if (!this.relationReady()) {
       this.toast('关系线要正好选两节')
@@ -415,7 +436,12 @@ export struct StructurePage {
     if (pending.length < 2) {
       return
     }
-    const kind: string = mode === 'summary' ? OUTLINE_EXTRA_ADD_SUMMARY : OUTLINE_EXTRA_ADD_RELATION
+    let kind: string = OUTLINE_EXTRA_ADD_RELATION
+    if (mode === 'summary') {
+      kind = OUTLINE_EXTRA_ADD_SUMMARY
+    } else if (mode === 'boundary') {
+      kind = OUTLINE_EXTRA_ADD_BOUNDARY
+    }
     const command: OutlineExtraCommand = new OutlineExtraCommand(kind, '', pending[0], pending[1], text)
     const next: OutlineExtras | null = outlineService().dispatchExtra(command)
     if (next === null) {
@@ -922,6 +948,13 @@ export struct StructurePage {
         .padding({ left: 8, right: 8, top: 5, bottom: 5 })
         .accessibilityText('给选中的几节加一条概要')
         .onClick(() => { this.openSummaryEditor() })
+      Text('外框')
+        .fontSize(12)
+        .fontColor(this.summaryReady() ? this.theme.text : this.theme.sub)
+        .opacity(this.summaryReady() ? 1 : 0.4)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .accessibilityText('把选中的几节圈进一个外框')
+        .onClick(() => { this.openBoundaryEditor() })
       Text('关系')
         .fontSize(12)
         .fontColor(this.relationReady() ? this.theme.text : this.theme.sub)
@@ -1075,6 +1108,41 @@ export struct StructurePage {
       .onClick(() => { this.toggleFold(n.paraId) })
   }
 
+  /** 外框：圆角虚线矩形 + 左上标题 + 右上去掉按钮（压在最底层，不抢命中） */
+  @Builder
+  boundaryMark(box: OutlineBoundaryBox) {
+    Column()
+      .width(box.width)
+      .height(box.height)
+      .position({ x: box.x, y: box.y })
+      .borderRadius(14)
+      .border({ width: 1, color: this.theme.sub, style: BorderStyle.Dashed })
+      .backgroundColor('#00000000')
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+    Text(box.text === '' ? '外框' : box.text)
+      .fontSize(10)
+      .fontColor(this.theme.sub)
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .width(box.width - 44)
+      .position({ x: box.textX, y: box.textY })
+      .hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+    Text('×')
+      .fontSize(11)
+      .fontColor(this.theme.sub)
+      .width(16)
+      .height(16)
+      .textAlign(TextAlign.Center)
+      .borderRadius(8)
+      .backgroundColor(this.theme.card)
+      .border({ width: 1, color: this.theme.divider })
+      .position({ x: box.closeX, y: box.closeY })
+      .accessibilityText('删除这个外框')
+      .onClick(() => { this.removeExtra(OUTLINE_EXTRA_REMOVE_BOUNDARY, box.boundaryId) })
+  }
+
   /** 概要：括号折线 + 文字 + 删除（文字挂在括号外侧中央，照 XMind 的样子） */
   @Builder
   summaryMark(box: OutlineSummaryBox) {
@@ -1169,7 +1237,8 @@ export struct StructurePage {
   @Builder
   extraEditor() {
     Column() {
-      Text(this.extraMode === 'summary' ? '概要' : (this.extraMode === 'label' ? '标签' : '关系标签'))
+      Text(this.extraMode === 'summary' ? '概要' : (this.extraMode === 'label' ? '标签'
+        : (this.extraMode === 'boundary' ? '外框标题（可留空）' : '关系标签')))
         .fontSize(11)
         .fontColor(this.theme.sub)
       TextInput({ text: this.extraText })
@@ -1317,6 +1386,11 @@ export struct StructurePage {
     Scroll() {
       Scroll() {
         Stack({ alignContent: Alignment.TopStart }) {
+          // 外框最底层：它是个大矩形，压在连线和节点下面才不会盖住内容
+          ForEach(this.boundaryBoxes, (box: OutlineBoundaryBox, index: number) => {
+            this.boundaryMark(box)
+          }, (box: OutlineBoundaryBox, index: number) => 'bd' + index.toString() + '|' + box.boundaryId + '|' +
+            box.x.toFixed(1) + '|' + box.y.toFixed(1) + '|' + box.width.toFixed(1) + '|' + box.height.toFixed(1))
           // 连线层：普通组件（不是画布），坐标与下面的节点同一套，先声明所以在底层
           ForEach(this.wires, (wire: OutlineWire, index: number) => {
             this.wireLine(wire)

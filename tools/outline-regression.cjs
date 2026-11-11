@@ -33,7 +33,8 @@ const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutli
   ' OUTLINE_NODE_W, OUTLINE_NODE_H, OUTLINE_COL_GAP, OUTLINE_PAD, extractHeadings, buildOutlineSnapshot,'+
   ' outlineConnectors, outlineWires, OUTLINE_WIRE_PAD, OUTLINE_WIRE_STEPS,'+
   ' OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,'+
-  ' OutlineSummary, OutlineRelation, outlineSummaryBoxes, outlineRelationWires, summaryRangeOf,'+
+  ' OutlineSummary, OutlineRelation, OutlineBoundary, OUTLINE_BOUNDARY_PAD, outlineBoundaryBoxes, outlineSummaryBoxes,'+
+  ' outlineRelationWires, summaryRangeOf,'+
   ' OUTLINE_SUMMARY_GAP, OutlineNodeStyle, isBlankNodeStyle, findNodeStyle, toggleMarker, nodeLabelY,'+
   ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_DOWN, OUTLINE_LAYOUT_TABLE,'+
   ' OUTLINE_AXIS_X, OUTLINE_AXIS_Y, OUTLINE_SIB_GAP, OUTLINE_LEVEL_GAP,'+
@@ -610,6 +611,35 @@ check('纵向布局同样受折叠影响', () => {
   const folded = api.layoutOutline(nodes, new Set(['p1']), 1, api.OUTLINE_LAYOUT_DOWN);
   assert.equal(folded.nodes.length, open.nodes.length - 1, '折叠后子节点不参与布局');
   assert.ok(folded.height < open.height, '折叠后画布随之变矮');
+});
+
+check('外框：把同层的一段圈起来，端点缺失或跨分支就不画', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 2, title: '一三', startOffset: 6, endOffset: 7 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  const boxes = api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b1', 'p2', 'p3', '这一组')]);
+  assert.equal(boxes.length, 1);
+  const box = boxes[0];
+  const a = byId('p2');
+  const b = byId('p3');
+  // 框要包住两个成员，并留出边距
+  assert.ok(box.x <= a.x - api.OUTLINE_BOUNDARY_PAD + 0.001, '左边留出边距');
+  assert.ok(box.x + box.width >= b.x + api.OUTLINE_NODE_W + api.OUTLINE_BOUNDARY_PAD - 0.001, '右边留出边距');
+  assert.ok(box.y + box.height >= b.y + api.OUTLINE_NODE_H + api.OUTLINE_BOUNDARY_PAD - 0.001, '下边留出边距');
+  assert.ok(box.height > api.OUTLINE_NODE_H * 2, '纵向要覆盖两行');
+  // 标题与删除按钮都落在框内（不会跑到画布外）
+  assert.ok(box.textX >= box.x && box.textX < box.x + box.width);
+  assert.ok(box.textY >= box.y && box.textY < box.y + box.height);
+  assert.ok(box.closeX > box.textX && box.closeX + 16 <= box.x + box.width);
+  // 端点缺失 / 跨分支 / 只有一个成员 → 不画
+  assert.equal(api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b2', 'p2', 'gone', '')]).length, 0);
+  assert.equal(api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b3', 'p1', 'p2', '')]).length, 0);
+  assert.equal(api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b4', 'p2', 'p2', '')]).length, 0);
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

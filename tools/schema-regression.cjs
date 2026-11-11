@@ -51,7 +51,8 @@ check('空库可完整建表（含外键）且可重复执行', () => {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     .all().map((row) => row.name);
   const expected = ['books', 'canvas_links', 'canvas_placements', 'canvases', 'chapters',
-    'characters', 'doc_map_node', 'doc_map_relation', 'doc_map_summary', 'doc_paragraphs', 'doc_runs',
+    'characters', 'doc_map_boundary', 'doc_map_node', 'doc_map_relation', 'doc_map_summary',
+    'doc_paragraphs', 'doc_runs',
     'inspirations', 'relationships', 'schema_meta', 'topic_evidence', 'topics', 'world_settings'];
   for (let i = 0; i < expected.length; i++) {
     assert.ok(tables.indexOf(expected[i]) >= 0, '缺表 ' + expected[i] + '，实际: ' + tables.join(','));
@@ -60,13 +61,14 @@ check('空库可完整建表（含外键）且可重复执行', () => {
     .all().map((row) => row.name);
   ['idx_canvas_book', 'idx_topics_book', 'idx_evidence_topic', 'idx_placement_canvas',
     'idx_placement_parent', 'idx_link_canvas', 'idx_doc_paragraphs_order',
-    'idx_doc_runs_para', 'idx_map_summary_doc', 'idx_map_relation_doc', 'idx_map_node_doc'].forEach((name) => {
+    'idx_doc_runs_para', 'idx_map_summary_doc', 'idx_map_relation_doc', 'idx_map_node_doc',
+    'idx_map_boundary_doc'].forEach((name) => {
     assert.ok(indexes.indexOf(name) >= 0, '缺索引 ' + name);
   });
   db.close();
 });
 
-check('旧库（仅 books/chapters）升级后 17 张业务表齐全', () => {
+check('旧库（仅 books/chapters）升级后 18 张业务表齐全', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('CREATE TABLE books (id TEXT PRIMARY KEY, name TEXT NOT NULL, mode TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
@@ -75,7 +77,7 @@ check('旧库（仅 books/chapters）升级后 17 张业务表齐全', () => {
     db.exec(sqls[i]);
   }
   const count = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().n;
-  assert.ok(count >= 17, '升级后表数量不足: ' + count);
+  assert.ok(count >= 18, '升级后表数量不足: ' + count);
   db.close();
 });
 
@@ -92,6 +94,8 @@ check('导图附加信息（概要/关系线/节点样式）随文稿级联删�
     "VALUES ('ch1', 'r1', 'p1', 'p3', 'A 论证 B', 'relate', 1)");
   db.exec("INSERT INTO doc_map_node (chapter_id, para_id, shape, fill, bold, markers, label, updated_at) " +
     "VALUES ('ch1', 'p1', 'pill', '#D2543F', 1, '⭐,✅', '重点', 1)");
+  db.exec("INSERT INTO doc_map_boundary (chapter_id, boundary_id, start_para_id, end_para_id, text, created_at) " +
+    "VALUES ('ch1', 'b1', 'p1', 'p2', '这一组', 1)");
   assert.throws(() => {
     db.exec("INSERT INTO doc_map_summary (chapter_id, summary_id, start_para_id, end_para_id, text, created_at) " +
       "VALUES ('missing', 's2', 'p1', 'p2', '', 1)");
@@ -104,6 +108,7 @@ check('导图附加信息（概要/关系线/节点样式）随文稿级联删�
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_map_summary").get().n, 0, '删文稿应带走概要');
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_map_relation").get().n, 0, '删文稿应带走关系线');
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_map_node").get().n, 0, '删文稿应带走节点样式');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM doc_map_boundary").get().n, 0, '删文稿应带走外框');
   db.close();
 });
 

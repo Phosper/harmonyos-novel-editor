@@ -708,6 +708,7 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
         const looseMap: MapExtraBackupLoose = {
           summaries: payload.mapSummaries ?? [],
           relations: payload.mapRelations ?? [],
+          boundaries: payload.mapBoundaries ?? [],
           nodeStyles: payload.mapNodeStyles ?? []
         }
         await repos.mapExtraRepo.restoreRows(looseMap, chapterIdMap)
@@ -796,6 +797,7 @@ export class AppStores {  readonly ui: UiStore = new UiStore()
       canvasLinks: canvasBundle.canvasLinks,
       mapSummaries: mapBundle.summaries,
       mapRelations: mapBundle.relations,
+      mapBoundaries: mapBundle.boundaries,
       mapNodeStyles: mapBundle.nodeStyles
     }
     return payload

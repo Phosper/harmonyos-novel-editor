@@ -31,7 +31,7 @@ class StoreDouble {
   constructor() {
     this.tables = new Map(['books', 'chapters', 'characters', 'world_settings', 'inspirations', 'relationships',
       'topics', 'topic_evidence', 'canvases', 'canvas_placements', 'canvas_links',
-      'doc_paragraphs', 'doc_runs', 'doc_map_summary', 'doc_map_relation', 'doc_map_node', 'schema_meta']
+      'doc_paragraphs', 'doc_runs', 'doc_map_summary', 'doc_map_relation', 'doc_map_node', 'doc_map_boundary', 'schema_meta']
       .map(name => [name, new Map()]));
     this.routes = []; this.activeTx = null; this.nextRowId = 1;
   }
@@ -178,6 +178,7 @@ for (const file of [
 ]) load(file + '.ets');
 const api = vm.runInContext('({AppStores, EditorStore, OpenDoc, SaveState, ChapterFormat, BookMode, LibId, MAX_CONTENT_BYTES,' +
   ' runInTransaction, chapterRepo, canvasRepo, mapExtraRepo, OutlineExtras, OutlineSummary, OutlineRelation,' +
+  ' OutlineBoundary,' +
   ' OutlineNodeStyle,' +
   ' CanvasCardKind, CanvasBoardScope, CanvasEvidenceKind, CanvasLinkKind,' +
   ' canvasFindPlacement, documentSession})', context);
@@ -960,6 +961,30 @@ async function check(name, run) { await run(); checks++; console.log('PASS ' + n
     assert.equal(payload.mapSummaries[0].chapterId, 'a');
     assert.equal(payload.mapRelations.length, 1);
     assert.equal(payload.mapRelations[0].label, '论证');
+  });
+
+  await check('map extra: 外框整篇覆盖写、按章节读回、进备份', async () => {
+    fixture();
+    const extras = new api.OutlineExtras();
+    extras.docId = 'a';
+    extras.boundaries.push(new api.OutlineBoundary('b1', 'p2', 'p4', '这一组'));
+    await api.mapExtraRepo.replace('a', extras);
+    const loaded = await api.mapExtraRepo.load('a');
+    assert.equal(loaded.boundaries.length, 1);
+    assert.equal(loaded.boundaries[0].text, '这一组');
+    assert.equal(loaded.boundaries[0].endParaId, 'p4');
+    const bundle = await api.mapExtraRepo.exportByChapterIds(['a']);
+    assert.equal(bundle.boundaries.length, 1);
+    assert.equal(bundle.boundaries[0].chapterId, 'a');
+    await api.mapExtraRepo.restoreRows({boundaries: bundle.boundaries}, new Map([['a', 'new-a']]));
+    const rows = [...store.tables.get('doc_map_boundary').values()].filter(row => row.chapter_id === 'new-a');
+    assert.equal(rows.length, 1, '恢复出来的外框挂到新章节 id');
+    assert.notEqual(rows[0].boundary_id, 'b1', '外框自身 id 重新发号');
+    // 整篇覆盖：清空后再写，旧行不能留
+    const empty = new api.OutlineExtras();
+    empty.docId = 'a';
+    await api.mapExtraRepo.replace('a', empty);
+    assert.equal((await api.mapExtraRepo.load('a')).boundaries.length, 0);
   });
 
   await check('map extra: 节点样式（形状/填充/加粗/标记/标签）来回读写', async () => {

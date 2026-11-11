@@ -2,7 +2,7 @@
 // 随 chapters 级联删除（DatabaseHelper 已开 PRAGMA foreign_keys = ON）。
 import { relationalStore } from '@kit.ArkData'
 import { BaseDao } from './BaseDao'
-import { OutlineSummary, OutlineRelation, OutlineNodeStyle } from 'feature_contracts'
+import { OutlineSummary, OutlineRelation, OutlineNodeStyle, OutlineBoundary } from 'feature_contracts'
 
 /** 标记列表在库里存成逗号分隔：图标本身不含逗号，够用且可读 */
 function joinMarkers(markers: string[]): string {
@@ -151,6 +151,42 @@ export class MapNodeDao extends BaseDao<OutlineNodeStyle> {
       markers: joinMarkers(style.markers),
       label: style.label,
       updated_at: updatedAt
+    })
+  }
+
+  async deleteByDoc(chapterId: string): Promise<void> {
+    const predicates: relationalStore.RdbPredicates = this.newPredicates()
+    predicates.equalTo('chapter_id', chapterId)
+    await this.deleteRow(predicates)
+  }
+}
+
+/** 外框：一张文稿下若干行，按创建顺序读 */
+export class MapBoundaryDao extends BaseDao<OutlineBoundary> {
+  protected getTableName(): string {
+    return 'doc_map_boundary'
+  }
+
+  protected rowToModel(rs: relationalStore.ResultSet): OutlineBoundary {
+    return new OutlineBoundary(this.safeGetString(rs, 'boundary_id'), this.safeGetString(rs, 'start_para_id'),
+      this.safeGetString(rs, 'end_para_id'), this.safeGetString(rs, 'text'))
+  }
+
+  async listByDoc(chapterId: string): Promise<OutlineBoundary[]> {
+    const predicates: relationalStore.RdbPredicates = this.newPredicates()
+    predicates.equalTo('chapter_id', chapterId)
+    predicates.orderByAsc('created_at')
+    return this.queryRows(predicates)
+  }
+
+  async insertBoundary(chapterId: string, boundary: OutlineBoundary, createdAt: number): Promise<void> {
+    await this.insertRow({
+      chapter_id: chapterId,
+      boundary_id: boundary.id,
+      start_para_id: boundary.startParaId,
+      end_para_id: boundary.endParaId,
+      text: boundary.text,
+      created_at: createdAt
     })
   }
 

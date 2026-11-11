@@ -283,6 +283,17 @@ export class DatabaseHelper {
         'PRIMARY KEY (chapter_id, para_id),' +
         'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +
         ')',
+      // X2：外框（把同层的一段主题圈起来）
+      'CREATE TABLE IF NOT EXISTS doc_map_boundary (' +
+        'chapter_id TEXT NOT NULL,' +
+        'boundary_id TEXT NOT NULL,' +
+        'start_para_id TEXT NOT NULL,' +
+        'end_para_id TEXT NOT NULL,' +
+        "text TEXT NOT NULL DEFAULT ''," +
+        'created_at INTEGER NOT NULL,' +
+        'PRIMARY KEY (chapter_id, boundary_id),' +
+        'FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE' +
+        ')',
       'CREATE INDEX IF NOT EXISTS idx_canvas_book ON canvases(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_topics_book ON topics(book_id)',
       'CREATE INDEX IF NOT EXISTS idx_evidence_topic ON topic_evidence(topic_id)',
@@ -293,7 +304,8 @@ export class DatabaseHelper {
       'CREATE INDEX IF NOT EXISTS idx_doc_runs_para ON doc_runs(doc_id, para_id)',
       'CREATE INDEX IF NOT EXISTS idx_map_summary_doc ON doc_map_summary(chapter_id)',
       'CREATE INDEX IF NOT EXISTS idx_map_relation_doc ON doc_map_relation(chapter_id)',
-      'CREATE INDEX IF NOT EXISTS idx_map_node_doc ON doc_map_node(chapter_id)'
+      'CREATE INDEX IF NOT EXISTS idx_map_node_doc ON doc_map_node(chapter_id)',
+      'CREATE INDEX IF NOT EXISTS idx_map_boundary_doc ON doc_map_boundary(chapter_id)'
     ]
     for (const sql of sqls) {
       try {
