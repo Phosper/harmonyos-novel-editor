@@ -5,6 +5,7 @@
 // 宿主关闭导图时 take 走并定位。两个包都只依赖 core_runtime，不互相依赖。
 //
 // 可变状态放在 core_runtime（允许），契约包保持无状态。
+import { image } from '@kit.ImageKit'
 import { OutlineSnapshot } from 'feature_contracts'
 import { OutlineCommand } from 'feature_contracts'
 import { OutlineExtras } from 'feature_contracts'
@@ -29,6 +30,12 @@ export type OutlineExtrasHandler = (command: OutlineExtraCommand) => OutlineExtr
  */
 export type OutlineHistoryHandler = (redo: boolean) => OutlineSnapshot | null
 
+/**
+ * 导出通道：文本类格式（md / opml / mm）由页面用契约里的纯函数生成，
+ * 图片则由页面抓一张 PixelMap 一起交过来——写文件是宿主的事（要弹系统保存框）。
+ */
+export type OutlineExportHandler = (format: string, text: string, pixelMap: image.PixelMap | null) => boolean
+
 class OutlineService {
   private snapshot: OutlineSnapshot | null = null
   private pendingReveal: number = -1
@@ -38,6 +45,7 @@ class OutlineService {
   private extras: OutlineExtras = new OutlineExtras()
   private extrasHandler: OutlineExtrasHandler | null = null
   private historyHandler: OutlineHistoryHandler | null = null
+  private exportHandler: OutlineExportHandler | null = null
 
   /** 发布当前文稿的大纲（导图页打开前调用） */
   publish(snapshot: OutlineSnapshot): void {
@@ -104,6 +112,18 @@ class OutlineService {
     return next
   }
 
+  setExportHandler(handler: OutlineExportHandler | null): void {
+    this.exportHandler = handler
+  }
+
+  /** 导图点导出：宿主弹保存框写文件，返回是否受理 */
+  requestExport(format: string, text: string, pixelMap: image.PixelMap | null): boolean {
+    if (this.exportHandler === null) {
+      return false
+    }
+    return this.exportHandler(format, text, pixelMap)
+  }
+
   /** 导图发起的附加信息编辑：成功返回新副本，失败返回 null */
   dispatchExtra(command: OutlineExtraCommand): OutlineExtras | null {
     if (this.extrasHandler === null) {
@@ -130,6 +150,7 @@ class OutlineService {
     this.extras = new OutlineExtras()
     this.extrasHandler = null
     this.historyHandler = null
+    this.exportHandler = null
   }
 }
 

@@ -1,5 +1,6 @@
 // 编辑视图 —— 标签栏 + 工具条 + 正文编辑面
 import { promptAction, Chip, ChipSize } from '@kit.ArkUI'
+import { image } from '@kit.ImageKit'
 import { pasteboard } from '@kit.BasicServicesKit'
 import { tokensFor, WeaverColorSet, WeaverRadii, WeaverSpacing, WeaverMobile, paperLineHeightVp, DEFAULT_THEME_ID, blendHexColor } from '../constants/DesignTokens'
 import type { AppStores } from '../store/AppStores'
@@ -24,6 +25,7 @@ import type { OutlineSnapshot, OutlineExtras } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
 import { applyOutlineCommand, applyOutlineHistory } from '../editor/OutlineCommands'
 import { loadMapExtras, applyMapExtraCommand } from '../editor/MapExtras'
+import { exportOutlineFile } from '../editor/MapExport'
 import { Logger } from '../utils/Logger'
 import { EditorTools } from './EditorTools'
 import { OutlinePanel } from './OutlinePanel'
@@ -642,6 +644,11 @@ export struct EditorPane {
     outlineService().setCommandHandler(applyOutlineCommand)
     // 撤销/重做交给宿主：结构编辑本来就在正文撤销栈里
     outlineService().setHistoryHandler(applyOutlineHistory)
+    // 导出：页面把结构变成文本 / 抓一张图，宿主负责弹保存框写文件
+    const snapshotTitle: string = snapshot.docTitle
+    outlineService().setExportHandler((format: string, text: string, pixelMap: image.PixelMap | null): boolean => {
+      return exportOutlineFile(format, text, pixelMap, snapshotTitle)
+    })
     // 附加信息（概要/关系线）在侧车表里：打开前读一次，供导图页渲染
     const extras: OutlineExtras = await loadMapExtras(stores.editor.activeId)
     outlineService().publishExtras(extras)

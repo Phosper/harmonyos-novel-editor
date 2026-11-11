@@ -311,6 +311,35 @@ export class ExportService {
     }
   }
 
+  /** 弹系统保存框并写出二进制（导图导出 PNG 用） */
+  static async saveBytes(defaultFileName: string, buffer: ArrayBuffer): Promise<boolean> {
+    try {
+      const options: picker.DocumentSaveOptions = new picker.DocumentSaveOptions()
+      options.newFileNames = [defaultFileName]
+      const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker()
+      const saveResult: Array<string> = await documentPicker.save(options)
+      if (saveResult.length === 0) {
+        return false
+      }
+      const uri: string = saveResult[0]
+      const file: fileIo.File = await fileIo.open(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC)
+      try {
+        await fileIo.write(file.fd, buffer)
+        await fileIo.fsync(file.fd)
+      } finally {
+        try {
+          await fileIo.close(file)
+        } catch (e) {
+          Logger.error('Export close failed: ' + String(e))
+        }
+      }
+      return true
+    } catch (e) {
+      Logger.error('Export bytes failed: ' + String(e))
+      throw e as Error
+    }
+  }
+
   /** 导出 JSON 备份载荷 */
   static async exportBackupJson(fileName: string, payload: Object): Promise<boolean> {
     return ExportService.saveText(fileName + '_backup.json', JSON.stringify(payload, null, 2))

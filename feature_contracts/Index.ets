@@ -82,3 +82,15 @@ export {
   outlineRelationWires,
   summaryRangeOf
 } from './src/main/ets/contracts/OutlineExtras'
+
+// 导图 → 文本互通（Markdown / OPML / FreeMind）
+export {
+  outlineMarkdown,
+  outlineOpml,
+  outlineFreemind,
+  outlineExportExtension,
+  OUTLINE_EXPORT_MD,
+  OUTLINE_EXPORT_OPML,
+  OUTLINE_EXPORT_FREEMIND,
+  OUTLINE_EXPORT_PNG
+} from './src/main/ets/contracts/OutlineExport'

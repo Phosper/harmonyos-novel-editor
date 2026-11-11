@@ -25,6 +25,7 @@ for (const source of [
   read('editor/flowtext/model/FormatCodec.ets'),
   readContract('OutlineLayout.ets'),
   readContract('OutlineExtras.ets'),
+  readContract('OutlineExport.ets'),
   read('editor/OutlineExtract.ets')
 ]) {
   vm.runInContext(strip(source), context);
@@ -38,7 +39,8 @@ const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutli
   ' OUTLINE_SUMMARY_GAP, OutlineNodeStyle, isBlankNodeStyle, findNodeStyle, toggleMarker, nodeLabelY,'+
   ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_DOWN, OUTLINE_LAYOUT_TABLE,'+
   ' OUTLINE_AXIS_X, OUTLINE_AXIS_Y, OUTLINE_SIB_GAP, OUTLINE_LEVEL_GAP,'+
-  ' OUTLINE_TABLE_COL_W, OUTLINE_TABLE_ROW_STEP })', context);
+  ' OUTLINE_TABLE_COL_W, OUTLINE_TABLE_ROW_STEP,'+
+  ' outlineMarkdown, outlineOpml, outlineFreemind, OutlineSnapshot, OutlineNode })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -646,6 +648,34 @@ check('外框：把同层的一段圈起来，端点缺失或跨分支就不画'
   assert.equal(api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b2', 'p2', 'gone', '')]).length, 0);
   assert.equal(api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b3', 'p1', 'p2', '')]).length, 0);
   assert.equal(api.outlineBoundaryBoxes(layout.nodes, [new api.OutlineBoundary('b4', 'p2', 'p2', '')]).length, 0);
+});
+
+check('导出：Markdown / OPML / FreeMind 按层级缩进，特殊字符要转义', () => {
+  const nodes = api.buildOutlineFromParagraphs('论文 <草稿>', [
+    { id: 'p1', kind: 1, title: '一 & 二', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '"引号"', startOffset: 2, endOffset: 3 }
+  ]);
+  const snapshot = new api.OutlineSnapshot();
+  snapshot.docTitle = '论文 <草稿>';
+  snapshot.nodes = nodes;
+  const md = api.outlineMarkdown(snapshot);
+  assert.ok(md.startsWith('# 论文 <草稿>'), 'md 用一级标题起头');
+  assert.ok(md.indexOf('\n- 一 & 二') > 0, '一级主题是一个列表项');
+  assert.ok(md.indexOf('\n  - "引号"') > 0, '子主题缩进两格');
+  const opml = api.outlineOpml(snapshot);
+  assert.ok(opml.indexOf('<?xml version="1.0"') === 0, 'opml 带声明');
+  assert.ok(opml.indexOf('text="论文 &lt;草稿&gt;"') > 0, 'opml 属性要转义尖括号');
+  assert.ok(opml.indexOf('text="一 &amp; 二"') > 0, 'opml 属性要转义 &');
+  assert.ok(opml.indexOf('text="&quot;引号&quot;"') > 0, '引号也要转义');
+  const mm = api.outlineFreemind(snapshot);
+  assert.ok(mm.indexOf('<map version="1.0.1">') === 0, 'freemind 头');
+  assert.ok(mm.indexOf('</map>') > 0, 'freemind 尾');
+  assert.equal((mm.match(/<node /g) || []).length, 3, '根 + 两个主题');
+  // 空快照不能吐半截 XML
+  const empty = new api.OutlineSnapshot();
+  assert.equal(api.outlineMarkdown(empty), '');
+  assert.equal(api.outlineOpml(empty), '');
+  assert.equal(api.outlineFreemind(empty), '');
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

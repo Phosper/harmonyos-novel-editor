@@ -16,8 +16,11 @@ import {
   OUTLINE_EXTRA_ADD_BOUNDARY, OUTLINE_EXTRA_REMOVE_BOUNDARY, OUTLINE_EXTRA_SET_NODE_STYLE,
   OUTLINE_SHAPE_CARD, OUTLINE_SHAPE_PILL, OUTLINE_SHAPE_PLAIN,
   OUTLINE_SUMMARY_TEXT_W, findNodeStyle, isBlankNodeStyle, toggleMarker, nodeLabelY,
-  outlineSummaryBoxes, outlineRelationWires, summaryRangeOf
+  outlineSummaryBoxes, outlineRelationWires, summaryRangeOf,
+  outlineMarkdown, outlineOpml, outlineFreemind,
+  OUTLINE_EXPORT_MD, OUTLINE_EXPORT_OPML, OUTLINE_EXPORT_FREEMIND, OUTLINE_EXPORT_PNG
 } from 'feature_contracts'
+import { image } from '@kit.ImageKit'
 import { outlineService } from 'core_runtime'
 
 /** 主题色由宿主注入：结构包不认识 entry 的 DesignTokens */
@@ -56,6 +59,7 @@ const KEY_Z: number = 2044
 const RENAME_INPUT_ID: string = 'structure-rename-input'
 const EXTRA_INPUT_ID: string = 'structure-extra-input'
 const NOTE_INPUT_ID: string = 'structure-note-input'
+const MAP_ID: string = 'structure-map'
 /** 可选的节点标记（图标）：直接存字符，没有字体/图片依赖 */
 const NODE_MARKERS: string[] = ['⭐', '❗', '❓', '✅', '🔥']
 /** 节点填充色板：与分支配色同一套，整张图看起来是一家的 */
@@ -407,6 +411,45 @@ export struct StructurePage {
       })
     } catch (e) {
       // 滚动失败不影响演说（镜头不动而已）
+    }
+  }
+
+  /** 导出：md / opml / mm 都是纯文本（Xmind 能直接导入），png 抓整张地图 */
+  private exportAs(format: string): void {
+    const snapshot: OutlineSnapshot | null = outlineService().current()
+    if (snapshot === null || snapshot.nodes.length <= 1) {
+      this.toast('还没有可导出的结构')
+      return
+    }
+    if (format === OUTLINE_EXPORT_PNG) {
+      this.exportPng()
+      return
+    }
+    let text: string = ''
+    if (format === OUTLINE_EXPORT_OPML) {
+      text = outlineOpml(snapshot)
+    } else if (format === OUTLINE_EXPORT_FREEMIND) {
+      text = outlineFreemind(snapshot)
+    } else {
+      text = outlineMarkdown(snapshot)
+    }
+    const accepted: boolean = outlineService().requestExport(format, text, null)
+    this.toast(accepted ? '已交给保存框' : '导出失败')
+  }
+
+  /** 抓一张整图的 PNG：地图容器整体截图（3 倍太吃内存，用 2 倍） */
+  private exportPng(): void {
+    try {
+      this.getUIContext().getComponentSnapshot().get(MAP_ID, { scale: 2, waitUntilRenderFinished: true })
+        .then((pixelMap: image.PixelMap) => {
+          const accepted: boolean = outlineService().requestExport(OUTLINE_EXPORT_PNG, '', pixelMap)
+          this.toast(accepted ? '已交给保存框' : '导出图片失败')
+        })
+        .catch((e: Error) => {
+          this.toast('导出图片失败：' + String(e))
+        })
+    } catch (e) {
+      this.toast('当前设备不支持截图导出')
     }
   }
 
@@ -1791,6 +1834,7 @@ export struct StructurePage {
             this.extraEditor()
           }
         }
+        .id(MAP_ID)
         .width(this.mapW)
         .height(this.mapH)
       }
@@ -1834,6 +1878,10 @@ export struct StructurePage {
   private applyStyleTag(tag: string): void {
     if (tag.indexOf('layout-') === 0) {
       this.setLayoutMode(tag.substring(7))
+      return
+    }
+    if (tag.indexOf('export-') === 0) {
+      this.exportAs(tag.substring(7))
       return
     }
     if (tag === 'minimap') {
@@ -2010,6 +2058,14 @@ export struct StructurePage {
           this.panelChip('无', this.endStyle === 'none', 'end-none')
           this.panelChip('圆点', this.endStyle === 'dot', 'end-dot')
           this.panelChip('箭头', this.endStyle === 'arrow', 'end-arrow')
+        }
+
+        this.panelTitle('导出')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('Markdown', false, 'export-' + OUTLINE_EXPORT_MD)
+          this.panelChip('OPML', false, 'export-' + OUTLINE_EXPORT_OPML)
+          this.panelChip('FreeMind', false, 'export-' + OUTLINE_EXPORT_FREEMIND)
+          this.panelChip('PNG', false, 'export-' + OUTLINE_EXPORT_PNG)
         }
 
         this.panelTitle('视图')
