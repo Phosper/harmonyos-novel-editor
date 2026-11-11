@@ -45,6 +45,12 @@ const KEY_FORWARD_DEL: number = 2071
 const KEY_DPAD_UP: number = 2012
 const KEY_DPAD_DOWN: number = 2013
 const KEY_F2: number = 2092
+const KEY_0: number = 2000
+const KEY_MINUS: number = 2057
+const KEY_EQUALS: number = 2058
+const KEY_PLUS: number = 2066
+const KEY_Y: number = 2037
+const KEY_Z: number = 2044
 const RENAME_INPUT_ID: string = 'structure-rename-input'
 const EXTRA_INPUT_ID: string = 'structure-extra-input'
 const NOTE_INPUT_ID: string = 'structure-note-input'
@@ -116,10 +122,8 @@ export struct StructurePage {
   private focusParaId: string = ''
   /** 当前分支里的段落集合（数组判存，避免 Set 的可观测问题） */
   @Local focusIds: string[] = []
-  /** 分屏裁剪：滚动位置（只在主题很多时才用来过滤渲染） */
-  @Local scrollTop: number = 0
-  private hScroller: Scroller = new Scroller()
-  private vScroller: Scroller = new Scroller()
+  /** 缩略图（右下角小窗）：整张图的形状一眼可见 */
+  @Local showMinimap: boolean = false
   /** 备注抽屉：正在看/写哪一节的备注（'' = 关） */
   @Local noteParaId: string = ''
   @Local noteText: string = ''
@@ -291,6 +295,25 @@ export struct StructurePage {
     }
     this.rebuildFocus()
     this.layoutRev = this.layoutRev + 1
+  }
+
+  /** 撤销/重做：结构改动都在正文撤销栈里，这里只是转一道手 */
+  private dispatchHistory(redo: boolean): void {
+    const next: OutlineSnapshot | null = outlineService().dispatchHistory(redo)
+    if (next === null) {
+      this.toast(redo ? '没有可重做的改动' : '没有可撤销的改动')
+      return
+    }
+    this.selectedIds = []
+    this.applySnapshot(next)
+  }
+
+  /** 缩略图缩放比：整张图塞进 150×104 的小窗 */
+  private miniScale(): number {
+    if (this.mapW <= 0 || this.mapH <= 0) {
+      return 0.01
+    }
+    return Math.min(150 / this.mapW, 104 / this.mapH)
   }
 
   private styleOf(paraId: string): OutlineNodeStyle | undefined {
@@ -962,6 +985,25 @@ export struct StructurePage {
     if (this.placed.length === 0) {
       return false
     }
+    const ctrl: boolean = this.hasModifier(event, 'ctrl')
+    if (ctrl && (code === KEY_Z || code === KEY_Y)) {
+      // Ctrl+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做（与正文编辑器一致）
+      const redo: boolean = code === KEY_Y || this.hasModifier(event, 'shift')
+      this.dispatchHistory(redo)
+      return true
+    }
+    if (ctrl && code === KEY_0) {
+      this.fitToWindow()
+      return true
+    }
+    if (ctrl && (code === KEY_EQUALS || code === KEY_PLUS)) {
+      this.setZoom(this.zoom * 1.15)
+      return true
+    }
+    if (ctrl && code === KEY_MINUS) {
+      this.setZoom(this.zoom / 1.15)
+      return true
+    }
     const alt: boolean = this.hasModifier(event, 'alt')
     if ((code === KEY_DPAD_UP || code === KEY_DPAD_DOWN) && alt) {
       // Alt+方向：搬整节（正文跟着走）；没有修饰键时才是移动选中
@@ -1145,6 +1187,18 @@ export struct StructurePage {
           .onClick(() => { this.fitToWindow() })
       }
       .margin({ right: 12 })
+
+      Text('↶')
+        .fontSize(15).fontColor(this.theme.text)
+        .width(28).height(28).textAlign(TextAlign.Center)
+        .accessibilityText('撤销上一次结构改动')
+        .onClick(() => { this.dispatchHistory(false) })
+      Text('↷')
+        .fontSize(15).fontColor(this.theme.text)
+        .width(28).height(28).textAlign(TextAlign.Center)
+        .margin({ right: 8 })
+        .accessibilityText('重做')
+        .onClick(() => { this.dispatchHistory(true) })
 
       Text('关闭')
         .fontSize(13).fontColor(this.theme.text)
@@ -1539,6 +1593,18 @@ export struct StructurePage {
         .fontSize(12).fontColor(this.theme.sub)
         .margin({ top: 8 })
         .textAlign(TextAlign.Center)
+      Text('↶')
+        .fontSize(15).fontColor(this.theme.text)
+        .width(28).height(28).textAlign(TextAlign.Center)
+        .accessibilityText('撤销上一次结构改动')
+        .onClick(() => { this.dispatchHistory(false) })
+      Text('↷')
+        .fontSize(15).fontColor(this.theme.text)
+        .width(28).height(28).textAlign(TextAlign.Center)
+        .margin({ right: 8 })
+        .accessibilityText('重做')
+        .onClick(() => { this.dispatchHistory(true) })
+
       Text('关闭')
         .fontSize(13).fontColor(this.theme.text)
         .padding({ left: 16, right: 16, top: 8, bottom: 8 })
@@ -1650,6 +1716,10 @@ export struct StructurePage {
   private applyStyleTag(tag: string): void {
     if (tag.indexOf('layout-') === 0) {
       this.setLayoutMode(tag.substring(7))
+      return
+    }
+    if (tag === 'minimap') {
+      this.showMinimap = !this.showMinimap
       return
     }
     if (tag === 'thin') {
@@ -1824,6 +1894,11 @@ export struct StructurePage {
           this.panelChip('箭头', this.endStyle === 'arrow', 'end-arrow')
         }
 
+        this.panelTitle('视图')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('缩略图', this.showMinimap, 'minimap')
+        }
+
         this.panelTitle('节点')
         Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
           this.panelChip('卡片', this.nodeStyle === 'card', 'card')
@@ -1877,6 +1952,50 @@ export struct StructurePage {
     .align(Alignment.TopStart)
     .scrollBar(BarState.Off)
     .border({ width: { left: 1 }, color: this.theme.divider })
+  }
+
+  /** 缩略图：按布局把整张图缩成小色块（不抓屏，纯计算，滚动/缩放都跟得上） */
+  @Builder
+  minimap() {
+    Column() {
+      Row() {
+        Text('缩略图')
+          .fontSize(10).fontColor(this.theme.sub)
+        Blank()
+        Text('×')
+          .fontSize(11).fontColor(this.theme.sub)
+          .width(16).height(16).textAlign(TextAlign.Center)
+          .onClick(() => { this.showMinimap = false })
+      }
+      .width('100%')
+      .padding({ left: 8, right: 4, top: 2 })
+
+      Stack({ alignContent: Alignment.TopStart }) {
+        ForEach(this.placed, (node: PlacedNode, index: number) => {
+          Column()
+            .width(Math.max(2, OUTLINE_NODE_W * node.scale * this.miniScale()))
+            .height(Math.max(1.5, OUTLINE_NODE_H * node.scale * this.miniScale()))
+            .backgroundColor(node.depth === 0 ? this.theme.brand : this.branchColor(node.branchIndex))
+            .opacity(node.depth === 0 ? 1 : 0.6)
+            .position({
+              x: node.x * this.miniScale(),
+              y: node.y * this.miniScale()
+            })
+        }, (node: PlacedNode, index: number) => 'mini' + this.layoutRev.toString() + '|' + index.toString())
+      }
+      .width(154)
+      .height(108)
+      .margin({ left: 8, right: 8, bottom: 8 })
+      .backgroundColor(this.theme.bg)
+      .borderRadius(6)
+      .border({ width: 1, color: this.theme.divider })
+      .clip(true)
+    }
+    .width(170)
+    .backgroundColor(this.theme.bg)
+    .borderRadius(10)
+    .border({ width: 1, color: this.theme.divider })
+    .margin({ right: 16, bottom: 16 })
   }
 
   /** 备注抽屉：从右侧浮出，不占地图布局（浮层关掉后地图位置不变） */
@@ -1982,6 +2101,14 @@ export struct StructurePage {
 
       if (this.noteParaId !== '') {
         this.noteDrawer()
+      }
+      if (this.showMinimap && !this.empty) {
+        Stack({ alignContent: Alignment.BottomEnd }) {
+          this.minimap()
+        }
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.Transparent)
       }
     }
     .width('100%').height('100%')

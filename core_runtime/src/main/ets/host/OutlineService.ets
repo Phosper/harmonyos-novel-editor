@@ -22,6 +22,13 @@ export type OutlineCommandHandler = (command: OutlineCommand) => OutlineSnapshot
  */
 export type OutlineExtrasHandler = (command: OutlineExtraCommand) => OutlineExtras | null
 
+/**
+ * 撤销/重做：结构编辑已经在正文的撤销栈里（一次命令 = 一步），
+ * 所以导图只需要宿主把「退一步」翻译成正文撤销，再把新快照回传。
+ * redo = false 撤销、true 重做；返回 null 表示没有可撤销的步骤。
+ */
+export type OutlineHistoryHandler = (redo: boolean) => OutlineSnapshot | null
+
 class OutlineService {
   private snapshot: OutlineSnapshot | null = null
   private pendingReveal: number = -1
@@ -30,6 +37,7 @@ class OutlineService {
   /** 当前文稿的附加信息（概要/关系线）：不进正文，也不进快照版本号 */
   private extras: OutlineExtras = new OutlineExtras()
   private extrasHandler: OutlineExtrasHandler | null = null
+  private historyHandler: OutlineHistoryHandler | null = null
 
   /** 发布当前文稿的大纲（导图页打开前调用） */
   publish(snapshot: OutlineSnapshot): void {
@@ -80,6 +88,22 @@ class OutlineService {
     this.extrasHandler = handler
   }
 
+  setHistoryHandler(handler: OutlineHistoryHandler | null): void {
+    this.historyHandler = handler
+  }
+
+  /** 导图里点撤销/重做：成功返回新快照（导图据此重排），失败返回 null */
+  dispatchHistory(redo: boolean): OutlineSnapshot | null {
+    if (this.historyHandler === null) {
+      return null
+    }
+    const next: OutlineSnapshot | null = this.historyHandler(redo)
+    if (next !== null) {
+      this.snapshot = next
+    }
+    return next
+  }
+
   /** 导图发起的附加信息编辑：成功返回新副本，失败返回 null */
   dispatchExtra(command: OutlineExtraCommand): OutlineExtras | null {
     if (this.extrasHandler === null) {
@@ -105,6 +129,7 @@ class OutlineService {
     this.pendingReveal = -1
     this.extras = new OutlineExtras()
     this.extrasHandler = null
+    this.historyHandler = null
   }
 }
 

@@ -122,6 +122,34 @@ export function applyOutlineCommand(command: OutlineCommand): OutlineSnapshot | 
   return null
 }
 
+/**
+ * 导图里的撤销/重做。
+ * 结构编辑本来就落在正文撤销栈里（一次命令 = 一步），所以这里只是把
+ * "退一步"翻译成正文撤销，再用恢复后的模型重建快照。
+ */
+export function applyOutlineHistory(redo: boolean): OutlineSnapshot | null {
+  const doc = app.editor.activeDoc
+  if (doc === undefined) {
+    return null
+  }
+  if (redo) {
+    if (!app.editor.canRedo) {
+      return null
+    }
+    app.editor.redo()
+  } else {
+    if (!app.editor.canUndo) {
+      return null
+    }
+    app.editor.undo()
+  }
+  const model: DocModel | null = currentModel()
+  if (model === null) {
+    return null
+  }
+  return buildOutlineSnapshotFromModel(model, app.editor.contentRev)
+}
+
 /** 给导图页用的"能不能动"判断（灰化按钮用），不写正文 */
 export function canMoveOutline(paraId: string, up: boolean): boolean {
   const model: DocModel | null = currentModel()

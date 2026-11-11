@@ -22,7 +22,7 @@ import type { DocModel } from '../editor/model/DocumentModel'
 import { documentSession } from '../repository/DocumentSession'
 import type { OutlineSnapshot, OutlineExtras } from 'feature_contracts'
 import { outlineService } from 'core_runtime'
-import { applyOutlineCommand } from '../editor/OutlineCommands'
+import { applyOutlineCommand, applyOutlineHistory } from '../editor/OutlineCommands'
 import { loadMapExtras, applyMapExtraCommand } from '../editor/MapExtras'
 import { Logger } from '../utils/Logger'
 import { EditorTools } from './EditorTools'
@@ -640,6 +640,8 @@ export struct EditorPane {
     outlineService().publish(snapshot)
     // 导图的编辑命令交给宿主执行（结构包只发命令，不认识正文）
     outlineService().setCommandHandler(applyOutlineCommand)
+    // 撤销/重做交给宿主：结构编辑本来就在正文撤销栈里
+    outlineService().setHistoryHandler(applyOutlineHistory)
     // 附加信息（概要/关系线）在侧车表里：打开前读一次，供导图页渲染
     const extras: OutlineExtras = await loadMapExtras(stores.editor.activeId)
     outlineService().publishExtras(extras)
