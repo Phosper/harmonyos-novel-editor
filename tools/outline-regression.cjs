@@ -35,7 +35,9 @@ const api = vm.runInContext('({ FormatRun, FormatCodec, buildOutline, buildOutli
   ' OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,'+
   ' OutlineSummary, OutlineRelation, outlineSummaryBoxes, outlineRelationWires, summaryRangeOf,'+
   ' OUTLINE_SUMMARY_GAP, OutlineNodeStyle, isBlankNodeStyle, findNodeStyle, toggleMarker, nodeLabelY,'+
-  ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED })', context);
+  ' OUTLINE_LAYOUT_RIGHT, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_DOWN, OUTLINE_LAYOUT_TABLE,'+
+  ' OUTLINE_AXIS_X, OUTLINE_AXIS_Y, OUTLINE_SIB_GAP, OUTLINE_LEVEL_GAP,'+
+  ' OUTLINE_TABLE_COL_W, OUTLINE_TABLE_ROW_STEP })', context);
 
 let pass = 0;
 function check(name, action) {
@@ -495,7 +497,7 @@ check('节点样式：空白判定、标记上限三个、标签挂在节点下�
   assert.equal(api.nodeLabelY(node), node.y + api.OUTLINE_NODE_H + 2, '标签贴在节点下沿');
 });
 
-check('连线终点：曲线末端切线朝下/朝右，箭头能照它摆正', () => {
+check('连线终点：箭头按主轴摆正（横向朝左右、纵向朝上下）', () => {
   const nodes = api.buildOutlineFromParagraphs('书', [
     { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
     { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
@@ -505,20 +507,109 @@ check('连线终点：曲线末端切线朝下/朝右，箭头能照它摆正', 
   const links = api.outlineConnectors(layout.nodes);
   const wires = api.outlineWires(links);
   for (let i = 0; i < wires.length; i++) {
-    // 终点必须落在子节点那一侧的边上
     assert.ok(Math.abs(wires[i].endX - links[i].toX) < 0.001, '终点 x 与连线端点一致');
     assert.ok(Math.abs(wires[i].endY - links[i].toY) < 0.001, '终点 y 与连线端点一致');
+    assert.ok(Math.abs(Math.cos(wires[i].endAngle)) > 0.999, '横向布局的箭头朝左右');
   }
-  // 父在上、子在下 → 末段切线的 y 分量朝下（sin > 0）
-  const down = wires.find(w => w.endY > links[0].toY + 1);
-  if (down !== undefined) {
-    assert.ok(Math.sin(down.endAngle) > 0, '朝下走的线，箭头该向下');
-  }
-  // 折线的末段是竖直的
+  // 折线的末段同样是水平的（父缘→中缝→中缝→子缘）
   const elbows = api.outlineWires(links, api.OUTLINE_WIRE_STEPS, api.OUTLINE_WIRE_ELBOW);
   for (const w of elbows) {
-    assert.ok(Math.abs(Math.abs(Math.sin(w.endAngle)) - 1) < 0.001, '折线末段竖直，切线是 ±90°');
+    assert.ok(Math.abs(Math.cos(w.endAngle)) > 0.999, '横向折线的末段水平，箭头要横着摆');
   }
+});
+
+check('组织架构（向下）：根在上、兄弟不重叠、父节点居中在子节点上方', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 },
+    { id: 'p4', kind: 1, title: '二', startOffset: 6, endOffset: 7 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_DOWN);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  const root = layout.nodes[0];
+  const p1 = byId('p1');
+  assert.equal(root.axis, api.OUTLINE_AXIS_Y, '纵向主轴');
+  assert.equal(p1.y, api.OUTLINE_PAD + api.OUTLINE_LEVEL_GAP, '一层一格垂直间距');
+  assert.ok(root.y < p1.y, '根在子节点上方');
+  // 兄弟按文档顺序从左往右，且不重叠
+  assert.ok(byId('p2').x < byId('p3').x, '兄弟从左到右按顺序');
+  assert.ok(byId('p2').x + api.OUTLINE_NODE_W <= byId('p3').x, '兄弟不能重叠');
+  // 父节点居中在两个子节点之间
+  const c2center = byId('p2').x + api.OUTLINE_NODE_W / 2;
+  const c3center = byId('p3').x + api.OUTLINE_NODE_W / 2;
+  assert.ok(Math.abs((c2center + c3center) / 2 - (p1.x + api.OUTLINE_NODE_W / 2)) < 0.001, '父节点居中在子节点上方');
+  // 子树不越界
+  const minX = Math.min(...layout.nodes.map(n => n.x));
+  assert.ok(minX >= api.OUTLINE_PAD - 0.001, '最左节点不被画到负坐标');
+  assert.ok(layout.width >= byId('p2').x + api.OUTLINE_NODE_W, '宽度包住最右的节点');
+});
+
+check('树形表格：一列一层、一行一个主题，行高与列宽固定', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 1, title: '二', startOffset: 4, endOffset: 5 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_TABLE);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  assert.equal(byId('p1').x, api.OUTLINE_PAD + api.OUTLINE_TABLE_COL_W, '第二层在第 2 列');
+  assert.equal(byId('p2').x, api.OUTLINE_PAD + 2 * api.OUTLINE_TABLE_COL_W, '第三层在第 3 列');
+  assert.equal(byId('p3').x, api.OUTLINE_PAD + api.OUTLINE_TABLE_COL_W, '回到第一级也回到第 2 列');
+  // y 按文档顺序逐行递增（父子相邻，不会因为深度跳格）
+  const ys = layout.nodes.map(n => n.y);
+  for (let i = 1; i < ys.length; i++) {
+    assert.ok(ys[i] > ys[i - 1], '每行一个主题，y 单调递增');
+    assert.equal(ys[i] - ys[i - 1], api.OUTLINE_TABLE_ROW_STEP);
+  }
+  assert.equal(layout.height, api.OUTLINE_PAD * 2 + (layout.nodes.length - 1) * api.OUTLINE_TABLE_ROW_STEP
+    + api.OUTLINE_NODE_H);
+});
+
+check('纵向连线：父下沿中点 → 子上沿中点，箭头竖直，采样不越界', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 },
+    { id: 'p3', kind: 2, title: '一二', startOffset: 4, endOffset: 5 }
+  ]);
+  const layout = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_DOWN);
+  const byId = id => layout.nodes.find(n => n.id === id);
+  const links = api.outlineConnectors(layout.nodes);
+  assert.equal(links.length, 3);
+  for (let i = 0; i < links.length; i++) {
+    const to = layout.nodes[i + 1];
+    const from = layout.nodes[to.parentIndex];
+    const c = links[i];
+    assert.ok(Math.abs(c.fromX - (from.x + api.OUTLINE_NODE_W / 2)) < 0.001, '起点在父节点中线');
+    assert.ok(Math.abs(c.fromY - (from.y + api.OUTLINE_NODE_H)) < 0.001, '起点在父节点下沿');
+    assert.ok(Math.abs(c.toX - (to.x + api.OUTLINE_NODE_W / 2)) < 0.001, '终点在子节点中线');
+    assert.ok(Math.abs(c.toY - to.y) < 0.001, '终点在子节点上沿');
+    assert.ok(Math.abs(c.controlY - (c.fromY + c.toY) / 2) < 0.001, '控制点在竖直中点');
+  }
+  const wires = api.outlineWires(links);
+  for (const w of wires) {
+    for (const p of w.points) {
+      assert.ok(p[0] >= 0 && p[0] <= w.width, 'x 落在包围盒内');
+      assert.ok(p[1] >= 0 && p[1] <= w.height, 'y 落在包围盒内');
+    }
+    assert.ok(Math.abs(Math.sin(w.endAngle)) > 0.999, '纵向连线的箭头朝上下');
+  }
+  // 折线：先竖出去，再横着进子节点
+  for (const w of api.outlineWires(links, api.OUTLINE_WIRE_STEPS, api.OUTLINE_WIRE_ELBOW)) {
+    assert.equal(w.points.length, 4);
+    assert.ok(Math.abs(Math.sin(w.endAngle)) > 0.999, '纵向折线的末段竖直');
+  }
+});
+
+check('纵向布局同样受折叠影响', () => {
+  const nodes = api.buildOutlineFromParagraphs('书', [
+    { id: 'p1', kind: 1, title: '一', startOffset: 0, endOffset: 1 },
+    { id: 'p2', kind: 2, title: '一一', startOffset: 2, endOffset: 3 }
+  ]);
+  const open = api.layoutOutline(nodes, null, 1, api.OUTLINE_LAYOUT_DOWN);
+  const folded = api.layoutOutline(nodes, new Set(['p1']), 1, api.OUTLINE_LAYOUT_DOWN);
+  assert.equal(folded.nodes.length, open.nodes.length - 1, '折叠后子节点不参与布局');
+  assert.ok(folded.height < open.height, '折叠后画布随之变矮');
 });
 
 console.log('Outline regression: ' + pass + ' checks passed');

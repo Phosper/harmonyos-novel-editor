@@ -6,6 +6,7 @@
 import {
   MindMapLayout, OutlineSnapshot, PlacedNode, OutlineCommand, OutlineCommandKind, OutlineWire,
   OUTLINE_NODE_H, OUTLINE_NODE_W, OUTLINE_LAYOUT_BALANCED, OUTLINE_LAYOUT_RIGHT,
+  OUTLINE_LAYOUT_DOWN, OUTLINE_LAYOUT_TABLE,
   OUTLINE_WIRE_STEPS, OUTLINE_WIRE_CURVE, OUTLINE_WIRE_ELBOW,
   layoutOutline, outlineConnectors, outlineWires,
   OutlineExtras, OutlineExtraCommand, OutlineSummaryBox, OutlineRelationWire, OutlineNodeStyle,
@@ -73,8 +74,10 @@ export struct StructurePage {
   @Local renameText: string = ''
   /** 折叠集合（按 paraId 存；视图态，不写正文、不进版本号） */
   @Local collapsedIds: string[] = []
-  /** 布局形态：true = 根在中间、一级主题左右分；false = 一直向右 */
-  @Local balanced: boolean = true
+  /** 布局形态：左右均衡 / 一直向右 / 组织架构（向下）/ 树形表格 */
+  @Local layoutMode: string = OUTLINE_LAYOUT_BALANCED
+  /** 连线是否按层级渐细（XMind 用线的粗细表达重要性） */
+  @Local thinLines: boolean = true
   /** 连线画法（曲线 / 折线） */
   @Local wireStyle: string = OUTLINE_WIRE_CURVE
   /** 连线是否按一级分支着色 */
@@ -162,8 +165,7 @@ export struct StructurePage {
     for (let i: number = 0; i < this.collapsedIds.length; i++) {
       collapsedSet.add(this.collapsedIds[i])
     }
-    const layout: MindMapLayout = layoutOutline(snapshot.nodes, collapsedSet, this.zoom,
-      this.balanced ? OUTLINE_LAYOUT_BALANCED : OUTLINE_LAYOUT_RIGHT)
+    const layout: MindMapLayout = layoutOutline(snapshot.nodes, collapsedSet, this.zoom, this.layoutMode)
     this.placed = layout.nodes
     this.mapW = layout.width
     this.mapH = layout.height
@@ -445,9 +447,21 @@ export struct StructurePage {
     this.load()
   }
 
-  /** 换布局形态：左右均衡 ↔ 一直向右（纯布局参数，不动正文） */
-  private toggleLayout(): void {
-    this.balanced = !this.balanced
+  /** 换布局形态（纯布局参数，不动正文） */
+  private setLayoutMode(mode: string): void {
+    if (this.layoutMode === mode) {
+      return
+    }
+    this.layoutMode = mode
+    this.load()
+  }
+
+  /** 线条等粗 ↔ 渐细 */
+  private setThinLines(on: boolean): void {
+    if (this.thinLines === on) {
+      return
+    }
+    this.thinLines = on
     this.load()
   }
 
@@ -978,11 +992,19 @@ export struct StructurePage {
       .points(wire.points)
       .fillOpacity(0)
       .stroke(this.branchColor(wire.branchIndex))
-      .strokeWidth(1.4)
+      .strokeWidth(this.wireWidth(wire))
       .strokeLineCap(LineCapStyle.Round)
       .strokeLineJoin(LineJoinStyle.Round)
       .hitTestBehavior(HitTestMode.None)
       .accessibilityLevel('no')
+  }
+
+  /** 线条粗细：渐细模式按深度递减，等粗模式统一 1.4vp */
+  private wireWidth(wire: OutlineWire): number {
+    if (!this.thinLines) {
+      return 1.4
+    }
+    return Math.max(1, 2.4 - wire.depth * 0.45)
   }
 
   /** 连线终点样式：圆点 / 箭头（XMind 的"分支终点"） */
@@ -1004,7 +1026,7 @@ export struct StructurePage {
         .points(this.arrowPoints(wire))
         .fillOpacity(0)
         .stroke(this.branchColor(wire.branchIndex))
-        .strokeWidth(1.4)
+        .strokeWidth(this.wireWidth(wire))
         .strokeLineCap(LineCapStyle.Round)
         .strokeLineJoin(LineJoinStyle.Round)
         .hitTestBehavior(HitTestMode.None)
@@ -1375,16 +1397,16 @@ export struct StructurePage {
   }
 
   private applyStyleTag(tag: string): void {
-    if (tag === 'balanced') {
-      if (!this.balanced) {
-        this.toggleLayout()
-      }
+    if (tag.indexOf('layout-') === 0) {
+      this.setLayoutMode(tag.substring(7))
       return
     }
-    if (tag === 'right') {
-      if (this.balanced) {
-        this.toggleLayout()
-      }
+    if (tag === 'thin') {
+      this.setThinLines(true)
+      return
+    }
+    if (tag === 'evenline') {
+      this.setThinLines(false)
       return
     }
     if (tag === 'curve') {
@@ -1514,8 +1536,16 @@ export struct StructurePage {
 
         this.panelTitle('结构')
         Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
-          this.panelChip('左右', this.balanced, 'balanced')
-          this.panelChip('向右', !this.balanced, 'right')
+          this.panelChip('左右', this.layoutMode === OUTLINE_LAYOUT_BALANCED, 'layout-' + OUTLINE_LAYOUT_BALANCED)
+          this.panelChip('向右', this.layoutMode === OUTLINE_LAYOUT_RIGHT, 'layout-' + OUTLINE_LAYOUT_RIGHT)
+          this.panelChip('向下', this.layoutMode === OUTLINE_LAYOUT_DOWN, 'layout-' + OUTLINE_LAYOUT_DOWN)
+          this.panelChip('表格', this.layoutMode === OUTLINE_LAYOUT_TABLE, 'layout-' + OUTLINE_LAYOUT_TABLE)
+        }
+
+        this.panelTitle('线条')
+        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
+          this.panelChip('渐细', this.thinLines, 'thin')
+          this.panelChip('等粗', !this.thinLines, 'evenline')
         }
 
         this.panelTitle('连线')

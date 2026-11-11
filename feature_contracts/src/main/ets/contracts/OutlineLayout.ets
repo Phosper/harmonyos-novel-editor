@@ -73,6 +73,8 @@ export class PlacedNode {
   collapsed: boolean = false
   /** 展开方向：1 = 向右侧展开，-1 = 向左侧展开，0 = 根（左右均衡布局才用得上） */
   side: number = 1
+  /** 主轴：'x' 左右展开，'y' 上下展开（组织架构/树形表格）；连线端点按它取边 */
+  axis: string = OUTLINE_AXIS_X
   /** 一级主题的序号（0 起，根为 -1）：分支配色按它取色，同一分支永远同色 */
   branchIndex: number = -1
   /** 编号（如 2.1.3）：按文档顺序算，不受折叠影响；编号开关打开时才显示 */
@@ -96,9 +98,22 @@ export const OUTLINE_COL_GAP: number = 300
 export const OUTLINE_ROW_GAP: number = 52
 export const OUTLINE_PAD: number = 24
 
-/** 布局形态：一直向右（逻辑图）／根在中间、一级主题左右分（思维导图，markmap 的 splitBranches 思路） */
+/** 布局形态：一直向右（逻辑图）／根在中间、一级主题左右分（思维导图）／自上而下（组织架构）／树形表格 */
 export const OUTLINE_LAYOUT_RIGHT: string = 'right'
 export const OUTLINE_LAYOUT_BALANCED: string = 'balanced'
+export const OUTLINE_LAYOUT_DOWN: string = 'down'
+export const OUTLINE_LAYOUT_TABLE: string = 'table'
+
+/** 主轴：横向（左右展开）或纵向（上下展开）——连线端点按它取边 */
+export const OUTLINE_AXIS_X: string = 'x'
+export const OUTLINE_AXIS_Y: string = 'y'
+
+/** 纵向布局的间距：兄弟的水平间距、层与层的垂直间距 */
+export const OUTLINE_SIB_GAP: number = 36
+export const OUTLINE_LEVEL_GAP: number = 104
+/** 树形表格：列宽与行高（比组织架构紧凑，一行一个主题） */
+export const OUTLINE_TABLE_COL_W: number = 240
+export const OUTLINE_TABLE_ROW_STEP: number = 44
 
 /**
  * 从"文稿标题 + 扁平标题列表"生成树。
@@ -231,7 +246,8 @@ function assignSides(count: number, children: number[][], mode: string): number[
 
 /**
  * 树布局：先按"叶子顺序"排 y，内部节点取首末子节点的中点；x = 深度 × 列距。
- * 两种形态：一直向右（逻辑图）／根在中间、一级主题左右分（思维导图）。
+ * 四种形态：一直向右（逻辑图）／根在中间、一级主题左右分（思维导图）／
+ * 自上而下（组织架构）／树形表格（列 = 深度、行 = 文档顺序）。
  * 纯函数，同样的输入永远得到同样的输出（便于回归与快照对比）。
  */
 export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | null = null,
@@ -243,69 +259,17 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
   // 缩放按"尺寸一起缩"处理：节点宽高、行/列间距、内边距同比例，
   // 这样字号随档位变、文字不会挤在固定框里（与思路板"不缩放容器"的结论一致）。
   const z: number = Math.max(0.5, Math.min(2, scale))
+  const prep: OutlineTreePrep = prepareTree(nodes, collapsedIds)
+  if (mode === OUTLINE_LAYOUT_DOWN || mode === OUTLINE_LAYOUT_TABLE) {
+    return layoutVertical(nodes, prep, z, mode)
+  }
   const pad: number = OUTLINE_PAD * z
   const colGap: number = OUTLINE_COL_GAP * z
   const rowGap: number = OUTLINE_ROW_GAP * z
   const nodeW: number = OUTLINE_NODE_W * z
   const nodeH: number = OUTLINE_NODE_H * z
-  const parents: number[] = outlineParents(nodes)
-  const collapsed: Set<string> = collapsedIds === null ? new Set<string>() : collapsedIds
-  // 折叠：自己或任一祖先被折叠 → 本次不参与布局
-  const visible: boolean[] = []
-  for (let i: number = 0; i < nodes.length; i++) {
-    let seen: boolean = true
-    let cursor: number = parents[i]
-    let guard: number = 0
-    while (cursor >= 0 && guard < 256) {
-      if (collapsed.has(nodes[cursor].id)) {
-        seen = false
-        break
-      }
-      cursor = parents[cursor]
-      guard++
-    }
-    visible.push(seen)
-  }
-  const children: number[][] = []
-  /** 全部子节点（含被折叠隐藏的）：编号、分支色号、折叠徽标都按"真实的文档顺序"算 */
-  const childrenAll: number[][] = []
-  for (let i: number = 0; i < nodes.length; i++) {
-    children.push([])
-    childrenAll.push([])
-  }
-  const hasChildren: boolean[] = []
-  for (let i: number = 0; i < nodes.length; i++) {
-    hasChildren.push(false)
-  }
-  for (let i: number = 0; i < nodes.length; i++) {
-    if (parents[i] >= 0) {
-      hasChildren[parents[i]] = true
-      childrenAll[parents[i]].push(i)
-      if (visible[i]) {
-        children[parents[i]].push(i)
-      }
-    }
-  }
-  // 分支配色与编号：沿树走一遍（深度 ≤ 3，递归不成问题）
-  const branchIndex: number[] = []
-  const labels: string[] = []
-  for (let i: number = 0; i < nodes.length; i++) {
-    branchIndex.push(-1)
-    labels.push('')
-  }
-  const walk = (index: number, branch: number, prefix: string): void => {
-    branchIndex[index] = branch
-    labels[index] = prefix
-    const kids: number[] = childrenAll[index]
-    for (let k: number = 0; k < kids.length; k++) {
-      const step: string = (k + 1).toString()
-      walk(kids[k], branch, prefix === '' ? step : prefix + '.' + step)
-    }
-  }
-  const tops: number[] = childrenAll[0]
-  for (let k: number = 0; k < tops.length; k++) {
-    walk(tops[k], k, (k + 1).toString())
-  }
+  const children: number[][] = prep.children
+  const visible: boolean[] = prep.visible
   const ys: number[] = []
   for (let i: number = 0; i < nodes.length; i++) {
     ys.push(0)
@@ -353,29 +317,195 @@ export function layoutOutline(nodes: OutlineNode[], collapsedIds: Set<string> | 
       continue
     }
     const depth: number = nodes[i].depth
-    const placed: PlacedNode = new PlacedNode()
-    placed.id = nodes[i].id
-    placed.title = nodes[i].title
-    placed.level = nodes[i].level
-    placed.depth = depth
     // 左侧按"根中心镜像"：左缘 x = 根 x − 深度 × 列距，这样两边的列间距与连线长度一致
-    placed.x = sides[i] < 0 ? rootX - depth * colGap : rootX + depth * colGap
-    placed.y = ys[i]
-    placed.startOffset = nodes[i].startOffset
-    placed.paraId = nodes[i].paraId
-    placed.parentIndex = parents[i]
-    placed.hasChildren = hasChildren[i]
-    placed.collapsed = collapsed.has(nodes[i].id)
-    placed.side = sides[i]
-    placed.branchIndex = branchIndex[i]
-    placed.orderLabel = labels[i]
-    placed.childCount = childrenAll[i].length
-    placed.scale = z
-    layout.nodes.push(placed)
+    const x: number = sides[i] < 0 ? rootX - depth * colGap : rootX + depth * colGap
+    pushPlaced(layout, nodes, prep, i, x, ys[i], z, sides[i], OUTLINE_AXIS_X)
   }
   layout.width = rootX + maxRightDepth * colGap + nodeW + pad
   layout.height = pad * 2 + Math.max(0, rows - 1) * rowGap + nodeH
   return layout
+}
+
+/** 纵向布局（组织架构 / 树形表格）：x 由列决定，y 由层或序号决定 */
+function layoutVertical(nodes: OutlineNode[], prep: OutlineTreePrep, z: number,
+  mode: string): MindMapLayout {
+  const layout: MindMapLayout = new MindMapLayout()
+  const pad: number = OUTLINE_PAD * z
+  const nodeW: number = OUTLINE_NODE_W * z
+  const nodeH: number = OUTLINE_NODE_H * z
+  const sibGap: number = OUTLINE_SIB_GAP * z
+  const levelGap: number = (mode === OUTLINE_LAYOUT_TABLE ? OUTLINE_TABLE_ROW_STEP : OUTLINE_LEVEL_GAP) * z
+  const colW: number = OUTLINE_TABLE_COL_W * z
+  const xs: number[] = []
+  const ys: number[] = []
+  for (let i: number = 0; i < nodes.length; i++) {
+    xs.push(0)
+    ys.push(0)
+  }
+  let maxDepth: number = 0
+  for (let i: number = 0; i < nodes.length; i++) {
+    if (!prep.visible[i]) {
+      continue
+    }
+    if (nodes[i].depth > maxDepth) {
+      maxDepth = nodes[i].depth
+    }
+  }
+  let width: number = 0
+  let height: number = 0
+  if (mode === OUTLINE_LAYOUT_TABLE) {
+    // 表格：一行一个主题（文档顺序），一列一层；比组织架构紧凑，适合"读"不适合"改"
+    let row: number = 0
+    const emit = (index: number): void => {
+      xs[index] = pad + nodes[index].depth * colW
+      ys[index] = pad + row * levelGap
+      row++
+      const kids: number[] = prep.children[index]
+      for (let k: number = 0; k < kids.length; k++) {
+        emit(kids[k])
+      }
+    }
+    emit(0)
+    width = pad * 2 + maxDepth * colW + nodeW
+    height = pad * 2 + Math.max(0, row - 1) * levelGap + nodeH
+  } else {
+    // 组织架构：子树按叶子宽度占位，父节点居中在子节点上方
+    const widths: number[] = []
+    for (let i: number = 0; i < nodes.length; i++) {
+      widths.push(nodeW)
+    }
+    const measure = (index: number): number => {
+      const kids: number[] = prep.children[index]
+      if (kids.length === 0) {
+        widths[index] = nodeW
+        return nodeW
+      }
+      let sum: number = 0
+      for (let k: number = 0; k < kids.length; k++) {
+        sum += measure(kids[k])
+        if (k > 0) {
+          sum += sibGap
+        }
+      }
+      widths[index] = Math.max(nodeW, sum)
+      return widths[index]
+    }
+    const place = (index: number, left: number): void => {
+      ys[index] = pad + nodes[index].depth * levelGap
+      const kids: number[] = prep.children[index]
+      if (kids.length === 0) {
+        xs[index] = left
+        return
+      }
+      let cursor: number = left
+      for (let k: number = 0; k < kids.length; k++) {
+        place(kids[k], cursor)
+        cursor += widths[kids[k]] + sibGap
+      }
+      xs[index] = left + (widths[index] - nodeW) / 2
+    }
+    measure(0)
+    place(0, pad)
+    width = widths[0] + pad * 2
+    height = pad * 2 + maxDepth * levelGap + nodeH
+  }
+  for (let i: number = 0; i < nodes.length; i++) {
+    if (!prep.visible[i]) {
+      continue
+    }
+    pushPlaced(layout, nodes, prep, i, xs[i], ys[i], z, 1, OUTLINE_AXIS_Y)
+  }
+  layout.width = width
+  layout.height = height
+  return layout
+}
+
+/** 把一颗树在布局前的公共信息准备好：父子、可见性、分支色号、编号 */
+class OutlineTreePrep {
+  parents: number[] = []
+  visible: boolean[] = []
+  children: number[][] = []
+  childrenAll: number[][] = []
+  hasChildren: boolean[] = []
+  branchIndex: number[] = []
+  labels: string[] = []
+  collapsed: Set<string> = new Set<string>()
+}
+
+function prepareTree(nodes: OutlineNode[], collapsedIds: Set<string> | null): OutlineTreePrep {
+  const prep: OutlineTreePrep = new OutlineTreePrep()
+  prep.parents = outlineParents(nodes)
+  prep.collapsed = collapsedIds === null ? new Set<string>() : collapsedIds
+  // 折叠：自己或任一祖先被折叠 → 本次不参与布局
+  for (let i: number = 0; i < nodes.length; i++) {
+    let seen: boolean = true
+    let cursor: number = prep.parents[i]
+    let guard: number = 0
+    while (cursor >= 0 && guard < 256) {
+      if (prep.collapsed.has(nodes[cursor].id)) {
+        seen = false
+        break
+      }
+      cursor = prep.parents[cursor]
+      guard++
+    }
+    prep.visible.push(seen)
+    prep.children.push([])
+    prep.childrenAll.push([])
+    prep.hasChildren.push(false)
+    prep.branchIndex.push(-1)
+    prep.labels.push('')
+  }
+  for (let i: number = 0; i < nodes.length; i++) {
+    const parent: number = prep.parents[i]
+    if (parent >= 0) {
+      prep.hasChildren[parent] = true
+      prep.childrenAll[parent].push(i)
+      if (prep.visible[i]) {
+        prep.children[parent].push(i)
+      }
+    }
+  }
+  // 分支配色与编号：沿树走一遍（深度 ≤ 3，递归不成问题）
+  const walk = (index: number, branch: number, prefix: string): void => {
+    prep.branchIndex[index] = branch
+    prep.labels[index] = prefix
+    const kids: number[] = prep.childrenAll[index]
+    for (let k: number = 0; k < kids.length; k++) {
+      const step: string = (k + 1).toString()
+      walk(kids[k], branch, prefix === '' ? step : prefix + '.' + step)
+    }
+  }
+  const tops: number[] = prep.childrenAll[0]
+  for (let k: number = 0; k < tops.length; k++) {
+    walk(tops[k], k, (k + 1).toString())
+  }
+  return prep
+}
+
+/** 产出一个已布局节点（两种布局只差 x/y/方向，其余字段一样） */
+function pushPlaced(layout: MindMapLayout, nodes: OutlineNode[], prep: OutlineTreePrep, index: number,
+  x: number, y: number, scale: number, side: number, axis: string): void {
+  const node: OutlineNode = nodes[index]
+  const placed: PlacedNode = new PlacedNode()
+  placed.id = node.id
+  placed.title = node.title
+  placed.level = node.level
+  placed.depth = node.depth
+  placed.x = x
+  placed.y = y
+  placed.startOffset = node.startOffset
+  placed.paraId = node.paraId
+  placed.parentIndex = prep.parents[index]
+  placed.hasChildren = prep.hasChildren[index]
+  placed.collapsed = prep.collapsed.has(node.id)
+  placed.side = side
+  placed.axis = axis
+  placed.branchIndex = prep.branchIndex[index]
+  placed.orderLabel = prep.labels[index]
+  placed.childCount = prep.childrenAll[index].length
+  placed.scale = scale
+  layout.nodes.push(placed)
 }
 
 /**
@@ -390,8 +520,14 @@ export class OutlineConnector {
   toY: number = 0
   /** 三段贝塞尔的中间控制点（水平方向上取两端中点） */
   controlX: number = 0
+  /** 纵向布局用的控制点 y（横向布局留 0） */
+  controlY: number = 0
+  /** 主轴：'x' = 左右展开的连线，'y' = 上下展开的连线 */
+  axis: string = OUTLINE_AXIS_X
   /** 所属一级分支（取色用）；根的直接子节点起算，0 起 */
   branchIndex: number = -1
+  /** 子节点深度（1 起）：渲染层据此做"线条渐细" */
+  depth: number = 1
 }
 
 /**
@@ -409,6 +545,20 @@ export function outlineConnectors(nodes: PlacedNode[]): OutlineConnector[] {
     const from: PlacedNode = nodes[parentIndex]
     const to: PlacedNode = nodes[i]
     const connector: OutlineConnector = new OutlineConnector()
+    connector.axis = to.axis
+    connector.depth = to.depth
+    connector.branchIndex = to.branchIndex
+    if (to.axis === OUTLINE_AXIS_Y) {
+      // 上下展开：父下沿中点 → 子上沿中点
+      connector.fromX = from.x + OUTLINE_NODE_W * from.scale / 2
+      connector.fromY = from.y + OUTLINE_NODE_H * from.scale
+      connector.toX = to.x + OUTLINE_NODE_W * to.scale / 2
+      connector.toY = to.y
+      connector.controlX = (connector.fromX + connector.toX) / 2
+      connector.controlY = (connector.fromY + connector.toY) / 2
+      out.push(connector)
+      continue
+    }
     // 朝左展开时端点镜像：父左缘 → 子右缘；朝右时是父右缘 → 子左缘
     if (to.side < 0) {
       connector.fromX = from.x
@@ -420,7 +570,6 @@ export function outlineConnectors(nodes: PlacedNode[]): OutlineConnector[] {
     connector.fromY = from.y + OUTLINE_NODE_H * from.scale / 2
     connector.toY = to.y + OUTLINE_NODE_H * to.scale / 2
     connector.controlX = (connector.fromX + connector.toX) / 2
-    connector.branchIndex = to.branchIndex
     out.push(connector)
   }
   return out
@@ -446,6 +595,8 @@ export class OutlineWire {
   points: number[][] = []
   /** 所属一级分支（渲染层据此取色） */
   branchIndex: number = -1
+  /** 子节点深度（1 起）：线条渐细按它算粗细 */
+  depth: number = 1
   /** 连线在子节点那一端的绝对坐标与切线角（弧度）：画箭头/圆点用 */
   endX: number = 0
   endY: number = 0
@@ -482,35 +633,53 @@ export function outlineWires(connectors: OutlineConnector[], steps: number = OUT
     const maxY: number = Math.max(c.fromY, c.toY)
     const wire: OutlineWire = new OutlineWire()
     wire.branchIndex = c.branchIndex
+    wire.depth = c.depth
     wire.originX = minX - OUTLINE_WIRE_PAD
     wire.originY = minY - OUTLINE_WIRE_PAD
     wire.width = Math.max(1, maxX - minX + OUTLINE_WIRE_PAD * 2)
     wire.height = Math.max(1, maxY - minY + OUTLINE_WIRE_PAD * 2)
+    const vertical: boolean = c.axis === OUTLINE_AXIS_Y
     if (style === OUTLINE_WIRE_ELBOW) {
-      // 折线：父右缘 → 列中缝 → 子左缘（朝左展开时方向自然反向）
+      // 折线：父缘 → 中缝 → 中缝 → 子缘（朝左/朝上展开时方向自然反向）
       wire.points.push([c.fromX - wire.originX, c.fromY - wire.originY])
-      wire.points.push([c.controlX - wire.originX, c.fromY - wire.originY])
-      wire.points.push([c.controlX - wire.originX, c.toY - wire.originY])
+      if (vertical) {
+        wire.points.push([c.fromX - wire.originX, c.controlY - wire.originY])
+        wire.points.push([c.toX - wire.originX, c.controlY - wire.originY])
+      } else {
+        wire.points.push([c.controlX - wire.originX, c.fromY - wire.originY])
+        wire.points.push([c.controlX - wire.originX, c.toY - wire.originY])
+      }
       wire.points.push([c.toX - wire.originX, c.toY - wire.originY])
-      // 末段是竖直的：箭头朝上下
       wire.endX = c.toX
       wire.endY = c.toY
-      wire.endAngle = c.toY >= c.fromY ? Math.PI / 2 : -Math.PI / 2
+      if (vertical) {
+        wire.endAngle = c.toY >= c.fromY ? Math.PI / 2 : -Math.PI / 2
+      } else {
+        wire.endAngle = c.toX >= c.fromX ? 0 : Math.PI
+      }
       out.push(wire)
       continue
     }
     for (let k: number = 0; k <= n; k++) {
       const t: number = k / n
-      const x: number = cubicAt(c.fromX, c.controlX, c.controlX, c.toX, t) - wire.originX
-      const y: number = cubicAt(c.fromY, c.fromY, c.toY, c.toY, t) - wire.originY
+      let x: number = 0
+      let y: number = 0
+      if (vertical) {
+        // 控制点 (fromX, controlY) 与 (toX, controlY)：先竖着出去，再拐到子的中线
+        x = cubicAt(c.fromX, c.fromX, c.toX, c.toX, t) - wire.originX
+        y = cubicAt(c.fromY, c.controlY, c.controlY, c.toY, t) - wire.originY
+      } else {
+        x = cubicAt(c.fromX, c.controlX, c.controlX, c.toX, t) - wire.originX
+        y = cubicAt(c.fromY, c.fromY, c.toY, c.toY, t) - wire.originY
+      }
       wire.points.push([x, y])
     }
-    // 末端切线：取最后两个采样点
-    const last: number[] = wire.points[n]
-    const prev: number[] = wire.points[n - 1]
+    // 末端切线按控制点算（采样弦会带上最后一段的抖动，箭头会歪）：
+    // 横向布局指向左右，纵向布局指向上下
     wire.endX = c.toX
     wire.endY = c.toY
-    wire.endAngle = Math.atan2(last[1] - prev[1], last[0] - prev[0])
+    wire.endAngle = vertical ? (c.toY >= c.fromY ? Math.PI / 2 : -Math.PI / 2)
+      : (c.toX >= c.fromX ? 0 : Math.PI)
     out.push(wire)
   }
   return out
